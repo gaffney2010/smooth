@@ -29,7 +29,19 @@ int main() {
     std::cout << "get(2,1) = " << n.get(2, 1) << "\n";
     n.clear(2, 1);
     std::cout << "After clear(2,1), get(2,1) = " << n.get(2, 1) << "\n";
-    std::cout << "Value: " << n.value() << "\n";
+    std::cout << "Value: " << n.value() << "\n\n";
+
+    // Fractional example: 2 whole rows/cols (i, j in [0,1]) plus 2 negative
+    // rows/cols (i, j in [-2,-1]), so terms can have negative exponents.
+    smooth::SmoothNumber f(2, 2, 2, 2);
+
+    f.set(0, 0);   // 2^0 * 3^0 = 1
+    f.set(-1, 0);  // 2^-1 * 3^0 = 0.5
+    f.set(0, -1);  // 2^0 * 3^-1 = 1/3
+
+    std::cout << "Fractional matrix (line marks the whole/fractional boundary):\n";
+    f.print();
+    std::cout << "Value: " << f.value() << "\n";
 
     return 0;
 }
