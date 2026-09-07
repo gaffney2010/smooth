@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cmath>
-#include <cstddef>
+#include <functional>
 #include <set>
 #include <utility>
 
@@ -9,13 +9,11 @@
 
 namespace smooth {
 
-// The set of (i, j) coordinates whose bit is set. Dimensions aren't needed
-// for storage, but the constructor still takes them so SmoothNumber can
-// build every representation the same way.
+// The set of (i, j) coordinates whose bit is set -- inherently unbounded,
+// since it only ever stores the coordinates that are actually on.
 class SparseRepresentation : public RepresentationBase {
 public:
-    SparseRepresentation(std::size_t /*max_rows*/, std::size_t /*max_cols*/, std::size_t /*neg_rows*/,
-                          std::size_t /*neg_cols*/) {}
+    explicit SparseRepresentation(bool /*allow_fractional*/) {}
 
     bool get(int i, int j) const override { return coords_.count({i, j}) > 0; }
 
@@ -53,6 +51,10 @@ public:
             first = false;
         }
         os << "}\n";
+    }
+
+    void forEachSet(const std::function<void(int, int)>& fn) const override {
+        for (const auto& coord : coords_) fn(coord.first, coord.second);
     }
 
 private:

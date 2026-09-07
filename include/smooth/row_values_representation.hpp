@@ -1,29 +1,32 @@
 #pragma once
 
 #include <cmath>
-#include <cstddef>
-#include <vector>
+#include <functional>
+#include <map>
 
 #include "smooth/representation_base.hpp"
 
 namespace smooth {
 
-// One number n_j per column j, where n_j = sum_i (bit(i,j) ? 2^i : 0), so
-// the total value is sum_j n_j * 3^j. n_j is an integer if there's no
-// negative row capacity, and may be fractional otherwise.
+// One number n_j per column j that actually has a set bit, where
+// n_j = sum_i (bit(i,j) ? 2^i : 0), so the total value is sum_j n_j * 3^j.
+// Stored as a map keyed by j rather than an array, so it's unbounded and
+// only ever holds entries for columns that have something set in them
+// (an entry is dropped once its value returns to zero). n_j is an integer
+// if the number doesn't allow fractional (negative-index) terms, and may
+// be fractional otherwise.
 class RowValuesRepresentation : public RepresentationBase {
 public:
-    RowValuesRepresentation(std::size_t /*max_rows*/, std::size_t max_cols, std::size_t neg_rows,
-                             std::size_t neg_cols)
-        : cols_(max_cols), negRows_(neg_rows), negCols_(neg_cols), values_(neg_cols + max_cols, 0.0) {}
+    explicit RowValuesRepresentation(bool allow_fractional) : fractional_(allow_fractional) {}
 
     // Individual bits are recovered from n_j by dividing out 2^i and
-    // checking parity. This is exact for the row/column ranges this class
-    // is meant for, since every n_j is an exact sum of distinct powers of
-    // two, but it is floating-point-based and could get unreliable at very
+    // checking parity. This is exact for the row ranges this class is
+    // meant for, since every n_j is an exact sum of distinct powers of two,
+    // but it is floating-point-based and could get unreliable at very
     // large row counts.
     bool get(int i, int j) const override {
-        double n = values_[colIndex(j)];
+        auto it = values_.find(j);
+        double n = (it == values_.end()) ? 0.0 : it->second;
         double scaled = n / std::pow(2.0, i);
         long long whole = static_cast<long long>(std::llround(std::floor(scaled + 1e-9)));
         long long parity = whole % 2;
@@ -34,46 +37,71 @@ public:
     bool set(int i, int j, bool value) override {
         if (get(i, j) == value) return false;
         double delta = std::pow(2.0, i);
-        values_[colIndex(j)] += value ? delta : -delta;
+        double updated = values_[j] + (value ? delta : -delta);
+        if (updated == 0.0) {
+            values_.erase(j);
+        } else {
+            values_[j] = updated;
+        }
         return true;
     }
 
-    void reset() override { std::fill(values_.begin(), values_.end(), 0.0); }
+    void reset() override { values_.clear(); }
 
     // Each n_j already sums its row's contribution, so this is a single
-    // O(cols) pass rather than O(rows * cols), with no per-bit decoding.
+    // pass over the (typically few) columns that have anything set, rather
+    // than a full grid walk, with no per-bit decoding needed.
     double value() const override {
         double total = 0.0;
-        for (int j = firstCol(); j < static_cast<int>(cols_); ++j) {
-            total += values_[colIndex(j)] * std::pow(3.0, static_cast<double>(j));
+        for (const auto& col : values_) {
+            total += col.second * std::pow(3.0, static_cast<double>(col.first));
         }
         return total;
     }
 
-    // One line per column j, showing n_j.
+    // One line per column j that has a set bit, showing n_j.
     void print(std::ostream& os) const override {
-        const bool fractional = negRows_ > 0;
-        for (int j = firstCol(); j < static_cast<int>(cols_); ++j) {
-            double n = values_[colIndex(j)];
-            os << "n[" << j << "] = ";
-            if (fractional) {
-                os << n;
+        for (const auto& col : values_) {
+            os << "n[" << col.first << "] = ";
+            if (fractional_) {
+                os << col.second;
             } else {
-                os << static_cast<long long>(std::llround(n));
+                os << static_cast<long long>(std::llround(col.second));
             }
             os << '\n';
         }
     }
 
+    // Decodes each n_j back into individual (i, j) bits: the integer part
+    // via ordinary bit shifting, and -- when fractional terms are allowed
+    // -- the fractional part via repeated doubling, the standard way to
+    // read off a binary fraction's digits.
+    void forEachSet(const std::function<void(int, int)>& fn) const override {
+        for (const auto& col : values_) {
+            int j = col.first;
+            double n = col.second;
+
+            long long intPart = static_cast<long long>(std::floor(n + 1e-9));
+            for (int i = 0; intPart != 0; ++i, intPart >>= 1) {
+                if (intPart & 1) fn(i, j);
+            }
+
+            double frac = n - std::floor(n + 1e-9);
+            int i = -1;
+            while (frac > 1e-9 && i > -64) {
+                frac *= 2.0;
+                if (frac >= 1.0 - 1e-9) {
+                    fn(i, j);
+                    frac -= 1.0;
+                }
+                --i;
+            }
+        }
+    }
+
 private:
-    int firstCol() const { return -static_cast<int>(negCols_); }
-
-    std::size_t colIndex(int j) const { return static_cast<std::size_t>(j + static_cast<int>(negCols_)); }
-
-    std::size_t cols_;
-    std::size_t negRows_;
-    std::size_t negCols_;
-    std::vector<double> values_;
+    bool fractional_;
+    std::map<int, double> values_;
 };
 
 }  // namespace smooth
