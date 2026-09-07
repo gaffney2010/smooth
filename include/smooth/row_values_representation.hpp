@@ -99,6 +99,19 @@ public:
         }
     }
 
+    // Storage here already *is* n_j per column, so setting one is a direct
+    // O(1), exact assignment -- no bit decomposition, and none of the
+    // accumulated floating-point error the default (RepresentationBase's
+    // bit-by-bit set() loop) would introduce by adding/subtracting powers
+    // of two one at a time.
+    void setColumnValue(int j, double n) override {
+        if (n == 0.0) {
+            values_.erase(j);
+        } else {
+            values_[j] = n;
+        }
+    }
+
 private:
     bool fractional_;
     std::map<int, double> values_;

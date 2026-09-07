@@ -57,6 +57,10 @@ public:
         for (const auto& coord : coords_) fn(coord.first, coord.second);
     }
 
+    // A set of coordinates has no more direct way to encode a number than
+    // writing its bits one at a time, so this defers to the shared helper.
+    void setColumnValue(int j, double n) override { decomposeColumnValue(*this, j, n); }
+
 private:
     std::set<std::pair<int, int>> coords_;
 };

@@ -73,6 +73,26 @@ int main() {
     sf.setNegative(true);
     std::cout << "SmoothSignedFloat with setNegative(true): " << sf.value() << "\n\n";
 
+    // --- setValue() ---------------------------------------------------------
+    // Converts a plain integer/float straight into a smooth number by
+    // placing it entirely in row j = 0 (n[0] in the RowValues view), since
+    // value() = sum_j n_j * 3^j and 3^0 = 1. Replaces whatever was there.
+    std::cout << "--- setValue() ---\n";
+    smooth::SmoothInteger fromInt;
+    fromInt.setValue(42LL);
+    std::cout << "SmoothInteger.setValue(42): value = " << fromInt.value() << "\n";
+    fromInt.printRowValues();
+
+    smooth::SmoothFloat fromFloat;
+    fromFloat.setValue(3.75);
+    std::cout << "SmoothFloat.setValue(3.75): value = " << fromFloat.value() << "\n";
+    fromFloat.printRowValues();
+
+    smooth::SmoothSignedInteger fromNegInt;
+    fromNegInt.setValue(-7LL);
+    std::cout << "SmoothSignedInteger.setValue(-7): value = " << fromNegInt.value()
+              << " (isNegative() = " << fromNegInt.isNegative() << ")\n\n";
+
     // --- Representations demo -------------------------------------------
     // The class picks and tracks its own canonical (trusted) representation
     // internally -- there's no public way to force one. Each print function

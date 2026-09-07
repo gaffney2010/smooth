@@ -32,6 +32,20 @@ public:
 
     double value() const { return (negative_ ? -1.0 : 1.0) * Base::value(); }
 
+    // Splits the sign off of `v`, then hands the non-negative magnitude to
+    // Base::setValue() -- which is where the actual bit encoding lives, so
+    // it's written exactly once and shared by both signed and unsigned
+    // types, same as value() above.
+    void setValue(long long v) {
+        setNegative(v < 0);
+        Base::setValue(v < 0 ? -v : v);
+    }
+
+    void setValue(double v) {
+        setNegative(v < 0.0);
+        Base::setValue(v < 0.0 ? -v : v);
+    }
+
 private:
     bool negative_ = false;
 };

@@ -50,6 +50,16 @@ is canonical through the `RepresentationBase` interface
 - `allowsFractional()` — whether this type permits negative indices
   (`true` for `SmoothFloat`/`SmoothSignedFloat`, `false` for
   `SmoothInteger`/`SmoothSignedInteger`).
+- `setValue(long long)` / `setValue(double)` — replaces whatever this
+  number currently holds with a plain integer or floating-point value.
+  Implemented by clearing the number, then putting the whole value into row
+  `j = 0` (`n[0]` in the `RowValues` view) via the canonical
+  representation's `setColumnValue(0, v)` — since `value() = sum_j n_j *
+  3^j` and `3^0 = 1`, `n_0` alone reproduces the input exactly. Throws
+  `std::invalid_argument` for a negative value on an unsigned type (`Base`
+  can only ever hold a positive magnitude — see "Signed types" for how the
+  signed types handle negative input), or for a fractional value on a
+  non-fractional type.
 
 A negative index on a non-fractional type throws `std::out_of_range`.
 
@@ -73,7 +83,7 @@ mistakes if you want that guardrail, nothing more.
 
 The same number can be held in one of several internal representations,
 each a class implementing `RepresentationBase`
-(`get`/`set`/`reset`/`value`/`print`/`forEachSet`):
+(`get`/`set`/`reset`/`value`/`print`/`forEachSet`/`setColumnValue`):
 
 - **Sparse** (`sparse_representation.hpp`) — the set of `(i, j)` coordinates
   whose bit is set. A `std::set` — a literal list of the coordinates that
@@ -135,6 +145,25 @@ individual bits, Dynamic walks its own allocated capacity). This is what
 makes conversion possible without any global bounds: nobody needs to know
 "the largest index that might be set" up front.
 
+`setColumnValue(j, n)` is the same per-representation-strategy idea, but for
+*writing* a whole column's contribution at once (used by `setValue()` — see
+above) instead of reading. Like every other `RepresentationBase` method,
+it's pure virtual — no default lives on the interface, so each
+representation is explicit about its own strategy:
+
+- Sparse and Dynamic have no more direct way to encode a number than
+  writing its bits one at a time, so both just call the free
+  `decomposeColumnValue(rep, j, n)` helper (`representation_base.hpp`),
+  which decomposes `n` into bits (integer part via bit-shifting, fractional
+  part via repeated doubling) and writes each one through `set()`. Sharing
+  that helper — rather than each duplicating the same loop, or the
+  interface providing it as a default — is the "share logic where you can"
+  part.
+- RowValues overrides it directly: because its storage already *is* `n_j`
+  per column, it just assigns `n` — O(1), exact, and without the small
+  floating-point error that adding/subtracting powers of two one bit at a
+  time could otherwise accumulate.
+
 This is a Strategy pattern: `SmoothNumberBase` only ever talks to
 representations through the `RepresentationBase` interface (an
 `std::array<std::unique_ptr<RepresentationBase>, 3>`), and generic
@@ -166,17 +195,22 @@ give it:
 - `setNegative(bool)` — set it directly.
 - `negate()` — flip it.
 - `value()` — `Base::value()`, negated if the sign flag is set.
+- `setValue(long long)` / `setValue(double)` — splits the sign off of the
+  input (`setNegative(v < 0)`), then hands the non-negative magnitude to
+  `Base::setValue()`, so a negative value no longer throws on a signed
+  type — it's encoded via the sign flag instead.
 
 `set`/`get`/`clear`/`print*` are untouched — they still only ever see the
 magnitude. This is the "share logic where you can" part of the design: the
-sign behavior is written exactly once, as a template over `Base`, and reused
-for both `SmoothSignedInteger` and `SmoothSignedFloat` rather than being
-duplicated in two separate classes. `Signed<Base>::value()` intentionally
-*hides* rather than overrides `Base::value()` (it isn't virtual) — these
-types are always used by their own concrete name, never through a
-`SmoothNumberBase*`, so static hiding is enough, and it avoids paying for
-virtual dispatch on `value()` for the two types that don't need a sign at
-all.
+sign behavior, and the "split the sign off before encoding" behavior for
+`setValue`, are each written exactly once, as a template over `Base`, and
+reused for both `SmoothSignedInteger` and `SmoothSignedFloat` rather than
+being duplicated in two separate classes. `Signed<Base>::value()` and
+`Signed<Base>::setValue()` intentionally *hide* rather than override
+`Base`'s versions (neither is virtual) — these types are always used by
+their own concrete name, never through a `SmoothNumberBase*`, so static
+hiding is enough, and it avoids paying for virtual dispatch for a feature
+only the signed types need.
 
 ## Building the demo
 
@@ -189,7 +223,9 @@ cmake --build build
 `src/demo.cpp` shows constructing a `SmoothInteger`, setting bits, printing
 it, reading its value, using `setBounds()` as an optional guardrail, a
 `SmoothFloat` with fractional terms, `SmoothSignedInteger` /
-`SmoothSignedFloat` negation, viewing a number through all three
-representations, and — using `DynamicMatrixRepresentation` directly, since
-none of the four types expose it as a live growable object — the doubling
-growth happening step by step as bits are set farther and farther out.
+`SmoothSignedFloat` negation, converting plain numbers via `setValue()`
+(including a negative value on a signed type), viewing a number through
+all three representations, and — using `DynamicMatrixRepresentation`
+directly, since none of the four types expose it as a live growable
+object — the doubling growth happening step by step as bits are set
+farther and farther out.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <functional>
 #include <iostream>
 
@@ -36,6 +37,45 @@ public:
     // has (or needs) any global bounds to walk, conversion asks the source
     // to enumerate exactly the cells it actually has set.
     virtual void forEachSet(const std::function<void(int, int)>& fn) const = 0;
+
+    // Sets column j's entire contribution at once to n (i.e. the bits at
+    // (i, j) for i = 0, 1, 2, ... and, for a negative n, ... -2, -1 come
+    // from n's ordinary binary digits), as if by clearing column j and then
+    // calling set(i, j, true) for each of n's bits. Precondition: column j
+    // is already all-zero (the one caller, SmoothNumberBase::setValue(),
+    // always clears the whole number first) -- this does not clear
+    // preexisting bits itself.
+    //
+    // Every representation implements this itself, same as value() and
+    // forEachSet() -- there's no default here, so each one is explicit
+    // about its own strategy. Sparse and Dynamic have no more direct way to
+    // encode a number than writing its bits one at a time, so both just
+    // call decomposeColumnValue() below. RowValues, which already stores
+    // exactly this number per column, assigns it directly instead -- O(1)
+    // and exact, with no bit decomposition (and no accumulated
+    // floating-point error from repeated add/subtract) at all.
+    virtual void setColumnValue(int j, double n) = 0;
 };
+
+// Shared by any representation whose set() is the only way it knows how to
+// encode a number (currently Sparse and Dynamic): decomposes n via
+// ordinary bit-shifting (integer part) and repeated doubling (fractional
+// part), and writes each resulting bit into `rep` through set().
+inline void decomposeColumnValue(RepresentationBase& rep, int j, double n) {
+    long long intPart = static_cast<long long>(std::floor(n + 1e-9));
+    for (int i = 0; intPart != 0; ++i, intPart >>= 1) {
+        if (intPart & 1) rep.set(i, j, true);
+    }
+    double frac = n - std::floor(n + 1e-9);
+    int i = -1;
+    while (frac > 1e-9 && i > -64) {
+        frac *= 2.0;
+        if (frac >= 1.0 - 1e-9) {
+            rep.set(i, j, true);
+            frac -= 1.0;
+        }
+        --i;
+    }
+}
 
 }  // namespace smooth

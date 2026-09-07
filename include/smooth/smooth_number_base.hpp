@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <iostream>
 #include <memory>
@@ -105,6 +106,42 @@ public:
     // SmoothNumberBase*.
     double value() const { return repFor(canonical_).value(); }
 
+    // Replaces whatever this number currently holds with `v`, encoded
+    // entirely in row j = 0: since value() = sum_j n_j * 3^j, putting
+    // everything in column 0 means the total is just n_0 * 3^0 = n_0 = v.
+    // Delegates the actual encoding to the canonical representation's own
+    // setColumnValue() (see RepresentationBase), so e.g. RowValues -- which
+    // already stores exactly n_0 -- assigns it directly in O(1) rather than
+    // going through a bit-by-bit decomposition.
+    //
+    // Throws std::invalid_argument for a negative v -- the bit grid can
+    // only ever hold positive magnitude; use a Signed<> type (which
+    // overrides this to split off the sign first) for negative values.
+    void setValue(long long v) {
+        if (v < 0) {
+            throw std::invalid_argument("SmoothNumberBase::setValue: value must be non-negative for this type");
+        }
+        clearAllBits();
+        repFor(canonical_).setColumnValue(0, static_cast<double>(v));
+    }
+
+    // Same idea, but v may have a fractional part. Throws
+    // std::invalid_argument if v is negative, or if it has a fractional
+    // part but this type doesn't allow fractional (negative-index) terms.
+    void setValue(double v) {
+        if (v < 0.0) {
+            throw std::invalid_argument("SmoothNumberBase::setValue: value must be non-negative for this type");
+        }
+        double frac = v - std::floor(v);
+        if (frac > 1e-9 && !allowFractional_) {
+            throw std::invalid_argument(
+                "SmoothNumberBase::setValue: value has a fractional part but this type doesn't allow "
+                "fractional terms");
+        }
+        clearAllBits();
+        repFor(canonical_).setColumnValue(0, v);
+    }
+
 protected:
     // allow_fractional lets i and j go negative, so the number can
     // represent fractional values (e.g. i = -1 contributes a factor of
@@ -171,6 +208,14 @@ private:
     void convertTo(Representation target) {
         ensure(target);
         canonical_ = target;
+    }
+
+    // Wipes the canonical representation back to empty and every other
+    // representation back to outdated, in one step -- used by setValue()
+    // so it fully replaces this number's value rather than adding to it.
+    void clearAllBits() {
+        repFor(canonical_).reset();
+        invalidateAllExcept(canonical_);
     }
 
     bool allowFractional_;
