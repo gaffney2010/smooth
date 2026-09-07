@@ -1,10 +1,10 @@
 #include <iostream>
 
 #include "smooth/dynamic_matrix_representation.hpp"
-#include "smooth/smooth_number.hpp"
+#include "smooth/smooth.hpp"
 
 int main() {
-    smooth::SmoothNumber n;  // whole numbers only, no capacity to declare
+    smooth::SmoothInteger n;  // whole numbers only, no capacity to declare
 
     std::cout << "Empty number:\n";
     n.printDynamic();
@@ -43,8 +43,8 @@ int main() {
     }
     std::cout << "\n";
 
-    // Fractional example: allow_fractional = true permits negative indices.
-    smooth::SmoothNumber f(/*allow_fractional=*/true);
+    // Fractional example: SmoothFloat permits negative indices.
+    smooth::SmoothFloat f;
 
     f.set(0, 0);   // 2^0 * 3^0 = 1
     f.set(-1, 0);  // 2^-1 * 3^0 = 0.5
@@ -54,6 +54,25 @@ int main() {
     f.printDynamic();
     std::cout << "Value: " << f.value() << "\n\n";
 
+    // --- Signed variants ---------------------------------------------------
+    // SmoothSignedInteger and SmoothSignedFloat are Signed<SmoothInteger>
+    // and Signed<SmoothFloat>: the same sign-flag logic, written once in
+    // the Signed<> template, reused by both. set()/get()/print* still only
+    // ever deal with the (always-positive) magnitude; only value() and the
+    // sign accessors know the number is negative.
+    std::cout << "--- Signed variants ---\n";
+    smooth::SmoothSignedInteger s;
+    s.set(1, 0);  // 2^1 = 2
+    s.set(0, 2);  // 3^2 = 9
+    std::cout << "SmoothSignedInteger before negate(): " << s.value() << "\n";
+    s.negate();
+    std::cout << "After negate(): " << s.value() << " (isNegative() = " << s.isNegative() << ")\n\n";
+
+    smooth::SmoothSignedFloat sf;
+    sf.set(-1, 0);  // 2^-1 = 0.5
+    sf.setNegative(true);
+    std::cout << "SmoothSignedFloat with setNegative(true): " << sf.value() << "\n\n";
+
     // --- Representations demo -------------------------------------------
     // The class picks and tracks its own canonical (trusted) representation
     // internally -- there's no public way to force one. Each print function
@@ -61,7 +80,7 @@ int main() {
     // without disturbing which one is canonical, and value() computes using
     // whichever representation is currently canonical.
     std::cout << "--- Representations ---\n";
-    smooth::SmoothNumber r;
+    smooth::SmoothInteger r;
     r.set(1, 0);  // 2^1 = 2
     r.set(0, 2);  // 3^2 = 9
 
@@ -75,10 +94,10 @@ int main() {
     std::cout << "Value: " << r.value() << "\n\n";
 
     // --- Dynamic growth, step by step -------------------------------------
-    // DynamicMatrixRepresentation isn't gated by any SmoothNumber capacity
-    // -- it starts at 0x0 and grows purely from what gets set() into it.
-    // Setting bits far apart forces repeated doublings; each print below
-    // shows the capacity after that doubling.
+    // DynamicMatrixRepresentation isn't gated by any capacity -- it starts
+    // at 0x0 and grows purely from what gets set() into it. Setting bits
+    // far apart forces repeated doublings; each print below shows the
+    // capacity after that doubling.
     std::cout << "--- Dynamic growth, step by step ---\n";
     smooth::DynamicMatrixRepresentation d(/*allow_fractional=*/true);
 

@@ -13,9 +13,15 @@
 
 namespace smooth {
 
-// Represents a 3-smooth number (a number of the form 2^i * 3^j summed over a
-// set of (i, j) pairs). Row index i is the power of 2, column index j is the
-// power of 3.
+// Shared engine behind all four concrete 3-smooth number types
+// (SmoothInteger, SmoothFloat, and their Signed<> counterparts -- see
+// smooth_integer.hpp, smooth_float.hpp, signed.hpp). Represents a 3-smooth
+// number (a number of the form 2^i * 3^j summed over a set of (i, j)
+// pairs). Row index i is the power of 2, column index j is the power of 3.
+//
+// Not meant to be used directly: its constructor is protected, since
+// whether fractional (negative-index) terms are allowed is meant to be
+// fixed by which concrete class you pick, not a runtime flag callers set.
 //
 // Internally, the same logical bit grid can be held in more than one
 // representation (see representation_base.hpp and its implementations:
@@ -29,26 +35,11 @@ namespace smooth {
 // adding a new one means: adding an enumerator to Representation, adding a
 // slot to the construction/registration in the constructor below, and
 // writing the new class -- no other existing logic needs to change.
-class SmoothNumber {
+class SmoothNumberBase {
 public:
     enum class Representation { Sparse, RowValues, Dynamic };
 
-    // Whole numbers only: i and j must be non-negative.
-    SmoothNumber() : SmoothNumber(false) {}
-
-    // allow_fractional lets i and j go negative, so the number can
-    // represent fractional values (e.g. i = -1 contributes a factor of
-    // 1/2). This has to be decided up front because it's the one thing no
-    // representation can discover on its own: it affects how RowValues
-    // formats and decodes its numbers, and it's the only structural
-    // restriction any representation still enforces.
-    explicit SmoothNumber(bool allow_fractional)
-        : allowFractional_(allow_fractional), canonical_(Representation::Dynamic) {
-        reps_[index(Representation::Sparse)] = std::make_unique<SparseRepresentation>(allow_fractional);
-        reps_[index(Representation::RowValues)] = std::make_unique<RowValuesRepresentation>(allow_fractional);
-        reps_[index(Representation::Dynamic)] = std::make_unique<DynamicMatrixRepresentation>(allow_fractional);
-        valid_[index(Representation::Dynamic)] = true;
-    }
+    virtual ~SmoothNumberBase() = default;
 
     bool allowsFractional() const { return allowFractional_; }
 
@@ -108,8 +99,26 @@ public:
     // Sum of 2^i * 3^j over all set bits, computed by whichever
     // representation is canonical (see each representation's value() for
     // its strategy). Uses double, so precision degrades for large
-    // row/column counts or deeply negative indices.
+    // row/column counts or deeply negative indices. Not virtual: Signed<>
+    // hides rather than overrides this (see signed.hpp) since these classes
+    // are always used by their concrete type, never through a
+    // SmoothNumberBase*.
     double value() const { return repFor(canonical_).value(); }
+
+protected:
+    // allow_fractional lets i and j go negative, so the number can
+    // represent fractional values (e.g. i = -1 contributes a factor of
+    // 1/2). This has to be decided up front because it's the one thing no
+    // representation can discover on its own: it affects how RowValues
+    // formats and decodes its numbers, and it's the only structural
+    // restriction any representation still enforces.
+    explicit SmoothNumberBase(bool allow_fractional)
+        : allowFractional_(allow_fractional), canonical_(Representation::Dynamic) {
+        reps_[index(Representation::Sparse)] = std::make_unique<SparseRepresentation>(allow_fractional);
+        reps_[index(Representation::RowValues)] = std::make_unique<RowValuesRepresentation>(allow_fractional);
+        reps_[index(Representation::Dynamic)] = std::make_unique<DynamicMatrixRepresentation>(allow_fractional);
+        valid_[index(Representation::Dynamic)] = true;
+    }
 
 private:
     static constexpr std::size_t kRepresentationCount = 3;
@@ -121,12 +130,12 @@ private:
 
     void checkBounds(int i, int j) const {
         if (!allowFractional_ && (i < 0 || j < 0)) {
-            throw std::out_of_range("SmoothNumber: negative index requires allow_fractional");
+            throw std::out_of_range("SmoothNumberBase: negative index requires a fractional type");
         }
         if (boundsSet_) {
             if (i < -static_cast<int>(negRowBound_) || i >= static_cast<int>(rowBound_) ||
                 j < -static_cast<int>(negColBound_) || j >= static_cast<int>(colBound_)) {
-                throw std::out_of_range("SmoothNumber: index outside the bounds set via setBounds()");
+                throw std::out_of_range("SmoothNumberBase: index outside the bounds set via setBounds()");
             }
         }
     }

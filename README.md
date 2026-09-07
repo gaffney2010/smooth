@@ -8,34 +8,50 @@ such a number as a set of `(i, j)` bits: `(i, j)` being set means the term
 `2^i * 3^j` is included in the number. The number's value is the sum of
 `2^i * 3^j` over every set bit.
 
-## `smooth::SmoothNumber`
+## Four concrete types
 
-Header-only class in `include/smooth/smooth_number.hpp`. It owns three
+```cpp
+#include "smooth/smooth.hpp"  // pulls in all four
+
+smooth::SmoothInteger        // whole numbers only, always >= 0
+smooth::SmoothFloat          // fractional terms allowed, always >= 0
+smooth::SmoothSignedInteger  // whole numbers only, may be negative
+smooth::SmoothSignedFloat    // fractional terms allowed, may be negative
+```
+
+Whether a number allows fractional (negative-index) terms and whether it
+can be negative are both fixed by which class you pick, not by a runtime
+flag — that's the point of having four distinct types instead of one type
+with two booleans. All four are default-constructible with no arguments;
+none of them need any capacity declared up front.
+
+Every type shares its `get`/`set`/`clear`/`value`/`print*`/`setBounds`
+behavior — see `SmoothNumberBase` below — and the two signed types add
+sign-related methods on top (see "Signed types" below).
+
+### `SmoothNumberBase`
+
+Header-only class in `include/smooth/smooth_number_base.hpp`. This is the
+shared engine behind all four concrete types above; it's not meant to be
+constructed directly (its constructor is `protected`). It owns three
 internal representation objects (see below) and delegates to whichever one
 is canonical through the `RepresentationBase` interface
-(`include/smooth/representation_base.hpp`). None of them need any capacity
-declared up front — the class has no notion of a maximum size.
+(`include/smooth/representation_base.hpp`).
 
-- `SmoothNumber()` — whole numbers only: `i` and `j` must be non-negative.
-- `SmoothNumber(allow_fractional)` — pass `true` to permit negative indices,
-  so the number can represent fractional values (e.g. `i = -1` is a factor
-  of `1/2`, `j = -1` is a factor of `1/3`). This is the one thing that still
-  has to be decided up front: it's not something any representation can
-  infer on its own, since it governs how `RowValues` formats/decodes its
-  numbers and it's the only structural restriction `SmoothNumber` itself
-  still enforces.
 - `set(i, j, value = true)` — set (or clear) the bit at `(i, j)`. `i`/`j` are
-  signed so negative indices can be addressed (if `allow_fractional`).
+  signed so negative indices can be addressed (on a fractional type).
 - `clear(i, j)` — clear the bit at `(i, j)`.
 - `get(i, j)` — read the bit at `(i, j)`.
 - `value()` — return the sum of `2^i * 3^j` over all set bits (as a
   `double`; precision degrades for large row/column counts or deeply
   negative indices). Uses a strategy suited to whichever representation is
   currently canonical (see below) rather than always walking a full grid.
-- `allowsFractional()` — whether this instance was constructed with
-  `allow_fractional = true`.
+  Not virtual — see "Signed types" for why.
+- `allowsFractional()` — whether this type permits negative indices
+  (`true` for `SmoothFloat`/`SmoothSignedFloat`, `false` for
+  `SmoothInteger`/`SmoothSignedInteger`).
 
-A negative index on a non-fractional number throws `std::out_of_range`.
+A negative index on a non-fractional type throws `std::out_of_range`.
 
 ### `setBounds` — an optional, non-binding sanity check
 
@@ -45,7 +61,7 @@ void setBounds(std::size_t max_rows, std::size_t max_cols,
 ```
 
 Every representation is either naturally unbounded (Sparse, RowValues) or
-grows to fit whatever gets set into it (Dynamic), so `SmoothNumber` itself
+grows to fit whatever gets set into it (Dynamic), so `SmoothNumberBase`
 has nothing to preallocate and no real need for a maximum size. `setBounds`
 exists anyway as a pure sanity check: once called, any future `set()`/`get()`
 outside `[-neg_rows, max_rows) x [-neg_cols, max_cols)` throws
@@ -119,7 +135,7 @@ individual bits, Dynamic walks its own allocated capacity). This is what
 makes conversion possible without any global bounds: nobody needs to know
 "the largest index that might be set" up front.
 
-This is a Strategy pattern: `SmoothNumber` only ever talks to
+This is a Strategy pattern: `SmoothNumberBase` only ever talks to
 representations through the `RepresentationBase` interface (an
 `std::array<std::unique_ptr<RepresentationBase>, 3>`), and generic
 operations like `ensure()` (rebuild an outdated representation from the
@@ -129,6 +145,39 @@ implements `RepresentationBase`, adding an enumerator to `Representation`,
 and adding one line to register it in the constructor — no existing logic
 needs to change.
 
+## Signed types
+
+`include/smooth/signed.hpp` defines:
+
+```cpp
+template <typename Base>
+class Signed : public Base { /* ... */ };
+
+using SmoothSignedInteger = Signed<SmoothInteger>;
+using SmoothSignedFloat = Signed<SmoothFloat>;
+```
+
+The `(i, j)` bit grid can only ever hold positive terms (`2^i * 3^j > 0`
+always), so a sign can't live in the grid itself — `Signed<Base>` adds it
+as a separate flag, sign-magnitude style, on top of whichever base type you
+give it:
+
+- `isNegative()` — whether the sign flag is set.
+- `setNegative(bool)` — set it directly.
+- `negate()` — flip it.
+- `value()` — `Base::value()`, negated if the sign flag is set.
+
+`set`/`get`/`clear`/`print*` are untouched — they still only ever see the
+magnitude. This is the "share logic where you can" part of the design: the
+sign behavior is written exactly once, as a template over `Base`, and reused
+for both `SmoothSignedInteger` and `SmoothSignedFloat` rather than being
+duplicated in two separate classes. `Signed<Base>::value()` intentionally
+*hides* rather than overrides `Base::value()` (it isn't virtual) — these
+types are always used by their own concrete name, never through a
+`SmoothNumberBase*`, so static hiding is enough, and it avoids paying for
+virtual dispatch on `value()` for the two types that don't need a sign at
+all.
+
 ## Building the demo
 
 ```sh
@@ -137,9 +186,10 @@ cmake --build build
 ./build/smooth_demo
 ```
 
-`src/demo.cpp` shows constructing a number, setting bits, printing it,
-reading its value, using `setBounds()` as an optional guardrail, viewing the
-same number through all three representations, and — using
-`DynamicMatrixRepresentation` directly, since `SmoothNumber` never exposes
-it as a live growable object — the doubling growth happening step by step
-as bits are set farther and farther out.
+`src/demo.cpp` shows constructing a `SmoothInteger`, setting bits, printing
+it, reading its value, using `setBounds()` as an optional guardrail, a
+`SmoothFloat` with fractional terms, `SmoothSignedInteger` /
+`SmoothSignedFloat` negation, viewing a number through all three
+representations, and — using `DynamicMatrixRepresentation` directly, since
+none of the four types expose it as a live growable object — the doubling
+growth happening step by step as bits are set farther and farther out.
