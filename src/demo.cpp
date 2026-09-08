@@ -1,4 +1,6 @@
 #include <iostream>
+#include <memory>
+#include <sstream>
 
 #include "smooth/dynamic_matrix_representation.hpp"
 #include "smooth/row_values_representation.hpp"
@@ -197,6 +199,38 @@ int main() {
     rowA.addInPlace(rowB);
     std::cout << "RowValues: n[0]=3 + n[0]=2, direct accumulation (no bit carry needed): ";
     rowA.print(std::cout);
+
+    // --- Metrics -------------------------------------------------------------
+    // Optional, shared via the constructor: every representation conversion
+    // (via ensure(), triggered here by the print*() calls) increments a
+    // counter named convert_<from>_to_<to>. a += b keeps a's metrics; a + b
+    // keeps a's unless a has none, in which case it falls back to b's.
+    std::cout << "\n--- Metrics ---\n";
+    auto metrics = std::make_shared<smooth::Metrics>();
+    smooth::SmoothInteger m1(metrics);
+    m1.set(1, 0);
+    m1.set(0, 2);
+
+    std::ostringstream discard;
+    m1.printSparse(discard);     // dynamic -> sparse
+    m1.printRowValues(discard);  // dynamic -> row_values
+    m1.printSparse(discard);     // sparse already valid: no new conversion
+
+    std::cout << "Counters after two distinct conversions (a redundant third print didn't recount):\n";
+    metrics->print();
+
+    smooth::SmoothInteger m2;  // no metrics
+    m1 += m2;
+    std::cout << "\nAfter m1 += m2 (m2 has no metrics), m1 still has its own: " << (m1.hasMetrics() ? "yes" : "no")
+              << "\n";
+
+    smooth::SmoothInteger m3 = m1 + m2;
+    std::cout << "m1 + m2 -> result keeps m1's metrics (m1 has some, m2 doesn't): "
+              << (m3.metricsPtr() == metrics ? "same metrics object as m1" : "different") << "\n";
+
+    smooth::SmoothInteger m4 = m2 + m1;
+    std::cout << "m2 + m1 -> result falls back to m1's metrics (m2 has none): "
+              << (m4.metricsPtr() == metrics ? "same metrics object as m1" : "different") << "\n";
 
     return 0;
 }

@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -462,6 +463,103 @@ void testCopyAndMoveSemantics() {
           "negating a signed copy doesn't affect the original's sign");
 }
 
+// ---------------------------------------------------------------------
+// Metrics: optional per-number counter tracking, incremented once per
+// representation conversion, and the a+=b / a+b metrics-inheritance
+// rules.
+// ---------------------------------------------------------------------
+void testMetrics() {
+    {
+        Metrics m;
+        m.increment("foo");
+        m.increment("foo");
+        m.increment("bar");
+        std::ostringstream out;
+        m.print(out);
+        check(out.str() == "bar = 1\nfoo = 2\n", "Metrics::increment/print");
+    }
+
+    // Conversions are counted once per actual (re)conversion, not once per
+    // print call -- an already-valid representation isn't reconverted.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SmoothInteger n(metrics);
+        n.set(1, 0);
+        n.set(0, 2);
+
+        std::ostringstream discard;
+        n.printSparse(discard);     // dynamic -> sparse
+        n.printRowValues(discard);  // dynamic -> row_values
+        n.printSparse(discard);     // already valid: no new conversion
+
+        std::ostringstream out;
+        metrics->print(out);
+        check(out.str() == "convert_dynamic_to_row_values = 1\nconvert_dynamic_to_sparse = 1\n",
+              "each representation conversion is counted once, redundant prints don't recount");
+
+        n.set(2, 2);              // invalidates sparse/row_values again
+        n.printSparse(discard);   // dynamic -> sparse, again
+        std::ostringstream out2;
+        metrics->print(out2);
+        check(out2.str() == "convert_dynamic_to_row_values = 1\nconvert_dynamic_to_sparse = 2\n",
+              "re-converting after invalidation increments the counter again");
+    }
+
+    // No metrics attached: nothing tracked, nothing throws.
+    {
+        SmoothInteger n;
+        check(!n.hasMetrics(), "SmoothInteger() has no metrics by default");
+        std::ostringstream discard;
+        n.set(0, 0);
+        n.printSparse(discard);
+        check(true, "converting/printing without metrics attached doesn't crash");
+    }
+
+    // a += b always keeps a's metrics.
+    {
+        auto metricsA = std::make_shared<Metrics>();
+        auto metricsB = std::make_shared<Metrics>();
+        SmoothInteger a(metricsA), b(metricsB);
+        a.setValue(5LL);
+        b.setValue(3LL);
+        a += b;
+        check(a.metricsPtr() == metricsA, "a += b keeps a's own metrics pointer, not b's");
+    }
+
+    // a + b: a's metrics win if present; otherwise fall back to b's, if any.
+    {
+        auto metricsA = std::make_shared<Metrics>();
+        auto metricsB = std::make_shared<Metrics>();
+        SmoothInteger a(metricsA), bWithMetrics(metricsB), bWithout;
+        a.setValue(5LL);
+        bWithMetrics.setValue(3LL);
+        bWithout.setValue(3LL);
+
+        check((a + bWithout).metricsPtr() == metricsA, "a+b: only a has metrics -> result keeps a's");
+        check((a + bWithMetrics).metricsPtr() == metricsA, "a+b: both have metrics -> result keeps a's, not b's");
+
+        SmoothInteger aWithout;
+        aWithout.setValue(5LL);
+        check((aWithout + bWithMetrics).metricsPtr() == metricsB,
+              "a+b: a has none, b has metrics -> result adopts b's");
+        check(!(aWithout + bWithout).hasMetrics(), "a+b: neither has metrics -> result has none");
+    }
+
+    // Signed types: the swap branch of operator+= (|a| < |b|, differing
+    // signs) replaces *this with a copy of the other operand internally --
+    // metrics must still end up as a's, not b's.
+    {
+        auto metricsA = std::make_shared<Metrics>();
+        auto metricsB = std::make_shared<Metrics>();
+        SmoothSignedInteger a(metricsA), b(metricsB);
+        a.setValue(3LL);
+        b.setValue(-10LL);  // |b| > |a|, differing signs -> takes the swap branch
+        a += b;
+        checkNear(a.value(), -7.0, "signed swap-branch arithmetic still correct: 3 + (-10) = -7");
+        check(a.metricsPtr() == metricsA, "signed swap-branch still keeps a's metrics, not b's");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -478,6 +576,7 @@ int main() {
     testUnsignedAddition();
     testSignedAddition();
     testCopyAndMoveSemantics();
+    testMetrics();
 
     std::cout << (g_checks - g_failures) << "/" << g_checks << " checks passed.\n";
     if (g_failures > 0) {

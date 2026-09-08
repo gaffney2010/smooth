@@ -1,7 +1,9 @@
 #pragma once
 
+#include <memory>
 #include <utility>
 
+#include "smooth/metrics.hpp"
 #include "smooth/smooth_float.hpp"
 #include "smooth/smooth_integer.hpp"
 
@@ -26,7 +28,14 @@ namespace smooth {
 template <typename Base>
 class Signed : public Base {
 public:
-    using Base::Base;
+    // Forwards to Base's own (metrics, ) constructor explicitly, rather
+    // than relying on `using Base::Base;` to inherit it -- Base's
+    // constructor takes one defaulted argument, which makes it callable
+    // with zero arguments too, and the inherited-constructor rules around
+    // that overlap with a derived class's own default constructor are
+    // subtle enough that spelling it out here is clearer than relying on
+    // them.
+    explicit Signed(std::shared_ptr<Metrics> metrics = nullptr) : Base(std::move(metrics)) {}
 
     bool isNegative() const { return negative_; }
     void setNegative(bool negative) { negative_ = negative; }
@@ -56,7 +65,14 @@ public:
     // aware caller uses it) and take the larger operand's sign -- ordinary
     // signed-number addition. A result of exactly zero is normalized back
     // to non-negative, so isNegative() is never true for a zero value.
+    //
+    // a += b always keeps a's metrics: the swap branch below replaces
+    // *this wholesale with a copy of `other` (to get at other's larger
+    // magnitude), which would otherwise silently adopt other's metrics
+    // instead, so this->metricsPtr() is captured up front and restored
+    // afterward regardless of which branch ran.
     Signed<Base>& operator+=(const Signed<Base>& other) {
+        auto myMetrics = this->metricsPtr();
         if (negative_ == other.negative_) {
             Base::add(other);
         } else if (Base::value() >= other.Base::value()) {
@@ -66,6 +82,7 @@ public:
             larger.subtractMagnitudeInPlace(*this);
             *this = std::move(larger);
         }
+        this->setMetricsPtr(std::move(myMetrics));
         if (Base::value() == 0.0) negative_ = false;
         return *this;
     }

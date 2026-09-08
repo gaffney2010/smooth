@@ -23,7 +23,9 @@ Whether a number allows fractional (negative-index) terms and whether it
 can be negative are both fixed by which class you pick, not by a runtime
 flag — that's the point of having four distinct types instead of one type
 with two booleans. All four are default-constructible with no arguments;
-none of them need any capacity declared up front.
+none of them need any capacity declared up front. All four also take an
+optional `std::shared_ptr<Metrics>` as their one constructor argument —
+see "Metrics" below.
 
 Every type shares its `get`/`set`/`clear`/`value`/`print*`/`setBounds`/
 `add`/`operator+=`/`operator+` behavior — see `SmoothNumberBase` and
@@ -249,6 +251,54 @@ overflow in a column only ever carries within that same column, since
 `2^i` doubles without ever needing to touch a neighboring column's power of
 3.)
 
+## Metrics
+
+```cpp
+#include "smooth/smooth.hpp"
+
+auto metrics = std::make_shared<smooth::Metrics>();
+smooth::SmoothInteger n(metrics);  // every concrete type's one constructor
+                                    // argument is an optional shared Metrics
+```
+
+`smooth::Metrics` (`include/smooth/metrics.hpp`) is a small named-counter
+tracker:
+
+- `increment(const std::string& name)` — bump a counter by name (starting
+  from 0 the first time it's named).
+- `print(os = std::cout)` — print every counter's current value, one per
+  line, sorted by name.
+
+It's deliberately generic — any named event could be tallied on it — but
+for now the only thing that increments a counter is `SmoothNumberBase`
+counting representation conversions: every time `ensure()` actually
+converts (not when the target is already valid), it increments
+`convert_<from>_to_<to>`, e.g. `convert_dynamic_to_row_values`.
+
+A number's `Metrics` is optional (`nullptr` by default) and, when given, is
+*shared*, not copied: `hasMetrics()`, `metricsPtr()`, and `setMetricsPtr()`
+expose the underlying `std::shared_ptr<Metrics>`, so two numbers
+constructed with the same `Metrics` object tally onto the same counters.
+Copying or moving a number carries its `Metrics` pointer along (still
+shared with the original), consistent with everything else about
+`SmoothNumberBase`'s copy semantics.
+
+Addition follows two rules for which `Metrics` a result ends up with:
+
+- **`a += b` always keeps a's metrics.** `add()`/`operator+=` never touch
+  `metrics_` themselves, so this falls out for free for the two unsigned
+  types — but `Signed<Base>::operator+=`'s "different signs, `|a| < |b|`"
+  branch internally replaces `*this` wholesale with a copy of `b` (to get
+  at `b`'s larger magnitude before subtracting), which would otherwise
+  silently adopt `b`'s metrics instead. It works around that by capturing
+  `this->metricsPtr()` up front and restoring it with `setMetricsPtr()`
+  after, regardless of which internal branch ran.
+- **`a + b` keeps a's metrics, unless a has none, in which case it falls
+  back to b's (if b has any).** The shared `operator+` template (see
+  "Addition") builds its result by copying `a` and adding `b` into that
+  copy — which, per the rule above, already keeps a's metrics — and then,
+  only if that copy still has no metrics, adopts `b`'s.
+
 ## Signed types
 
 `include/smooth/signed.hpp` defines:
@@ -305,11 +355,13 @@ it, reading its value, using `setBounds()` as an optional guardrail, a
 (including a negative value on a signed type), number + number and
 number + scalar addition (`add()`, `operator+=`, and the value-returning
 `operator+`), signed addition with a sign flip, viewing a number through
-all three representations, and — using `DynamicMatrixRepresentation`,
-`SparseRepresentation`, and `RowValuesRepresentation` directly, since a
-`SmoothNumberBase`'s canonical representation always starts out (and, for
-now, stays) Dynamic — each representation's own `addInPlace()` strategy,
-including a `Sparse` carry, running directly.
+all three representations, using `DynamicMatrixRepresentation`,
+`SparseRepresentation`, and `RowValuesRepresentation` directly (since a
+`SmoothNumberBase`'s canonical representation always starts out, and for
+now stays, Dynamic) to run each representation's own `addInPlace()`
+strategy, including a `Sparse` carry, directly, and attaching a `Metrics`
+to a number to show its conversion counters, plus the `a += b` / `a + b`
+metrics-inheritance rules.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
 suite (no test framework linked in — see `CMakeLists.txt`) covering all of
@@ -318,6 +370,9 @@ sign-handling, agreement across all three representations, each
 `RepresentationBase` implementation exercised directly (including
 `clone()` independence and `Sparse`'s carry), unsigned and signed addition
 (same-sign, both differing-sign directions, the zero tie, the
-cross-column/mixed-radix borrow case, and scalar addition), and copy/move
+cross-column/mixed-radix borrow case, and scalar addition), `Metrics`
+counters (including that redundant conversions aren't double-counted, and
+the `a += b`/`a + b` metrics-inheritance rules — notably that the signed
+swap branch still keeps a's metrics), and copy/move
 semantics. It builds as a second executable, `smooth_tests`, runnable
 directly or via `ctest`.

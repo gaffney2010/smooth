@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "smooth/dynamic_matrix_representation.hpp"
+#include "smooth/metrics.hpp"
 #include "smooth/representation_base.hpp"
 #include "smooth/row_values_representation.hpp"
 #include "smooth/sparse_representation.hpp"
@@ -54,6 +55,7 @@ public:
           colBound_(other.colBound_),
           negRowBound_(other.negRowBound_),
           negColBound_(other.negColBound_),
+          metrics_(other.metrics_),
           canonical_(other.canonical_) {
         for (std::size_t k = 0; k < kRepresentationCount; ++k) {
             reps_[k] = other.reps_[k]->clone();
@@ -69,6 +71,7 @@ public:
         colBound_ = other.colBound_;
         negRowBound_ = other.negRowBound_;
         negColBound_ = other.negColBound_;
+        metrics_ = other.metrics_;
         canonical_ = other.canonical_;
         for (std::size_t k = 0; k < kRepresentationCount; ++k) {
             reps_[k] = other.reps_[k]->clone();
@@ -86,6 +89,14 @@ public:
     // is, and when (if ever) that changes, is an internal decision -- there
     // is no public way to force it.
     Representation canonical() const { return canonical_; }
+
+    // The optional Metrics this number was constructed with (or later given
+    // via setMetrics()), or nullptr if none. Exposed publicly so free
+    // functions like operator+ (below) can implement the "keep a's
+    // metrics, falling back to b's" rule without being members.
+    bool hasMetrics() const { return static_cast<bool>(metrics_); }
+    const std::shared_ptr<Metrics>& metricsPtr() const { return metrics_; }
+    void setMetricsPtr(std::shared_ptr<Metrics> metrics) { metrics_ = std::move(metrics); }
 
     // Purely an optional, after-the-fact sanity check: future set()/get()
     // calls outside [-neg_rows, max_rows) x [-neg_cols, max_cols) will
@@ -256,8 +267,8 @@ protected:
     // representation can discover on its own: it affects how RowValues
     // formats and decodes its numbers, and it's the only structural
     // restriction any representation still enforces.
-    explicit SmoothNumberBase(bool allow_fractional)
-        : allowFractional_(allow_fractional), canonical_(Representation::Dynamic) {
+    explicit SmoothNumberBase(bool allow_fractional, std::shared_ptr<Metrics> metrics = nullptr)
+        : allowFractional_(allow_fractional), metrics_(std::move(metrics)), canonical_(Representation::Dynamic) {
         reps_[index(Representation::Sparse)] = std::make_unique<SparseRepresentation>(allow_fractional);
         reps_[index(Representation::RowValues)] = std::make_unique<RowValuesRepresentation>(allow_fractional);
         reps_[index(Representation::Dynamic)] = std::make_unique<DynamicMatrixRepresentation>(allow_fractional);
@@ -309,6 +320,18 @@ private:
 
     static std::size_t index(Representation r) { return static_cast<std::size_t>(r); }
 
+    static const char* representationName(Representation r) {
+        switch (r) {
+            case Representation::Sparse:
+                return "sparse";
+            case Representation::RowValues:
+                return "row_values";
+            case Representation::Dynamic:
+                return "dynamic";
+        }
+        return "unknown";
+    }
+
     RepresentationBase& repFor(Representation r) { return *reps_[index(r)]; }
     const RepresentationBase& repFor(Representation r) const { return *reps_[index(r)]; }
 
@@ -341,6 +364,10 @@ private:
     // forEachSet() is each representation's own responsibility.
     void ensure(Representation target) {
         if (target == canonical_ || isValid(target)) return;
+        if (metrics_) {
+            metrics_->increment(std::string("convert_") + representationName(canonical_) + "_to_" +
+                                 representationName(target));
+        }
         RepresentationBase& dst = repFor(target);
         const RepresentationBase& src = repFor(canonical_);
         dst.reset();
@@ -373,6 +400,8 @@ private:
     std::size_t negRowBound_ = 0;
     std::size_t negColBound_ = 0;
 
+    std::shared_ptr<Metrics> metrics_;
+
     std::array<std::unique_ptr<RepresentationBase>, kRepresentationCount> reps_;
     std::array<bool, kRepresentationCount> valid_{};
     Representation canonical_;
@@ -387,9 +416,18 @@ private:
 // chosen over the inherited SmoothNumberBase one when T = Signed<Base>,
 // since Signed<Base> declares operator+= itself and so hides (rather than
 // overloads-with) the base's version.
+//
+// Metrics: `lhs` is a copy of `a`, and `lhs += rhs` (per operator+='s own
+// contract) keeps that copy's -- i.e. a's -- metrics no matter what. This
+// is the one place that differs from plain operator+=: if a had no
+// metrics to begin with, the result falls back to adopting b's (if b has
+// any), rather than staying without one.
 template <typename T>
 T operator+(T lhs, const T& rhs) {
     lhs += rhs;
+    if (!lhs.hasMetrics() && rhs.hasMetrics()) {
+        lhs.setMetricsPtr(rhs.metricsPtr());
+    }
     return lhs;
 }
 
