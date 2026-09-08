@@ -1,5 +1,7 @@
 #pragma once
 
+#include <utility>
+
 #include "smooth/smooth_float.hpp"
 #include "smooth/smooth_integer.hpp"
 
@@ -45,6 +47,46 @@ public:
         setNegative(v < 0.0);
         Base::setValue(v < 0.0 ? -v : v);
     }
+
+    // Full signed addition. Same sign: the magnitudes just combine (via
+    // Base::add(), i.e. SmoothNumberBase's ordinary "add the 1s and handle
+    // carries" addition), sign unchanged. Different signs: subtract the
+    // smaller magnitude from the larger (SmoothNumberBase::
+    // subtractMagnitudeInPlace(), protected precisely so only this signed-
+    // aware caller uses it) and take the larger operand's sign -- ordinary
+    // signed-number addition. A result of exactly zero is normalized back
+    // to non-negative, so isNegative() is never true for a zero value.
+    Signed<Base>& operator+=(const Signed<Base>& other) {
+        if (negative_ == other.negative_) {
+            Base::add(other);
+        } else if (Base::value() >= other.Base::value()) {
+            this->subtractMagnitudeInPlace(other);
+        } else {
+            Signed<Base> larger(other);
+            larger.subtractMagnitudeInPlace(*this);
+            *this = std::move(larger);
+        }
+        if (Base::value() == 0.0) negative_ = false;
+        return *this;
+    }
+
+    Signed<Base>& operator+=(long long scalar) {
+        Signed<Base> delta;
+        delta.setValue(scalar);
+        return *this += delta;
+    }
+
+    Signed<Base>& operator+=(double scalar) {
+        Signed<Base> delta;
+        delta.setValue(scalar);
+        return *this += delta;
+    }
+
+    // Named-method form, matching the rest of this library's naming
+    // (set/get/clear/setValue) alongside the operator+= sugar above.
+    void add(const Signed<Base>& other) { *this += other; }
+    void add(long long scalar) { *this += scalar; }
+    void add(double scalar) { *this += scalar; }
 
 private:
     bool negative_ = false;

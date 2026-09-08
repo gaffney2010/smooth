@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <functional>
+#include <memory>
 #include <set>
 #include <utility>
 
@@ -60,6 +61,15 @@ public:
     // A set of coordinates has no more direct way to encode a number than
     // writing its bits one at a time, so this defers to the shared helper.
     void setColumnValue(int j, double n) override { decomposeColumnValue(*this, j, n); }
+
+    std::unique_ptr<RepresentationBase> clone() const override {
+        return std::make_unique<SparseRepresentation>(*this);
+    }
+
+    // A set of coordinates has no more direct way to add a number than
+    // walking its bits one at a time and carrying, so this defers to the
+    // shared helper.
+    void addInPlace(const RepresentationBase& other) override { addBitsWithCarry(*this, other); }
 
 private:
     std::set<std::pair<int, int>> coords_;

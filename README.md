@@ -25,9 +25,12 @@ flag — that's the point of having four distinct types instead of one type
 with two booleans. All four are default-constructible with no arguments;
 none of them need any capacity declared up front.
 
-Every type shares its `get`/`set`/`clear`/`value`/`print*`/`setBounds`
-behavior — see `SmoothNumberBase` below — and the two signed types add
-sign-related methods on top (see "Signed types" below).
+Every type shares its `get`/`set`/`clear`/`value`/`print*`/`setBounds`/
+`add`/`operator+=`/`operator+` behavior — see `SmoothNumberBase` and
+"Addition" below — and the two signed types add sign-related methods (and
+their own, sign-aware addition) on top (see "Signed types" below). All four
+are copyable (a copy deep-clones the underlying representation, sharing no
+state with the original) as well as movable.
 
 ### `SmoothNumberBase`
 
@@ -83,7 +86,8 @@ mistakes if you want that guardrail, nothing more.
 
 The same number can be held in one of several internal representations,
 each a class implementing `RepresentationBase`
-(`get`/`set`/`reset`/`value`/`print`/`forEachSet`/`setColumnValue`):
+(`get`/`set`/`reset`/`value`/`print`/`forEachSet`/`setColumnValue`/
+`addInPlace`/`clone`):
 
 - **Sparse** (`sparse_representation.hpp`) — the set of `(i, j)` coordinates
   whose bit is set. A `std::set` — a literal list of the coordinates that
@@ -174,6 +178,72 @@ implements `RepresentationBase`, adding an enumerator to `Representation`,
 and adding one line to register it in the constructor — no existing logic
 needs to change.
 
+`clone()` (`std::unique_ptr<RepresentationBase> clone() const`) is what
+lets a `SmoothNumberBase` be copied without knowing which concrete
+representation types exist: each implementation just returns
+`std::make_unique<ThatClass>(*this)`, using its own ordinary copy
+constructor.
+
+## Addition
+
+Every type supports adding another number of the same type, or a plain
+scalar, in place:
+
+```cpp
+void add(const SmoothNumberBase& other);   // and Signed<Base>'s own overload
+void add(long long scalar);
+void add(double scalar);
+
+SmoothNumberBase& operator+=(const SmoothNumberBase& other);  // thin wrappers
+SmoothNumberBase& operator+=(long long scalar);               // over add()
+SmoothNumberBase& operator+=(double scalar);
+```
+
+plus a value-returning `operator+`, shared by all four types as a single
+template (`T operator+(T lhs, const T& rhs)`, and scalar overloads) that
+copies its left operand and adds into the copy — this is what the copy
+constructor mentioned above exists for.
+
+A scalar is added by converting it the same way `setValue()` does (placing
+it in column `j = 0`) and then adding that in — "converting the number"
+into a smooth number first, per the request that started this feature.
+
+**Unsigned types** (`add(const SmoothNumberBase&)`, in `SmoothNumberBase`)
+dispatch straight to the canonical representation's `addInPlace(other)` —
+each representation adds the 1s and handles carries however is natural for
+its own storage:
+
+- Sparse and Dynamic have no more direct way to add a number than walking
+  `other`'s bits one at a time (captured up front via `forEachSet`, so this
+  is safe even when adding a number to itself) and carrying: adding a
+  second 1 into a cell that already holds one is the same as moving that
+  bit up to the next row (`2 * 2^i * 3^j = 2^(i+1) * 3^j`), so both share
+  the `addBitsWithCarry(dst, other)` helper (`representation_base.hpp`).
+- RowValues doesn't need explicit carry handling: each of `other`'s bits
+  just contributes `2^i` to its column's running total, and ordinary
+  floating-point addition already produces the correct combined value.
+
+**Signed types** need actual signed arithmetic, since the bit grid is
+magnitude-only and the sign lives in `Signed<Base>`'s own flag:
+`Signed<Base>::operator+=` combines magnitudes via `Base::add()` when both
+signs match, and otherwise subtracts the smaller magnitude from the larger
+and takes the larger operand's sign (a result of exactly zero is
+normalized back to non-negative). The subtraction step uses a second,
+protected primitive, `SmoothNumberBase::subtractMagnitudeInPlace()`, not
+exposed publicly since plain subtraction has no meaning for the two
+unsigned types.
+
+Unlike addition, that subtraction has no natural per-representation
+variation, so it isn't dispatched through `RepresentationBase` at all: it
+converts both operands to per-column totals via `forEachSet()`, subtracts
+column by column, and resolves any column that goes negative by borrowing
+from the next column up — one unit of `n_(j+1)` is worth exactly 3 units of
+`n_j`, since `3^(j+1) = 3 * 3^j` — before writing the result back through
+`setColumnValue()`. (Addition never needs this cross-column borrowing:
+overflow in a column only ever carries within that same column, since
+`2^i` doubles without ever needing to touch a neighboring column's power of
+3.)
+
 ## Signed types
 
 `include/smooth/signed.hpp` defines:
@@ -199,6 +269,8 @@ give it:
   input (`setNegative(v < 0)`), then hands the non-negative magnitude to
   `Base::setValue()`, so a negative value no longer throws on a signed
   type — it's encoded via the sign flag instead.
+- `add`/`operator+=` (`const Signed<Base>&`, `long long`, `double`) —
+  proper signed addition; see "Addition" above.
 
 `set`/`get`/`clear`/`print*` are untouched — they still only ever see the
 magnitude. This is the "share logic where you can" part of the design: the
@@ -212,20 +284,35 @@ their own concrete name, never through a `SmoothNumberBase*`, so static
 hiding is enough, and it avoids paying for virtual dispatch for a feature
 only the signed types need.
 
-## Building the demo
+## Building the demo and tests
 
 ```sh
 cmake -S . -B build
 cmake --build build
 ./build/smooth_demo
+./build/smooth_tests   # or: cd build && ctest --output-on-failure
 ```
 
 `src/demo.cpp` shows constructing a `SmoothInteger`, setting bits, printing
 it, reading its value, using `setBounds()` as an optional guardrail, a
 `SmoothFloat` with fractional terms, `SmoothSignedInteger` /
 `SmoothSignedFloat` negation, converting plain numbers via `setValue()`
-(including a negative value on a signed type), viewing a number through
-all three representations, and — using `DynamicMatrixRepresentation`
-directly, since none of the four types expose it as a live growable
-object — the doubling growth happening step by step as bits are set
-farther and farther out.
+(including a negative value on a signed type), number + number and
+number + scalar addition (`add()`, `operator+=`, and the value-returning
+`operator+`), signed addition with a sign flip, viewing a number through
+all three representations, and — using `DynamicMatrixRepresentation`,
+`SparseRepresentation`, and `RowValuesRepresentation` directly, since a
+`SmoothNumberBase`'s canonical representation always starts out (and, for
+now, stays) Dynamic — each representation's own `addInPlace()` strategy,
+including a `Sparse` carry, running directly.
+
+`tests/test_smooth.cpp` is a small, dependency-free assertion-based test
+suite (no test framework linked in — see `CMakeLists.txt`) covering all of
+the above: bounds/fractional restrictions, `setValue()`, signed
+sign-handling, agreement across all three representations, each
+`RepresentationBase` implementation exercised directly (including
+`clone()` independence and `Sparse`'s carry), unsigned and signed addition
+(same-sign, both differing-sign directions, the zero tie, the
+cross-column/mixed-radix borrow case, and scalar addition), and copy/move
+semantics. It builds as a second executable, `smooth_tests`, runnable
+directly or via `ctest`.

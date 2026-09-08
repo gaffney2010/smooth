@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -98,6 +99,15 @@ public:
     // its bits one at a time (each set() call growing the array as
     // needed), so this defers to the shared helper.
     void setColumnValue(int j, double n) override { decomposeColumnValue(*this, j, n); }
+
+    std::unique_ptr<RepresentationBase> clone() const override {
+        return std::make_unique<DynamicMatrixRepresentation>(*this);
+    }
+
+    // A bit grid has no more direct way to add a number than walking its
+    // bits one at a time and carrying (each set() call growing the array
+    // as needed), so this defers to the shared helper.
+    void addInPlace(const RepresentationBase& other) override { addBitsWithCarry(*this, other); }
 
 private:
     int firstRow() const { return -static_cast<int>(negRowCap_); }

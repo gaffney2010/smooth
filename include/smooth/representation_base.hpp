@@ -3,6 +3,9 @@
 #include <cmath>
 #include <functional>
 #include <iostream>
+#include <memory>
+#include <utility>
+#include <vector>
 
 namespace smooth {
 
@@ -55,6 +58,29 @@ public:
     // and exact, with no bit decomposition (and no accumulated
     // floating-point error from repeated add/subtract) at all.
     virtual void setColumnValue(int j, double n) = 0;
+
+    // Deep-copies this representation. Each implementation returns
+    // std::make_unique<ThatClass>(*this), using its own (compiler-generated)
+    // copy constructor -- this is what lets SmoothNumberBase itself be
+    // copied (see its copy constructor) without needing to know which
+    // concrete representation types exist.
+    virtual std::unique_ptr<RepresentationBase> clone() const = 0;
+
+    // Adds `other`'s bits into this representation in place. Adding a
+    // second 1 into an (i, j) cell that already holds one is the same as
+    // moving that bit up to (i+1, j) -- since 2 * 2^i * 3^j = 2^(i+1) *
+    // 3^j -- so carries only ever propagate up the row (power-of-2) axis,
+    // independently within each column j, exactly like ordinary binary
+    // addition done once per column.
+    //
+    // Every representation implements this itself, same as the other
+    // per-representation strategies above: Sparse and Dynamic have no more
+    // direct way to add a number than walking other's bits one at a time
+    // and carrying (see addBitsWithCarry() below, which both share).
+    // RowValues doesn't need explicit carry handling at all -- each bit
+    // just contributes 2^i to its column's running total, and ordinary
+    // floating-point addition already produces the correct combined value.
+    virtual void addInPlace(const RepresentationBase& other) = 0;
 };
 
 // Shared by any representation whose set() is the only way it knows how to
@@ -75,6 +101,26 @@ inline void decomposeColumnValue(RepresentationBase& rep, int j, double n) {
             frac -= 1.0;
         }
         --i;
+    }
+}
+
+// Shared by any representation that stores raw (i, j) bits directly
+// (currently Sparse and Dynamic): adds each of `other`'s set bits into
+// `dst` one at a time via plain get()/set(), ripple-carrying up the row
+// axis within a column whenever a cell is already set. `other`'s bits are
+// captured up front, so this is safe even if `other` and `dst` are the
+// same object (i.e. adding a number to itself).
+inline void addBitsWithCarry(RepresentationBase& dst, const RepresentationBase& other) {
+    std::vector<std::pair<int, int>> bits;
+    other.forEachSet([&bits](int i, int j) { bits.emplace_back(i, j); });
+    for (const auto& bit : bits) {
+        int i = bit.first;
+        int j = bit.second;
+        while (dst.get(i, j)) {
+            dst.set(i, j, false);
+            ++i;
+        }
+        dst.set(i, j, true);
     }
 }
 

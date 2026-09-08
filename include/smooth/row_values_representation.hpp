@@ -3,6 +3,9 @@
 #include <cmath>
 #include <functional>
 #include <map>
+#include <memory>
+#include <utility>
+#include <vector>
 
 #include "smooth/representation_base.hpp"
 
@@ -109,6 +112,31 @@ public:
             values_.erase(j);
         } else {
             values_[j] = n;
+        }
+    }
+
+    std::unique_ptr<RepresentationBase> clone() const override {
+        return std::make_unique<RowValuesRepresentation>(*this);
+    }
+
+    // Doesn't need explicit carry handling: `other`'s bits are captured up
+    // front (safe even for self-addition), and each one just contributes
+    // 2^i to its column's running total -- ordinary floating-point addition
+    // already produces the correct combined value (e.g. two contributions
+    // of 2^i at the same (i, j) simply sum to 2^(i+1), exactly as if the
+    // carry had been handled explicitly), so this is a direct accumulation
+    // rather than Sparse/Dynamic's bit-by-bit carry walk.
+    void addInPlace(const RepresentationBase& other) override {
+        std::vector<std::pair<int, int>> bits;
+        other.forEachSet([&bits](int i, int j) { bits.emplace_back(i, j); });
+        for (const auto& bit : bits) {
+            double delta = std::pow(2.0, bit.first);
+            double updated = values_[bit.second] + delta;
+            if (updated == 0.0) {
+                values_.erase(bit.second);
+            } else {
+                values_[bit.second] = updated;
+            }
         }
     }
 

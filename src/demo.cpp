@@ -1,7 +1,9 @@
 #include <iostream>
 
 #include "smooth/dynamic_matrix_representation.hpp"
+#include "smooth/row_values_representation.hpp"
 #include "smooth/smooth.hpp"
+#include "smooth/sparse_representation.hpp"
 
 int main() {
     smooth::SmoothInteger n;  // whole numbers only, no capacity to declare
@@ -93,6 +95,44 @@ int main() {
     std::cout << "SmoothSignedInteger.setValue(-7): value = " << fromNegInt.value()
               << " (isNegative() = " << fromNegInt.isNegative() << ")\n\n";
 
+    // --- Addition --------------------------------------------------------
+    // add()/operator+= mutate in place; the free operator+ (shared by all
+    // four types) makes a copy first and adds into that. Both dispatch to
+    // the canonical representation's addInPlace(), which -- per
+    // representation -- either walks bits with an explicit carry (Sparse,
+    // Dynamic) or accumulates column totals directly (RowValues).
+    std::cout << "--- Addition ---\n";
+    smooth::SmoothInteger a1;
+    a1.setValue(12LL);
+    smooth::SmoothInteger a2;
+    a2.setValue(7LL);
+    a1.add(a2);
+    std::cout << "SmoothInteger: 12 + 7 = " << a1.value() << "\n";
+
+    a1 += 3LL;
+    std::cout << "  += 3 (scalar, converted via setValue) -> " << a1.value() << "\n";
+
+    smooth::SmoothInteger a3 = a1 + a2;
+    std::cout << "operator+ (value-returning): (" << a1.value() << ") + (" << a2.value() << ") = " << a3.value()
+              << " -- both operands unchanged: " << a1.value() << ", " << a2.value() << "\n\n";
+
+    // Signed addition combines magnitudes when signs match, and otherwise
+    // subtracts the smaller magnitude from the larger and takes the larger
+    // operand's sign -- ordinary signed-number addition.
+    smooth::SmoothSignedInteger s1;
+    s1.setValue(5LL);
+    smooth::SmoothSignedInteger s2;
+    s2.setValue(-3LL);
+    s1 += s2;
+    std::cout << "SmoothSignedInteger: 5 + (-3) = " << s1.value() << " (isNegative() = " << s1.isNegative()
+              << ")\n";
+
+    smooth::SmoothSignedInteger s3;
+    s3.setValue(3LL);
+    s3 += -10LL;
+    std::cout << "SmoothSignedInteger: 3 += -10 -> " << s3.value() << " (isNegative() = " << s3.isNegative()
+              << ")\n\n";
+
     // --- Representations demo -------------------------------------------
     // The class picks and tracks its own canonical (trusted) representation
     // internally -- there's no public way to force one. Each print function
@@ -136,6 +176,27 @@ int main() {
     std::cout << "\nAfter set(-2,5): negative row capacity grows to fit row -2,\n";
     std::cout << "column capacity doubles to fit column 5:\n";
     d.print(std::cout);
+
+    // --- addInPlace() per representation ------------------------------------
+    // A SmoothNumber's canonical representation always starts out (and, for
+    // now, stays) Dynamic, so the only way to see Sparse's and RowValues'
+    // own addInPlace() strategies run is to exercise those representations
+    // directly, the same way the growth walkthrough above does for Dynamic.
+    std::cout << "\n--- addInPlace() per representation ---\n";
+    smooth::SparseRepresentation sparseA(false), sparseB(false);
+    sparseA.set(0, 0, true);  // 1
+    sparseB.set(0, 0, true);  // 1 -> carries into (1, 0) since the cell's full
+    sparseA.addInPlace(sparseB);
+    std::cout << "Sparse: 1 + 1, carried up to bit (1,0): ";
+    sparseA.print(std::cout);
+    std::cout << "  value = " << sparseA.value() << "\n";
+
+    smooth::RowValuesRepresentation rowA(false), rowB(false);
+    rowA.setColumnValue(0, 3.0);
+    rowB.setColumnValue(0, 2.0);
+    rowA.addInPlace(rowB);
+    std::cout << "RowValues: n[0]=3 + n[0]=2, direct accumulation (no bit carry needed): ";
+    rowA.print(std::cout);
 
     return 0;
 }

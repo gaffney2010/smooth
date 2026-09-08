@@ -9,3 +9,8 @@ target_include_directories(smooth INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 add_executable(smooth_demo src/demo.cpp)
 target_link_libraries(smooth_demo PRIVATE smooth)
+
+enable_testing()
+add_executable(smooth_tests tests/test_smooth.cpp)
+target_link_libraries(smooth_tests PRIVATE smooth)
+add_test(NAME smooth_tests COMMAND smooth_tests)
