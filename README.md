@@ -219,9 +219,14 @@ its own storage:
   second 1 into a cell that already holds one is the same as moving that
   bit up to the next row (`2 * 2^i * 3^j = 2^(i+1) * 3^j`), so both share
   the `addBitsWithCarry(dst, other)` helper (`representation_base.hpp`).
-- RowValues doesn't need explicit carry handling: each of `other`'s bits
-  just contributes `2^i` to its column's running total, and ordinary
-  floating-point addition already produces the correct combined value.
+- RowValues doesn't need explicit carry handling: each contribution just
+  adds onto its column's running total, and ordinary floating-point
+  addition already produces the correct combined value. When `other` is
+  *also* a `RowValuesRepresentation`, its columns already are the totals to
+  add, so this adds them directly, column by column — it doesn't even
+  decompose `other` into bits first just to reconstruct those same totals.
+  Only when `other` is some other representation does it fall back to
+  reading `other`'s bits via `forEachSet` and accumulating each one's `2^i`.
 
 **Signed types** need actual signed arithmetic, since the bit grid is
 magnitude-only and the sign lives in `Signed<Base>`'s own flag:

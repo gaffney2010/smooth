@@ -276,6 +276,22 @@ void testAddInPlacePerRepresentation() {
         checkNear(a.value(), 5.0, "RowValues addInPlace: 3 + 2 = 5 (direct accumulation, no carry)");
     }
     {
+        // RowValues + RowValues: columns should add directly (n_j + n_j),
+        // with no need to decompose either side into individual bits --
+        // including a column where the two operands cancel out exactly to
+        // zero, and one present in only one of the two operands.
+        RowValuesRepresentation a(false), b(false);
+        a.setColumnValue(0, 4.0);
+        a.setColumnValue(1, 5.0);
+        b.setColumnValue(0, -4.0);
+        b.setColumnValue(2, 6.0);
+        a.addInPlace(b);
+        checkNear(a.value(), 5.0 * 3.0 + 6.0 * 9.0,
+                  "RowValues+RowValues fast path: column 0 cancels to zero, column 1 untouched, "
+                  "column 2 introduced");
+        check(!a.get(0, 0), "RowValues+RowValues fast path drops a column that cancels to exactly zero");
+    }
+    {
         // Self-addition (doubling) must be safe for every representation,
         // since addInPlace() snapshots the other operand's bits up front.
         SparseRepresentation s(false);

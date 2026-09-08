@@ -40,12 +40,7 @@ public:
     bool set(int i, int j, bool value) override {
         if (get(i, j) == value) return false;
         double delta = std::pow(2.0, i);
-        double updated = values_[j] + (value ? delta : -delta);
-        if (updated == 0.0) {
-            values_.erase(j);
-        } else {
-            values_[j] = updated;
-        }
+        accumulate(j, value ? delta : -delta);
         return true;
     }
 
@@ -119,28 +114,52 @@ public:
         return std::make_unique<RowValuesRepresentation>(*this);
     }
 
-    // Doesn't need explicit carry handling: `other`'s bits are captured up
-    // front (safe even for self-addition), and each one just contributes
-    // 2^i to its column's running total -- ordinary floating-point addition
-    // already produces the correct combined value (e.g. two contributions
-    // of 2^i at the same (i, j) simply sum to 2^(i+1), exactly as if the
-    // carry had been handled explicitly), so this is a direct accumulation
-    // rather than Sparse/Dynamic's bit-by-bit carry walk.
+    // Doesn't need explicit carry handling: each contribution just adds
+    // onto its column's running total, and ordinary floating-point
+    // addition already produces the correct combined value (e.g. two
+    // contributions of 2^i at the same (i, j) simply sum to 2^(i+1),
+    // exactly as if a carry had been handled explicitly).
+    //
+    // When `other` is also a RowValuesRepresentation, its columns already
+    // *are* the n_j totals we want to add -- so this adds them directly,
+    // column by column, with no need to decompose either side into
+    // individual bits at all (not even to reconstruct `other`'s). Only
+    // when `other` is some other representation (Sparse, Dynamic) does
+    // this fall back to reading its bits via forEachSet() and accumulating
+    // each one's 2^i.
     void addInPlace(const RepresentationBase& other) override {
+        if (const auto* rowValues = dynamic_cast<const RowValuesRepresentation*>(&other)) {
+            // Snapshot first (not strictly required here, since we only
+            // ever update -- never insert or erase -- an already-visited
+            // column, but this keeps the safety argument the same as the
+            // fallback below regardless of aliasing).
+            std::vector<std::pair<int, double>> columns(rowValues->values_.begin(), rowValues->values_.end());
+            for (const auto& col : columns) {
+                accumulate(col.first, col.second);
+            }
+            return;
+        }
+
         std::vector<std::pair<int, int>> bits;
         other.forEachSet([&bits](int i, int j) { bits.emplace_back(i, j); });
         for (const auto& bit : bits) {
-            double delta = std::pow(2.0, bit.first);
-            double updated = values_[bit.second] + delta;
-            if (updated == 0.0) {
-                values_.erase(bit.second);
-            } else {
-                values_[bit.second] = updated;
-            }
+            accumulate(bit.second, std::pow(2.0, bit.first));
         }
     }
 
 private:
+    // Adds delta onto column j's total, dropping the entry if that brings
+    // it back to exactly zero (keeping the invariant that values_ only
+    // ever holds nonzero columns).
+    void accumulate(int j, double delta) {
+        double updated = values_[j] + delta;
+        if (updated == 0.0) {
+            values_.erase(j);
+        } else {
+            values_[j] = updated;
+        }
+    }
+
     bool fractional_;
     std::map<int, double> values_;
 };
