@@ -816,6 +816,54 @@ void testPlan() {
                 "Plan.calculate() with an unclosed left() group throws");
     checkThrows([] { Plan().scalar(3).times().calculate(); },
                 "Plan.calculate() with a dangling operator (missing right-hand value) throws");
+
+    // Metrics: the constructor accepts and propagates an optional shared
+    // Metrics, the same as every concrete SmoothNumberBase-derived type.
+    // Compiling increments one counter per step (mirroring how
+    // SmoothNumberBase counts each representation conversion), and a Plan
+    // sharing a Metrics with a SmoothNumber tallies onto the same counters.
+    {
+        Plan p;
+        check(!p.hasMetrics(), "Plan() has no metrics by default");
+    }
+    {
+        auto metrics = std::make_shared<Metrics>();
+        checkNear(Plan(metrics).scalar(3).times().left().scalar(4).plus().scalar(2).right().calculate(), 18.0,
+                  "Plan(metrics) still computes correctly");
+        std::ostringstream out;
+        metrics->print(out);
+        check(out.str() == "add = 1\nconvert_to_scalar = 3\nmultiply = 1\n",
+              "Plan(metrics) increments one counter per compiled step");
+    }
+    {
+        // Compiling is memoized: calculate() then plan() doesn't recount.
+        auto metrics = std::make_shared<Metrics>();
+        Plan p(metrics);
+        p.scalar(1).plus().scalar(2);
+        p.calculate();
+        std::ostringstream discard;
+        p.plan(discard);
+        std::ostringstream out;
+        metrics->print(out);
+        check(out.str() == "add = 1\nconvert_to_scalar = 2\n",
+              "Plan compiling only happens once: calculate() then plan() doesn't recount");
+    }
+    {
+        // Propagation: a Plan and a SmoothNumber sharing one Metrics tally
+        // onto the same counters.
+        auto metrics = std::make_shared<Metrics>();
+        SmoothInteger n(metrics);
+        n.set(1, 0);
+        std::ostringstream discard;
+        n.printSparse(discard);  // dynamic -> sparse
+
+        Plan(metrics).number(n).plus().scalar(1).calculate();
+
+        std::ostringstream out;
+        metrics->print(out);
+        check(out.str() == "add = 1\nconvert_dynamic_to_sparse = 1\nconvert_to_scalar = 2\n",
+              "a Plan and a SmoothNumber sharing one Metrics tally onto the same counters");
+    }
 }
 
 }  // namespace

@@ -5,7 +5,10 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
+
+#include "smooth/metrics.hpp"
 
 namespace smooth {
 
@@ -53,9 +56,21 @@ namespace smooth {
 // the actual SmoothNumber machinery. That's deliberately left for later
 // (see the class comment's mention of future efficiency work); this is
 // the "always take the straightforward path" first cut.
+//
+// Like every concrete SmoothNumberBase-derived type, a Plan optionally
+// takes a shared Metrics at construction (see metrics.hpp). Compiling
+// increments one counter per step -- convert_to_scalar, add, or multiply
+// -- mirroring how SmoothNumberBase counts each representation
+// conversion, so a Metrics shared between a Plan and the numbers that feed
+// it (via number()) tallies both under the same counters.
 class Plan {
 public:
-    Plan() { stack_.emplace_back(); }
+    explicit Plan(std::shared_ptr<Metrics> metrics = nullptr) : metrics_(std::move(metrics)) {
+        stack_.emplace_back();
+    }
+
+    bool hasMetrics() const { return static_cast<bool>(metrics_); }
+    const std::shared_ptr<Metrics>& metricsPtr() const { return metrics_; }
 
     // A single double overload (rather than separate long long/double
     // overloads, as setValue() has elsewhere in this library): both would
@@ -201,9 +216,11 @@ private:
 
     // Builds steps_ from the tree via a post-order walk, computing each
     // step's result as it goes -- this is the entire "straightforward"
-    // compilation strategy for now (see the class comment).
+    // compilation strategy for now (see the class comment). Each step
+    // increments a matching counter on metrics_, if one was given.
     std::size_t compileNode(const Node& node) {
         if (node.isLeaf) {
+            if (metrics_) metrics_->increment("convert_to_scalar");
             steps_.push_back(Step{Step::Kind::ConvertToScalar, node.value, 0, 0, node.value});
             return steps_.size() - 1;
         }
@@ -213,6 +230,7 @@ private:
         double rightVal = steps_[rightStep].result;
         Step::Kind kind = (node.op == Op::Add) ? Step::Kind::Add : Step::Kind::Multiply;
         double result = (node.op == Op::Add) ? (leftVal + rightVal) : (leftVal * rightVal);
+        if (metrics_) metrics_->increment(node.op == Op::Add ? "add" : "multiply");
         steps_.push_back(Step{kind, 0.0, leftStep, rightStep, result});
         return steps_.size() - 1;
     }
@@ -262,6 +280,7 @@ private:
     std::vector<Frame> stack_;
     std::vector<Step> steps_;
     bool compiled_ = false;
+    std::shared_ptr<Metrics> metrics_;
 };
 
 }  // namespace smooth

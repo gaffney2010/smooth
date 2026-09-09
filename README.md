@@ -483,6 +483,15 @@ order (two values with no operator between them, an operator with nothing
 built yet, an unmatched `left()`/`right()`, `calculate()`/`plan()` on an
 incomplete expression) throws `std::invalid_argument`.
 
+Like every concrete `SmoothNumberBase`-derived type, `Plan`'s constructor
+takes an optional shared `std::shared_ptr<Metrics>`
+(`Plan(metrics)`/`Plan()`, `hasMetrics()`, `metricsPtr()` — see "Metrics"
+above). Compiling increments one counter per step —
+`convert_to_scalar`, `add`, or `multiply` — mirroring how
+`SmoothNumberBase` counts each representation conversion, so a `Metrics`
+shared between a `Plan` and the numbers that feed it (via `number()`)
+tallies both under the same counters.
+
 ## Building the demo and tests
 
 ```sh
@@ -509,7 +518,9 @@ a `RowValues` convolution, and Scalar's own throw for a non-column-0 term,
 attaching a `Metrics` to a number to show its conversion counters and the
 `a + b` metrics-inheritance rule, and building a `Plan` (the confirmed
 `3 * (4 + 2)` example, an unbracketed left-associative chain, and
-`number()` correctly capturing a signed operand's sign) and printing it.
+`number()` correctly capturing a signed operand's sign) and printing it,
+including a `Metrics` shared between a `Plan` and a `SmoothInteger` it
+reads via `number()`, tallying both under the same counters.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
 suite (no test framework linked in — see `CMakeLists.txt`) covering all of
@@ -530,5 +541,7 @@ the `a + b` metrics-inheritance rule — notably that the signed swap branch
 still keeps a's metrics), copy/move semantics, and `Plan` (the confirmed
 example, unbracketed left-associative chaining, `number()`'s sign
 correctness, nested `left()`/`right()` groups two levels deep, `plan()`'s
-tree rendering, and every usage-error case). It builds as a second
+tree rendering, every usage-error case, and its own `Metrics` support —
+one counter per compiled step, memoized compilation, and propagation to a
+`SmoothNumber` sharing the same `Metrics`). It builds as a second
 executable, `smooth_tests`, runnable directly or via `ctest`.

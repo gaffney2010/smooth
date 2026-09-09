@@ -351,5 +351,21 @@ int main() {
     std::cout << "\nnumber(ten) + number(negFive):\n";
     smooth::Plan().number(ten).plus().number(negFive).plan();
 
+    // Plan's constructor accepts and propagates an optional shared
+    // Metrics, same as every concrete SmoothNumber type: compiling
+    // increments one counter per step (convert_to_scalar/add/multiply),
+    // mirroring how SmoothNumberBase counts each representation
+    // conversion -- so a Metrics shared between a Plan and the numbers
+    // feeding it (via number()) tallies both under the same counters.
+    auto planMetrics = std::make_shared<smooth::Metrics>();
+    smooth::SmoothInteger tracked(planMetrics);
+    tracked.set(1, 0);
+    tracked.printSparse(discard);  // dynamic -> sparse
+
+    smooth::Plan(planMetrics).number(tracked).plus().scalar(1).calculate();
+
+    std::cout << "\nMetrics shared between a Plan and a SmoothInteger it reads via number():\n";
+    planMetrics->print();
+
     return 0;
 }
