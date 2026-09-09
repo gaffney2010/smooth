@@ -415,6 +415,74 @@ their own concrete name, never through a `SmoothNumberBase*`, so static
 hiding is enough, and it avoids paying for virtual dispatch for a feature
 only the signed types need.
 
+## Plan
+
+```cpp
+#include "smooth/smooth.hpp"
+
+double result = smooth::Plan()
+    .scalar(3)
+    .times()
+    .left()
+      .scalar(4)
+      .plus()
+      .scalar(2)
+    .right()
+    .calculate();  // 3 * (4 + 2) = 18
+```
+
+`smooth::Plan` (`include/smooth/plan.hpp`) is a fluent builder for a scalar
+arithmetic expression over 3-smooth numbers. Building never computes
+anything — it just records an expression tree; compiling that tree into a
+concrete sequence of steps (and, for now, actually running the arithmetic)
+happens lazily, the first time `plan()` or `calculate()` is called.
+
+- `scalar(double)` — a leaf holding a plain value.
+- `number(const T&)` — a leaf holding an existing `SmoothNumberBase`-derived
+  object's value. Templated specifically so `T::value()` resolves at `T`'s
+  own concrete type — required for a signed `T`, whose `value()`
+  intentionally hides (isn't a virtual override of)
+  `SmoothNumberBase::value()`; calling it through a `SmoothNumberBase&`
+  would silently drop the sign.
+- `plus()` / `times()` — wraps whatever's been built so far at the current
+  nesting level into a new operator node, as its left side, and expects the
+  next thing built to become its right side. Without any `left()`/`right()`
+  grouping, this makes a plain chain **left-associative**, like a simple
+  calculator: `scalar(3).times().scalar(4).plus().scalar(2)` computes
+  `(3 * 4) + 2 = 14`, since each operator wraps the *entire* accumulated
+  result so far, not just the value immediately before it.
+- `left()` / `right()` — open and close a nested group, the way `(` and `)`
+  do. `left()` always starts a fresh, independent sub-expression; `right()`
+  always finishes the most recently opened one and plugs its completed
+  value into whichever slot is open one level up. Which slot that is — a
+  pending operator's still-empty right side, or the top-level result — is
+  just whatever's actually open there; `left()`/`right()` name the bracket
+  pair, not a side of the parent operator (which is why, in the example
+  above, `left()` is what opens the group that ends up as `times()`'s
+  right-hand operand). This is what makes `3 * (4 + 2)` possible at all —
+  without it, the plain left-associative chain would give `(3 * 4) + 2`
+  instead.
+- `calculate()` — the computed result, as a `double`.
+- `plan(os = std::cout)` — prints the compiled steps as a tree, e.g. (for
+  the example above):
+  ```
+  multiply
+  ├─ convert to scalar: 3
+  └─ add
+     ├─ convert to scalar: 4
+     └─ convert to scalar: 2
+  = 18
+  ```
+
+For now, "compiling" the tree just means converting every leaf to a plain
+scalar and evaluating the whole thing with ordinary `double` arithmetic —
+`Plan` doesn't yet try to pick a smarter representation (Sparse, RowValues,
+Dynamic, Scalar) for the actual computation the way the rest of this
+library does; that's deliberately left for later. Calling something out of
+order (two values with no operator between them, an operator with nothing
+built yet, an unmatched `left()`/`right()`, `calculate()`/`plan()` on an
+incomplete expression) throws `std::invalid_argument`.
+
 ## Building the demo and tests
 
 ```sh
@@ -438,8 +506,10 @@ representation always starts out, and for now stays, Dynamic) to run each
 representation's own `addInPlace()`/`multiplyInPlace()` strategy, including
 a `Sparse` carry (for both addition and a carry-colliding multiplication),
 a `RowValues` convolution, and Scalar's own throw for a non-column-0 term,
-and attaching a `Metrics` to a number to show its conversion counters and
-the `a + b` metrics-inheritance rule.
+attaching a `Metrics` to a number to show its conversion counters and the
+`a + b` metrics-inheritance rule, and building a `Plan` (the confirmed
+`3 * (4 + 2)` example, an unbracketed left-associative chain, and
+`number()` correctly capturing a signed operand's sign) and printing it.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
 suite (no test framework linked in — see `CMakeLists.txt`) covering all of
@@ -457,5 +527,8 @@ the sign-XOR rule and a zero product's sign normalization), that both
 addition and multiplication require matching representations, `Metrics`
 counters (including that redundant conversions aren't double-counted, and
 the `a + b` metrics-inheritance rule — notably that the signed swap branch
-still keeps a's metrics), and copy/move semantics. It builds as a second
+still keeps a's metrics), copy/move semantics, and `Plan` (the confirmed
+example, unbracketed left-associative chaining, `number()`'s sign
+correctness, nested `left()`/`right()` groups two levels deep, `plan()`'s
+tree rendering, and every usage-error case). It builds as a second
 executable, `smooth_tests`, runnable directly or via `ctest`.

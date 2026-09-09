@@ -316,5 +316,40 @@ int main() {
     std::cout << "m2 + m1 -> result falls back to m1's metrics (m2 has none): "
               << (m4.metricsPtr() == metrics ? "same metrics object as m1" : "different") << "\n";
 
+    // --- Plan ------------------------------------------------------------
+    // A fluent builder for a scalar arithmetic expression. Building never
+    // computes anything -- it just records a tree; left()/right() open and
+    // close an explicit nested group (like `(` and `)`), overriding the
+    // default left-associative chaining a plain, unbracketed sequence of
+    // operators would otherwise get. plan()/calculate() lazily compile that
+    // tree into a concrete sequence of steps (for now: convert every leaf
+    // to a plain scalar and evaluate with ordinary arithmetic) the first
+    // time either is called.
+    std::cout << "\n--- Plan ---\n";
+    smooth::Plan p1;
+    p1.scalar(3).times().left().scalar(4).plus().scalar(2).right();
+    std::cout << "3 * (4 + 2):\n";
+    p1.plan();
+    std::cout << "calculate() = " << p1.calculate() << "\n\n";
+
+    // Without left()/right(), chaining is left-associative, like a simple
+    // calculator -- each operator wraps the *entire* accumulated result so
+    // far, not just the value immediately before it.
+    smooth::Plan p2;
+    p2.scalar(3).times().scalar(4).plus().scalar(2);
+    std::cout << "Unbracketed 3 * 4 + 2 (left-associative, i.e. (3*4)+2):\n";
+    p2.plan();
+
+    // number() accepts any existing SmoothNumber, using its value() at its
+    // own concrete type -- correctly capturing a signed number's sign,
+    // which value() (being intentionally non-virtual) wouldn't survive
+    // being read through a SmoothNumberBase&.
+    smooth::SmoothInteger ten;
+    ten.setValue(10LL);
+    smooth::SmoothSignedInteger negFive;
+    negFive.setValue(-5LL);
+    std::cout << "\nnumber(ten) + number(negFive):\n";
+    smooth::Plan().number(ten).plus().number(negFive).plan();
+
     return 0;
 }

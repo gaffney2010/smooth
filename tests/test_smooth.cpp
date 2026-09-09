@@ -731,6 +731,93 @@ void testMetrics() {
     }
 }
 
+// ---------------------------------------------------------------------
+// Plan: the fluent scalar-arithmetic expression builder. For now it just
+// converts every leaf to a plain double and evaluates with ordinary
+// arithmetic -- these tests check the tree-building mechanics (left()/
+// right() as an open/close bracket pair, default left-associative
+// chaining without them), number()'s use of value() at T's static type,
+// plan()'s tree rendering, and the usage-error cases.
+// ---------------------------------------------------------------------
+void testPlan() {
+    // The confirmed example: 3 * (4 + 2) = 18.
+    checkNear(Plan().scalar(3).times().left().scalar(4).plus().scalar(2).right().calculate(), 18.0,
+              "Plan: 3 * (4 + 2) = 18");
+
+    // Without brackets, chaining is left-associative, like a simple
+    // calculator: each operator wraps the *entire* accumulated result so
+    // far. left()/right() (used above) are how you override that default
+    // with explicit grouping.
+    checkNear(Plan().scalar(3).times().scalar(4).plus().scalar(2).calculate(), (3.0 * 4.0) + 2.0,
+              "Plan: unbracketed 3 * 4 + 2 is left-associative: (3*4)+2 = 14");
+
+    // A single leaf, with no operator at all.
+    checkNear(Plan().scalar(5).calculate(), 5.0, "Plan: a single scalar leaf");
+
+    // number(): uses T::value() at its static type -- correct even for a
+    // negative signed number, whose value() is intentionally hidden, not
+    // virtual (see SmoothNumberBase's docs), so calling it through a base
+    // reference would silently drop the sign.
+    {
+        SmoothInteger pos;
+        pos.setValue(10LL);
+        SmoothSignedInteger neg;
+        neg.setValue(-5LL);
+        checkNear(Plan().number(pos).plus().number(neg).calculate(), 5.0,
+                  "Plan.number(): 10 + (-5) = 5, sign correctly captured for a signed operand");
+    }
+
+    // Nested groups two levels deep: 2 * (3 + (4 * 5)) = 2 * 23 = 46.
+    {
+        double result = Plan()
+                             .scalar(2)
+                             .times()
+                             .left()
+                             .scalar(3)
+                             .plus()
+                             .left()
+                             .scalar(4)
+                             .times()
+                             .scalar(5)
+                             .right()
+                             .right()
+                             .calculate();
+        checkNear(result, 2.0 * (3.0 + 4.0 * 5.0), "Plan: two levels of nested left()/right() groups");
+    }
+
+    // plan() renders the compiled steps as a tree.
+    {
+        Plan p;
+        p.scalar(3).times().left().scalar(4).plus().scalar(2).right();
+        std::ostringstream out;
+        p.plan(out);
+        check(out.str() ==
+                  "multiply\n"
+                  "├─ convert to scalar: 3\n"
+                  "└─ add\n"
+                  "   ├─ convert to scalar: 4\n"
+                  "   └─ convert to scalar: 2\n"
+                  "= 18\n",
+              "Plan.plan() renders the expected tree");
+    }
+    {
+        Plan p;
+        p.scalar(5);
+        std::ostringstream out;
+        p.plan(out);
+        check(out.str() == "convert to scalar: 5\n= 5\n", "Plan.plan() for a single leaf has no tree branches");
+    }
+
+    // Usage errors.
+    checkThrows([] { Plan().right(); }, "Plan.right() with no open left() group throws");
+    checkThrows([] { Plan().scalar(3).scalar(4); }, "Plan: two scalars in a row with no operator throws");
+    checkThrows([] { Plan().plus(); }, "Plan.plus() with nothing built yet throws");
+    checkThrows([] { Plan().scalar(3).times().left().scalar(4).calculate(); },
+                "Plan.calculate() with an unclosed left() group throws");
+    checkThrows([] { Plan().scalar(3).times().calculate(); },
+                "Plan.calculate() with a dangling operator (missing right-hand value) throws");
+}
+
 }  // namespace
 
 int main() {
@@ -752,6 +839,7 @@ int main() {
     testMultiplication();
     testCopyAndMoveSemantics();
     testMetrics();
+    testPlan();
 
     std::cout << (g_checks - g_failures) << "/" << g_checks << " checks passed.\n";
     if (g_failures > 0) {
