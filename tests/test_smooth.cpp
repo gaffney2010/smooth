@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "smooth/dynamic_matrix_representation.hpp"
+#include "smooth/plan_zoo.hpp"
 #include "smooth/row_values_representation.hpp"
 #include "smooth/scalar_representation.hpp"
 #include "smooth/smooth.hpp"
@@ -866,6 +867,61 @@ void testPlan() {
     }
 }
 
+// ---------------------------------------------------------------------
+// plan_zoo/: Plan subclasses that override name()/convertLeaf()/combine()
+// to compute via a specific RepresentationBase instead of Plan's default
+// plain double arithmetic. Checked generically (template helper) against
+// all three, since they should all behave identically except for name()
+// and which representation actually does the work.
+// ---------------------------------------------------------------------
+template <typename PlanType>
+void checkPlanZooVariant(const std::string& expectedName) {
+    PlanType p;
+    check(p.name() == expectedName, expectedName + ": name() matches");
+
+    checkNear(PlanType().scalar(3).times().left().scalar(4).plus().scalar(2).right().calculate(), 18.0,
+              expectedName + ": 3 * (4 + 2) = 18, computed via its own representation");
+
+    PlanType printed;
+    printed.scalar(3).times().left().scalar(4).plus().scalar(2).right();
+    std::ostringstream out;
+    printed.plan(out);
+    std::string expected = "multiply\n├─ convert to " + expectedName +
+                            ": 3\n"
+                            "└─ add\n"
+                            "   ├─ convert to " +
+                            expectedName + ": 4\n   └─ convert to " + expectedName + ": 2\n= 18\n";
+    check(out.str() == expected, expectedName + ": plan() labels each leaf with the representation name");
+
+    checkThrows([] { PlanType().scalar(-1.0).calculate(); },
+                expectedName + ": a negative leaf throws (representation is magnitude-only)");
+
+    auto metrics = std::make_shared<Metrics>();
+    PlanType(metrics).scalar(1).plus().scalar(2).calculate();
+    std::ostringstream metricsOut;
+    metrics->print(metricsOut);
+    check(metricsOut.str() == "add = 1\nconvert_to_" + expectedName + " = 2\n",
+          expectedName + ": Metrics counter is convert_to_" + expectedName);
+}
+
+void testPlanZoo() {
+    checkPlanZooVariant<SparsePlan>("sparse");
+    checkPlanZooVariant<MatrixPlan>("matrix");
+    checkPlanZooVariant<RowValuesPlan>("row_values");
+
+    // Base Plan itself is unaffected by any of this.
+    check(Plan().name() == "scalar", "the base Plan's name() is still \"scalar\"");
+
+    // Polymorphic usage: name() and calculate() dispatch virtually through
+    // a Plan*, and the Plan* destructs safely (virtual destructor).
+    {
+        std::unique_ptr<Plan> p = std::make_unique<MatrixPlan>();
+        p->scalar(2).plus().scalar(3);
+        check(p->name() == "matrix", "name() dispatches virtually through a Plan*");
+        checkNear(p->calculate(), 5.0, "calculate() works the same through a Plan*");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -888,6 +944,7 @@ int main() {
     testCopyAndMoveSemantics();
     testMetrics();
     testPlan();
+    testPlanZoo();
 
     std::cout << (g_checks - g_failures) << "/" << g_checks << " checks passed.\n";
     if (g_failures > 0) {

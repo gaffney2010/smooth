@@ -3,6 +3,7 @@
 #include <sstream>
 
 #include "smooth/dynamic_matrix_representation.hpp"
+#include "smooth/plan_zoo.hpp"
 #include "smooth/row_values_representation.hpp"
 #include "smooth/scalar_representation.hpp"
 #include "smooth/smooth.hpp"
@@ -366,6 +367,37 @@ int main() {
 
     std::cout << "\nMetrics shared between a Plan and a SmoothInteger it reads via number():\n";
     planMetrics->print();
+
+    // --- plan_zoo ----------------------------------------------------------
+    // Plan subclasses that override name()/convertLeaf()/combine() to
+    // compute via a specific RepresentationBase instead of Plan's default
+    // plain double arithmetic. Same expression, same result, different
+    // representation actually doing the addInPlace()/multiplyInPlace()
+    // work underneath -- and each shows up under its own name() in both
+    // the printed plan and the Metrics counters.
+    std::cout << "\n--- plan_zoo ---\n";
+    smooth::SparsePlan sparsePlan;
+    sparsePlan.scalar(3).times().left().scalar(4).plus().scalar(2).right();
+    std::cout << sparsePlan.name() << ":\n";
+    sparsePlan.plan();
+
+    smooth::MatrixPlan matrixPlan;
+    matrixPlan.scalar(3).times().left().scalar(4).plus().scalar(2).right();
+    std::cout << "\n" << matrixPlan.name() << ":\n";
+    matrixPlan.plan();
+
+    smooth::RowValuesPlan rowValuesPlan;
+    rowValuesPlan.scalar(3).times().left().scalar(4).plus().scalar(2).right();
+    std::cout << "\n" << rowValuesPlan.name() << ":\n";
+    rowValuesPlan.plan();
+
+    // Used polymorphically through a Plan*: name() and calculate() still
+    // dispatch to MatrixPlan's overrides, and the Plan* destructs safely
+    // (Plan now has a virtual destructor).
+    std::unique_ptr<smooth::Plan> polymorphic = std::make_unique<smooth::MatrixPlan>();
+    polymorphic->scalar(5).plus().scalar(7);
+    std::cout << "\nThrough a Plan*: name() = " << polymorphic->name()
+              << ", calculate() = " << polymorphic->calculate() << "\n";
 
     return 0;
 }

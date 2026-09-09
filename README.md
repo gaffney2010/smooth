@@ -474,23 +474,87 @@ happens lazily, the first time `plan()` or `calculate()` is called.
   = 18
   ```
 
-For now, "compiling" the tree just means converting every leaf to a plain
-scalar and evaluating the whole thing with ordinary `double` arithmetic —
-`Plan` doesn't yet try to pick a smarter representation (Sparse, RowValues,
-Dynamic, Scalar) for the actual computation the way the rest of this
-library does; that's deliberately left for later. Calling something out of
-order (two values with no operator between them, an operator with nothing
-built yet, an unmatched `left()`/`right()`, `calculate()`/`plan()` on an
-incomplete expression) throws `std::invalid_argument`.
+`Plan` itself computes by converting every leaf to a plain scalar and
+evaluating the whole thing with ordinary `double` arithmetic — it doesn't
+try to pick a smarter representation (Sparse, RowValues, Dynamic, Scalar)
+for the actual computation the way the rest of this library does. That's
+what three `protected virtual` methods are for, each with a sensible
+default in `Plan` itself:
+
+- `name() const` — public; identifies which strategy is in use ("scalar"
+  in `Plan` itself). Drives the `"convert to <name>"` leaf label in
+  `plan()`'s tree and the `convert_to_<name>` metrics counter, so
+  overriding it alone already shows up in both places.
+- `convertLeaf(double raw) const` — converts a leaf's raw value into
+  whatever this variant actually computes with, returned back out as a
+  `double` (the type `plan()`/`calculate()` deal in regardless of
+  subclass). The default is a no-op — a plain `double` already *is* how
+  `Plan` computes.
+- `combine(Op op, double left, double right) const` — combines two
+  already-converted values with `Op::Add`/`Op::Multiply`, again returning
+  a `double`. The default is ordinary `double` arithmetic.
+
+A subclass overriding `convertLeaf()`/`combine()` to round-trip through a
+real `RepresentationBase` — using its own `setColumnValue()` to encode a
+leaf and its own `addInPlace()`/`multiplyInPlace()` to combine two — is
+what "converts everything to `<representation>` and computes that way"
+means in practice; see "plan_zoo" below for three such subclasses.
+
+Calling something out of order (two values with no operator between them,
+an operator with nothing built yet, an unmatched `left()`/`right()`,
+`calculate()`/`plan()` on an incomplete expression) throws
+`std::invalid_argument`.
 
 Like every concrete `SmoothNumberBase`-derived type, `Plan`'s constructor
 takes an optional shared `std::shared_ptr<Metrics>`
 (`Plan(metrics)`/`Plan()`, `hasMetrics()`, `metricsPtr()` — see "Metrics"
 above). Compiling increments one counter per step —
-`convert_to_scalar`, `add`, or `multiply` — mirroring how
+`convert_to_<name()>`, `add`, or `multiply` — mirroring how
 `SmoothNumberBase` counts each representation conversion, so a `Metrics`
 shared between a `Plan` and the numbers that feed it (via `number()`)
 tallies both under the same counters.
+
+## plan_zoo
+
+`include/smooth/plan_zoo/` holds `Plan` subclasses, each overriding
+`name()`/`convertLeaf()`/`combine()` to compute via a specific
+`RepresentationBase` instead of `Plan`'s default plain `double`
+arithmetic — nothing else about `Plan` changes; building, `plan()`,
+`calculate()`, `Metrics`, and error-handling are all inherited as-is.
+`include/smooth/plan_zoo.hpp` is a convenience header pulling in all of
+them, mirroring `smooth.hpp`. For now there are three, with more meant to
+follow as this library explores which representation is actually fastest
+for what:
+
+- `SparsePlan` (`name()` → `"sparse"`) — `SparseRepresentation`.
+- `MatrixPlan` (`name()` → `"matrix"`) — `DynamicMatrixRepresentation`,
+  called "matrix" here since that's what this library calls its
+  grid-shaped representation now that the old fixed-size
+  `MatrixRepresentation` has been superseded by it.
+- `RowValuesPlan` (`name()` → `"row_values"`) — `RowValuesRepresentation`.
+
+```cpp
+#include "smooth/plan_zoo.hpp"
+
+smooth::SparsePlan p;
+p.scalar(3).times().left().scalar(4).plus().scalar(2).right();
+p.plan();
+// multiply
+// ├─ convert to sparse: 3
+// └─ add
+//    ├─ convert to sparse: 4
+//    └─ convert to sparse: 2
+// = 18
+```
+
+Each representation is magnitude-only (`RepresentationBase` can never hold
+a negative value — the same reason `SmoothNumberBase::setValue()` rejects
+a negative value for the two unsigned types), so a negative leaf on any of
+these three throws `std::invalid_argument`; `Plan` itself has no such
+restriction, since it never touches a representation at all. All three —
+and `Plan` itself — share a common base pointer: `std::unique_ptr<Plan>`
+holding any of them dispatches `name()`/`calculate()`/etc. virtually and
+destructs safely, since `Plan` has a virtual destructor.
 
 ## Building the demo and tests
 
@@ -520,7 +584,10 @@ attaching a `Metrics` to a number to show its conversion counters and the
 `3 * (4 + 2)` example, an unbracketed left-associative chain, and
 `number()` correctly capturing a signed operand's sign) and printing it,
 including a `Metrics` shared between a `Plan` and a `SmoothInteger` it
-reads via `number()`, tallying both under the same counters.
+reads via `number()`, tallying both under the same counters; and, from
+`plan_zoo`, `SparsePlan`/`MatrixPlan`/`RowValuesPlan` all computing the
+same expression (each `plan()`-printed under its own `name()`), plus one
+used polymorphically through a `Plan*`.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
 suite (no test framework linked in — see `CMakeLists.txt`) covering all of
@@ -543,5 +610,10 @@ example, unbracketed left-associative chaining, `number()`'s sign
 correctness, nested `left()`/`right()` groups two levels deep, `plan()`'s
 tree rendering, every usage-error case, and its own `Metrics` support —
 one counter per compiled step, memoized compilation, and propagation to a
-`SmoothNumber` sharing the same `Metrics`). It builds as a second
+`SmoothNumber` sharing the same `Metrics`), and `plan_zoo` (checked
+generically against all three subclasses: `name()`, that each computes
+`3 * (4 + 2) = 18` via its own representation, that `plan()` labels every
+leaf with that representation's name, that a negative leaf throws, its
+`Metrics` counter name, that the base `Plan`'s `name()` is unaffected, and
+polymorphic dispatch/destruction through a `Plan*`). It builds as a second
 executable, `smooth_tests`, runnable directly or via `ctest`.

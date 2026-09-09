@@ -50,24 +50,40 @@ namespace smooth {
 // - calculate(): the computed result, as a double.
 // - plan(os): prints the compiled steps as a tree (see below).
 //
-// For now, "compiling" the tree just means converting every leaf to a
-// plain scalar and evaluating the whole thing with ordinary double
-// arithmetic -- no attempt is made to pick a smarter representation for
-// the actual SmoothNumber machinery. That's deliberately left for later
-// (see the class comment's mention of future efficiency work); this is
-// the "always take the straightforward path" first cut.
+// For now, this base class computes by converting every leaf to a plain
+// scalar and evaluating the whole thing with ordinary double arithmetic --
+// no attempt is made to pick a smarter representation for the actual
+// SmoothNumber machinery. That's what name()/convertLeaf()/combine() below
+// are for: a derived class overrides them to compute via a specific
+// RepresentationBase instead (see include/smooth/plan_zoo/ for a few --
+// SparsePlan, MatrixPlan, RowValuesPlan -- with more meant to follow as
+// this library explores which representation is actually fastest for
+// what). This base implementation is effectively "ScalarPlan" in that
+// family, just built directly into Plan itself rather than living in
+// plan_zoo/, since a plain double *is* how a scalar is represented.
 //
 // Like every concrete SmoothNumberBase-derived type, a Plan optionally
 // takes a shared Metrics at construction (see metrics.hpp). Compiling
-// increments one counter per step -- convert_to_scalar, add, or multiply
-// -- mirroring how SmoothNumberBase counts each representation
-// conversion, so a Metrics shared between a Plan and the numbers that feed
-// it (via number()) tallies both under the same counters.
+// increments one counter per step -- convert_to_<name()>, add, or multiply
+// -- mirroring how SmoothNumberBase counts each representation conversion,
+// so a Metrics shared between a Plan and the numbers that feed it (via
+// number()) tallies both under the same counters.
 class Plan {
 public:
     explicit Plan(std::shared_ptr<Metrics> metrics = nullptr) : metrics_(std::move(metrics)) {
         stack_.emplace_back();
     }
+
+    virtual ~Plan() = default;
+
+    // Identifies which strategy this Plan (or Plan subclass) uses to
+    // perform its arithmetic -- "scalar" here; "sparse"/"matrix"/
+    // "row_values" for the plan_zoo/ subclasses that override it. Also
+    // drives the "convert to <name>" step label (see printStep()) and the
+    // convert_to_<name> metrics counter, so a subclass overriding name()
+    // alone (with no other changes) would still show up distinctly in
+    // both the printed plan and the metrics.
+    virtual std::string name() const { return "scalar"; }
 
     bool hasMetrics() const { return static_cast<bool>(metrics_); }
     const std::shared_ptr<Metrics>& metricsPtr() const { return metrics_; }
@@ -146,9 +162,32 @@ public:
         os << "= " << steps_.back().result << "\n";
     }
 
-private:
+protected:
+    // protected (not private) so an overridden combine() can be declared
+    // in terms of it -- see plan_zoo/ for examples.
     enum class Op { Add, Multiply };
 
+    // Converts a leaf's raw value into whatever this Plan variant actually
+    // computes with, returning it back out as a double (the type
+    // steps_/printing/calculate() all deal in regardless of subclass). The
+    // default does nothing -- a plain double already *is* how this base
+    // class computes. A subclass that wants to genuinely round-trip
+    // through a RepresentationBase (e.g. to exercise its real encode/carry
+    // logic) does so here, converting back to double at the end since
+    // that's what the rest of Plan expects.
+    virtual double convertLeaf(double raw) const { return raw; }
+
+    // Combines two already-converted values with the given operator,
+    // again returning a double. The default is ordinary double add/
+    // multiply; a subclass overriding this to route through a
+    // RepresentationBase's own addInPlace()/multiplyInPlace() is what
+    // "converts everything to <representation> and computes that way"
+    // actually means in practice -- see plan_zoo/.
+    virtual double combine(Op op, double left, double right) const {
+        return op == Op::Add ? (left + right) : (left * right);
+    }
+
+private:
     // The expression tree as built so far, in its rawest form.
     struct Node {
         bool isLeaf = false;
@@ -168,8 +207,8 @@ private:
     // this list -- before the node itself), each carrying its already-
     // computed result. The last entry is always the overall root.
     struct Step {
-        enum class Kind { ConvertToScalar, Add, Multiply } kind;
-        double leafValue = 0.0;                 // when kind == ConvertToScalar
+        enum class Kind { Convert, Add, Multiply } kind;
+        double leafValue = 0.0;                 // when kind == Convert
         std::size_t leftStep = 0, rightStep = 0;  // when kind == Add/Multiply
         double result = 0.0;
     };
@@ -214,14 +253,16 @@ private:
         top.root = std::move(node);
     }
 
-    // Builds steps_ from the tree via a post-order walk, computing each
-    // step's result as it goes -- this is the entire "straightforward"
-    // compilation strategy for now (see the class comment). Each step
-    // increments a matching counter on metrics_, if one was given.
+    // Builds steps_ from the tree via a post-order walk, delegating the
+    // actual arithmetic to convertLeaf()/combine() (see above) -- so this
+    // one method is shared by every Plan variant; only those two hooks
+    // differ per subclass. Each step increments a matching counter on
+    // metrics_, if one was given.
     std::size_t compileNode(const Node& node) {
         if (node.isLeaf) {
-            if (metrics_) metrics_->increment("convert_to_scalar");
-            steps_.push_back(Step{Step::Kind::ConvertToScalar, node.value, 0, 0, node.value});
+            if (metrics_) metrics_->increment("convert_to_" + name());
+            double converted = convertLeaf(node.value);
+            steps_.push_back(Step{Step::Kind::Convert, converted, 0, 0, converted});
             return steps_.size() - 1;
         }
         std::size_t leftStep = compileNode(*node.left);
@@ -229,7 +270,7 @@ private:
         double leftVal = steps_[leftStep].result;
         double rightVal = steps_[rightStep].result;
         Step::Kind kind = (node.op == Op::Add) ? Step::Kind::Add : Step::Kind::Multiply;
-        double result = (node.op == Op::Add) ? (leftVal + rightVal) : (leftVal * rightVal);
+        double result = combine(node.op, leftVal, rightVal);
         if (metrics_) metrics_->increment(node.op == Op::Add ? "add" : "multiply");
         steps_.push_back(Step{kind, 0.0, leftStep, rightStep, result});
         return steps_.size() - 1;
@@ -256,7 +297,7 @@ private:
                 return "add";
             case Step::Kind::Multiply:
                 return "multiply";
-            case Step::Kind::ConvertToScalar:
+            case Step::Kind::Convert:
                 return "";
         }
         return "";
@@ -267,8 +308,8 @@ private:
         const Step& step = steps_[index];
         os << indent;
         if (!isRoot) os << (isLast ? "└─ " : "├─ ");
-        if (step.kind == Step::Kind::ConvertToScalar) {
-            os << "convert to scalar: " << step.leafValue << "\n";
+        if (step.kind == Step::Kind::Convert) {
+            os << "convert to " << name() << ": " << step.leafValue << "\n";
             return;
         }
         os << opLabel(step.kind) << "\n";
