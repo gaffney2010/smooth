@@ -16,6 +16,14 @@ class Metrics {
 public:
     void increment(const std::string& name, long long count = 1) { counters_[name] += count; }
 
+    // Reads a single named counter's current value; a counter nothing has
+    // incremented yet reads as 0, same as if it had been named but never
+    // bumped.
+    long long get(const std::string& name) const {
+        auto it = counters_.find(name);
+        return it == counters_.end() ? 0 : it->second;
+    }
+
     void print(std::ostream& os = std::cout) const {
         for (const auto& counter : counters_) {
             os << counter.first << " = " << counter.second << "\n";

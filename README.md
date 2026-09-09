@@ -673,3 +673,49 @@ leaf with that representation's name, that a negative leaf throws, its
 `Metrics` counter name, that the base `Plan`'s `name()` is unaffected, and
 polymorphic dispatch/destruction through a `Plan*`). It builds as a second
 executable, `smooth_tests`, runnable directly or via `ctest`.
+
+## Profiles: measuring the counters
+
+```sh
+cmake -S . -B build   # requires SQLite3 (find_package(SQLite3 REQUIRED))
+cmake --build build
+./build/smooth_profiles              # writes/reads ./smooth_profiles.db
+./build/smooth_profiles some/path.db # or an explicit database path
+```
+
+`include/smooth/profiles.hpp` defines a fixed set of named `Profile`s —
+each just a `name` and a `build(Plan&)` function written directly in terms
+of `Plan`'s own builder methods (`scalar()`/`plus()`/`times()`/`left()`/
+`right()`). Because every `Plan` subclass shares that exact interface,
+the same `build()` works unchanged against a `Plan&`, `SparsePlan&`,
+`MatrixPlan&`, or `RowValuesPlan&` — it's the same expression, measured
+identically across every representation.
+
+The profiles are meant to look like ordinary, everyday arithmetic — sums
+and (price × quantity)-style products, not edge cases (no zeros,
+negatives, or single-leaf expressions) — ranging from `two_number_sum`
+and `two_number_product` (2 numbers) up through `weighted_basket` and
+`nested_score_totals` (6-8 numbers, mixing both operators and, for
+`nested_score_totals`, two levels of nested `left()`/`right()` groups) to
+`ten_day_totals` (10 numbers, the upper end of "typical" this project is
+using to see how the counters scale).
+
+`src/profile_runner.cpp` (the `smooth_profiles` executable) runs every
+(plan kind, profile) combination — `scalar`/`sparse`/`matrix`/
+`row_values` × every `Profile` — against a SQLite database, skipping any
+combination already present so re-running only does work for newly added
+plan kinds or profiles. Each row records the plan kind, the profile name,
+the computed result, and one column per counter `Plan`-driven work can
+currently produce: `convert_to_scalar`/`convert_to_sparse`/
+`convert_to_matrix`/`convert_to_row_values`, `add`, `multiply`, `carries`,
+`bit_operations`, `scalar_operations`, and `bit_iterations` (the
+per-representation `convert_<X>_to_<Y>` counters — see "Metrics" — can't
+appear here, since `Plan`/`plan_zoo` build a fresh representation per leaf
+directly rather than routing through `SmoothNumberBase::ensure()`).
+
+The set of columns is fixed on purpose: **when a counter is added, removed,
+or renamed, delete the database file and let it be recreated from
+scratch**, rather than migrating it in place. `smooth_profiles` checks the
+database's actual columns against what the current build expects on every
+run and refuses to proceed (with that same instruction) if they don't
+match, so a stale database is a hard error, not silently-wrong data.

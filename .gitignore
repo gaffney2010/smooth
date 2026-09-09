@@ -22,6 +22,10 @@ cmake-build-*/
 *.exe
 *.out
 smooth_demo
+smooth_profiles
+
+# Profile runner database
+*.db
 
 # CMake generated files
 CMakeCache.txt
