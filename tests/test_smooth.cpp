@@ -13,6 +13,7 @@
 
 #include "smooth/dynamic_matrix_representation.hpp"
 #include "smooth/row_values_representation.hpp"
+#include "smooth/scalar_representation.hpp"
 #include "smooth/smooth.hpp"
 #include "smooth/sparse_representation.hpp"
 
@@ -177,6 +178,17 @@ void testRepresentationsAgree() {
     check(rowValuesOut.str() == "n[0] = 2\nn[2] = 1\n", "printRowValues() output matches expected n_j entries");
     check(!dynamicOut.str().empty(), "printDynamic() produces output");
     checkNear(n.value(), 11.0, "value() still correct after converting through all three representations");
+
+    // n has a bit in column 2, which Scalar structurally can't represent.
+    std::ostringstream discard;
+    checkThrows([&] { n.printScalar(discard); },
+                "printScalar() throws when the number has a term outside column 0");
+
+    SmoothInteger plain;
+    plain.setValue(17LL);
+    std::ostringstream scalarOut;
+    plain.printScalar(scalarOut);
+    check(scalarOut.str() == "17\n", "printScalar() succeeds and prints the plain value when column 0 is all it has");
 }
 
 // ---------------------------------------------------------------------
@@ -248,6 +260,42 @@ void testDynamicRepresentationGrowth() {
     check(cloned->get(3, 1), "Dynamic.clone() retains the bits from before reset()");
 }
 
+void testScalarRepresentationDirectly() {
+    ScalarRepresentation rep(true);
+    rep.setColumnValue(0, 5.5);
+    checkNear(rep.value(), 5.5, "Scalar.setColumnValue(0, 5.5)");
+    check(rep.get(0, 0) && rep.get(2, 0) && rep.get(-1, 0), "Scalar decodes 5.5 (101.1 in binary) bit by bit");
+    check(!rep.get(0, 1), "Scalar.get() on any column other than 0 is false");
+
+    checkThrows([&] { rep.set(0, 1, true); }, "Scalar.set() on column != 0 throws");
+    checkThrows([&] { rep.setColumnValue(2, 1.0); }, "Scalar.setColumnValue() on column != 0 throws");
+
+    int columns = 0;
+    rep.forEachSet([&columns](int, int j) {
+        ++columns;
+        check(j == 0, "Scalar.forEachSet() only ever reports column 0");
+    });
+    check(columns > 0, "Scalar.forEachSet() visits at least one bit");
+
+    auto cloned = rep.clone();
+    rep.reset();
+    checkNear(rep.value(), 0.0, "Scalar.reset() clears the stored value");
+    checkNear(cloned->value(), 5.5, "Scalar.clone() is unaffected by resetting the original");
+
+    ScalarRepresentation a(false), b(false);
+    a.setColumnValue(0, 42.0);
+    b.setColumnValue(0, 8.0);
+    a.addInPlace(b);
+    checkNear(a.value(), 50.0, "Scalar+Scalar addInPlace: direct scalar addition, 42 + 8 = 50");
+
+    // Falls back to decomposing other's bits when it isn't also a Scalar,
+    // but still refuses anything outside column 0.
+    RowValuesRepresentation notScalar(false);
+    notScalar.setColumnValue(1, 2.0);  // 2 * 3^1 -- column 1, not representable as a scalar
+    checkThrows([&] { a.addInPlace(notScalar); },
+                "Scalar.addInPlace() rejects a term from another representation's column != 0");
+}
+
 // ---------------------------------------------------------------------
 // addInPlace(): exact bit-level carry for Sparse/Dynamic, direct
 // accumulation for RowValues -- each representation's own strategy.
@@ -308,101 +356,97 @@ void testAddInPlacePerRepresentation() {
 }
 
 // ---------------------------------------------------------------------
-// SmoothNumberBase::add()/operator+=/operator+ for the two unsigned types.
+// operator+ (the only way to add -- there is no add()/operator+= anymore)
+// for the two unsigned types. Always value-returning: never mutates
+// either operand.
 // ---------------------------------------------------------------------
 void testUnsignedAddition() {
     SmoothInteger a, b;
     a.setValue(12LL);
     b.setValue(7LL);
-    a.add(b);
-    checkNear(a.value(), 19.0, "SmoothInteger.add(SmoothInteger): 12 + 7 = 19");
+    SmoothInteger c = a + b;
+    checkNear(c.value(), 19.0, "SmoothInteger operator+: 12 + 7 = 19");
+    checkNear(a.value(), 12.0, "operator+ does not mutate its left-hand operand");
+    checkNear(b.value(), 7.0, "operator+ does not mutate its right-hand operand");
 
-    a.add(3LL);
-    checkNear(a.value(), 22.0, "SmoothInteger.add(long long): 19 + 3 = 22");
+    SmoothFloat f1, f2;
+    f1.setValue(1.25);
+    f2.setValue(2.5);
+    SmoothFloat f3 = f1 + f2;
+    checkNear(f3.value(), 3.75, "SmoothFloat operator+: 1.25 + 2.5 = 3.75");
+}
 
-    SmoothFloat f;
-    f.setValue(1.25);
-    f.add(2.5);
-    checkNear(f.value(), 3.75, "SmoothFloat.add(double): 1.25 + 2.5 = 3.75");
-
-    SmoothInteger c, d;
-    c.setValue(10LL);
-    d.setValue(5LL);
-    c += d;
-    checkNear(c.value(), 15.0, "SmoothInteger operator+=: 10 + 5 = 15");
-
-    SmoothInteger e = c + d;
-    checkNear(e.value(), 20.0, "SmoothInteger operator+ (value-returning): 15 + 5 = 20");
-    checkNear(c.value(), 15.0, "operator+ does not mutate its left-hand operand");
-    checkNear(d.value(), 5.0, "operator+ does not mutate its right-hand operand");
-
-    checkThrows([&] { c.add(-1LL); }, "SmoothInteger.add(negative scalar) throws");
-
-    SmoothInteger whole;
-    whole.setValue(5LL);
-    SmoothFloat frac;
-    frac.setValue(1.5);
-    checkThrows([&] { whole.add(frac); },
-                "SmoothInteger.add(SmoothFloat with an actual fractional part) throws");
-
-    SmoothFloat wholeFloat;
-    wholeFloat.setValue(2.0);  // no fractional bits, even though the type allows them
-    whole.add(wholeFloat);
-    checkNear(whole.value(), 7.0, "SmoothInteger.add(SmoothFloat with no fractional bits set) is allowed");
+// ---------------------------------------------------------------------
+// Addition requires matching representations (SmoothNumberBase::
+// addMatchingInPlace()/subtractMagnitudeInPlace(), used internally by
+// every concrete type's operator+, throw std::invalid_argument otherwise).
+// This can't directly be tested by forcing a mismatch through the public
+// API, though: canonical() always starts out (and, for now, stays)
+// Dynamic for every freshly constructed number, and there's no public way
+// to change it -- so any two independently constructed numbers always
+// match trivially, which is what this actually verifies.
+// ---------------------------------------------------------------------
+void testAdditionRequiresMatchingRepresentation() {
+    SmoothInteger a, b;
+    check(a.canonical() == b.canonical(),
+          "two freshly constructed numbers always start with the same (Dynamic) canonical representation");
+    a.setValue(3LL);
+    b.setValue(4LL);
+    SmoothInteger c = a + b;
+    checkNear(c.value(), 7.0, "addition succeeds when representations match, which they always currently do");
 }
 
 // ---------------------------------------------------------------------
 // Signed addition: same sign, differing sign in both directions, a tie
-// that lands on zero, scalar addition with a sign flip, and the
-// cross-column (mixed-radix) borrow case.
+// that lands on zero, and the cross-column (mixed-radix) borrow case.
+// Always value-returning, same as the unsigned case.
 // ---------------------------------------------------------------------
 void testSignedAddition() {
     SmoothSignedInteger a, b;
     a.setValue(5LL);
     b.setValue(3LL);
-    a += b;
-    checkNear(a.value(), 8.0, "signed same-sign (+,+): 5 + 3 = 8");
-    check(!a.isNegative(), "result of (+,+) addition is not negative");
+    SmoothSignedInteger sum1 = a + b;
+    checkNear(sum1.value(), 8.0, "signed same-sign (+,+): 5 + 3 = 8");
+    check(!sum1.isNegative(), "result of (+,+) addition is not negative");
+    checkNear(a.value(), 5.0, "operator+ does not mutate the signed left-hand operand");
+    checkNear(b.value(), 3.0, "operator+ does not mutate the signed right-hand operand");
 
     SmoothSignedInteger c, d;
     c.setValue(-5LL);
     d.setValue(-3LL);
-    c += d;
-    checkNear(c.value(), -8.0, "signed same-sign (-,-): -5 + -3 = -8");
-    check(c.isNegative(), "result of (-,-) addition is negative");
+    SmoothSignedInteger sum2 = c + d;
+    checkNear(sum2.value(), -8.0, "signed same-sign (-,-): -5 + -3 = -8");
+    check(sum2.isNegative(), "result of (-,-) addition is negative");
 
     SmoothSignedInteger e, f;
     e.setValue(5LL);
     f.setValue(-3LL);
-    e += f;
-    checkNear(e.value(), 2.0, "signed diff-sign, |this| >= |other|: 5 + (-3) = 2");
-    check(!e.isNegative(), "5 + (-3) is not negative");
+    SmoothSignedInteger sum3 = e + f;
+    checkNear(sum3.value(), 2.0, "signed diff-sign, |a| >= |b|: 5 + (-3) = 2");
+    check(!sum3.isNegative(), "5 + (-3) is not negative");
 
     SmoothSignedInteger g, h;
     g.setValue(3LL);
     h.setValue(-5LL);
-    g += h;
-    checkNear(g.value(), -2.0, "signed diff-sign, |this| < |other|: 3 + (-5) = -2");
-    check(g.isNegative(), "3 + (-5) is negative");
+    SmoothSignedInteger sum4 = g + h;
+    checkNear(sum4.value(), -2.0, "signed diff-sign, |a| < |b|: 3 + (-5) = -2");
+    check(sum4.isNegative(), "3 + (-5) is negative");
+    checkNear(g.value(), 3.0, "operator+'s swap branch does not mutate a");
+    checkNear(h.value(), -5.0, "operator+'s swap branch does not mutate b");
 
     SmoothSignedInteger tieA, tieB;
     tieA.setValue(5LL);
     tieB.setValue(-5LL);
-    tieA += tieB;
-    checkNear(tieA.value(), 0.0, "signed diff-sign tie: 5 + (-5) = 0");
-    check(!tieA.isNegative(), "a zero result is normalized to non-negative, never a signed zero");
+    SmoothSignedInteger tieSum = tieA + tieB;
+    checkNear(tieSum.value(), 0.0, "signed diff-sign tie: 5 + (-5) = 0");
+    check(!tieSum.isNegative(), "a zero result is normalized to non-negative, never a signed zero");
 
-    SmoothSignedInteger scalarCase;
-    scalarCase.setValue(4LL);
-    scalarCase += -10LL;
-    checkNear(scalarCase.value(), -6.0, "signed operator+=(long long) with a sign flip: 4 + (-10) = -6");
-    check(scalarCase.isNegative(), "4 + (-10) is negative");
-
-    SmoothSignedFloat sf;
-    sf.setValue(-1.5);
-    sf += 2.25;
-    checkNear(sf.value(), 0.75, "SmoothSignedFloat: -1.5 + 2.25 = 0.75");
-    check(!sf.isNegative(), "-1.5 + 2.25 is not negative");
+    SmoothSignedFloat sf1, sf2;
+    sf1.setValue(-1.5);
+    sf2.setValue(2.25);
+    SmoothSignedFloat sf3 = sf1 + sf2;
+    checkNear(sf3.value(), 0.75, "SmoothSignedFloat: -1.5 + 2.25 = 0.75");
+    check(!sf3.isNegative(), "-1.5 + 2.25 is not negative");
 
     // Cross-column (mixed-radix) borrow: 3 (stored as n_1=1, i.e. bit
     // (0,1)) minus 2 (stored as n_0=2, i.e. bit (1,0)) must borrow a unit
@@ -412,18 +456,9 @@ void testSignedAddition() {
     x.set(0, 1, true);  // 2^0 * 3^1 = 3
     y.set(1, 0, true);  // 2^1 * 3^0 = 2
     y.negate();
-    x += y;
-    checkNear(x.value(), 1.0, "cross-column borrow: 3 (column 1) - 2 (column 0) = 1");
-    check(!x.isNegative(), "3 - 2 = 1 is not negative");
-
-    // operator+ (value-returning) for a signed type.
-    SmoothSignedInteger p, q;
-    p.setValue(10LL);
-    q.setValue(-4LL);
-    SmoothSignedInteger sum = p + q;
-    checkNear(sum.value(), 6.0, "SmoothSignedInteger operator+ (value-returning): 10 + (-4) = 6");
-    checkNear(p.value(), 10.0, "operator+ does not mutate the signed left-hand operand");
-    checkNear(q.value(), -4.0, "operator+ does not mutate the signed right-hand operand");
+    SmoothSignedInteger borrowResult = x + y;
+    checkNear(borrowResult.value(), 1.0, "cross-column borrow: 3 (column 1) - 2 (column 0) = 1");
+    check(!borrowResult.isNegative(), "3 - 2 = 1 is not negative");
 }
 
 // ---------------------------------------------------------------------
@@ -432,11 +467,14 @@ void testSignedAddition() {
 // asserted beyond "doesn't crash and the destination is correct").
 // ---------------------------------------------------------------------
 void testCopyAndMoveSemantics() {
+    SmoothInteger one;
+    one.setValue(1LL);
+
     SmoothInteger original;
     original.setValue(100LL);
 
     SmoothInteger copy(original);
-    copy.add(1LL);
+    copy = copy + one;
     checkNear(copy.value(), 101.0, "mutating a copy after copy-construction affects the copy");
     checkNear(original.value(), 100.0, "...but not the original (deep copy, no shared state)");
 
@@ -444,7 +482,7 @@ void testCopyAndMoveSemantics() {
     assigned.setValue(1LL);
     assigned = original;
     checkNear(assigned.value(), 100.0, "copy assignment replaces the destination's value");
-    assigned.add(1LL);
+    assigned = assigned + one;
     checkNear(original.value(), 100.0, "copy assignment is also a deep copy, not aliased");
 
     SmoothInteger moveSource;
@@ -515,17 +553,6 @@ void testMetrics() {
         check(true, "converting/printing without metrics attached doesn't crash");
     }
 
-    // a += b always keeps a's metrics.
-    {
-        auto metricsA = std::make_shared<Metrics>();
-        auto metricsB = std::make_shared<Metrics>();
-        SmoothInteger a(metricsA), b(metricsB);
-        a.setValue(5LL);
-        b.setValue(3LL);
-        a += b;
-        check(a.metricsPtr() == metricsA, "a += b keeps a's own metrics pointer, not b's");
-    }
-
     // a + b: a's metrics win if present; otherwise fall back to b's, if any.
     {
         auto metricsA = std::make_shared<Metrics>();
@@ -545,18 +572,18 @@ void testMetrics() {
         check(!(aWithout + bWithout).hasMetrics(), "a+b: neither has metrics -> result has none");
     }
 
-    // Signed types: the swap branch of operator+= (|a| < |b|, differing
-    // signs) replaces *this with a copy of the other operand internally --
-    // metrics must still end up as a's, not b's.
+    // Signed types: the swap branch of operator+ (|a| < |b|, differing
+    // signs) builds its result out of a copy of b internally -- metrics
+    // must still end up as a's, not b's.
     {
         auto metricsA = std::make_shared<Metrics>();
         auto metricsB = std::make_shared<Metrics>();
         SmoothSignedInteger a(metricsA), b(metricsB);
         a.setValue(3LL);
         b.setValue(-10LL);  // |b| > |a|, differing signs -> takes the swap branch
-        a += b;
-        checkNear(a.value(), -7.0, "signed swap-branch arithmetic still correct: 3 + (-10) = -7");
-        check(a.metricsPtr() == metricsA, "signed swap-branch still keeps a's metrics, not b's");
+        SmoothSignedInteger result = a + b;
+        checkNear(result.value(), -7.0, "signed swap-branch arithmetic still correct: 3 + (-10) = -7");
+        check(result.metricsPtr() == metricsA, "signed swap-branch still keeps a's metrics, not b's");
     }
 }
 
@@ -572,8 +599,10 @@ int main() {
     testSparseRepresentationDirectly();
     testRowValuesRepresentationDirectly();
     testDynamicRepresentationGrowth();
+    testScalarRepresentationDirectly();
     testAddInPlacePerRepresentation();
     testUnsignedAddition();
+    testAdditionRequiresMatchingRepresentation();
     testSignedAddition();
     testCopyAndMoveSemantics();
     testMetrics();

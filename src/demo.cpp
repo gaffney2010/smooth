@@ -4,6 +4,7 @@
 
 #include "smooth/dynamic_matrix_representation.hpp"
 #include "smooth/row_values_representation.hpp"
+#include "smooth/scalar_representation.hpp"
 #include "smooth/smooth.hpp"
 #include "smooth/sparse_representation.hpp"
 
@@ -98,41 +99,31 @@ int main() {
               << " (isNegative() = " << fromNegInt.isNegative() << ")\n\n";
 
     // --- Addition --------------------------------------------------------
-    // add()/operator+= mutate in place; the free operator+ (shared by all
-    // four types) makes a copy first and adds into that. Both dispatch to
-    // the canonical representation's addInPlace(), which -- per
-    // representation -- either walks bits with an explicit carry (Sparse,
-    // Dynamic) or accumulates column totals directly (RowValues).
+    // operator+ is the only way to add: it never mutates either operand --
+    // it copies the left-hand side and adds the right-hand side into that
+    // copy, dispatching to the canonical representation's addInPlace(),
+    // which -- per representation -- either walks bits with an explicit
+    // carry (Sparse, Dynamic) or accumulates column totals directly
+    // (RowValues). Both operands must have the same canonical
+    // representation -- there's no implicit reconciliation -- or it
+    // throws std::invalid_argument. Every freshly constructed number
+    // starts out canonical() == Dynamic, so two of them always match.
     std::cout << "--- Addition ---\n";
-    smooth::SmoothInteger a1;
+    smooth::SmoothInteger a1, a2;
     a1.setValue(12LL);
-    smooth::SmoothInteger a2;
     a2.setValue(7LL);
-    a1.add(a2);
-    std::cout << "SmoothInteger: 12 + 7 = " << a1.value() << "\n";
-
-    a1 += 3LL;
-    std::cout << "  += 3 (scalar, converted via setValue) -> " << a1.value() << "\n";
-
     smooth::SmoothInteger a3 = a1 + a2;
-    std::cout << "operator+ (value-returning): (" << a1.value() << ") + (" << a2.value() << ") = " << a3.value()
-              << " -- both operands unchanged: " << a1.value() << ", " << a2.value() << "\n\n";
+    std::cout << "SmoothInteger: 12 + 7 = " << a3.value() << " -- both operands unchanged: " << a1.value() << ", "
+              << a2.value() << "\n\n";
 
     // Signed addition combines magnitudes when signs match, and otherwise
     // subtracts the smaller magnitude from the larger and takes the larger
     // operand's sign -- ordinary signed-number addition.
-    smooth::SmoothSignedInteger s1;
+    smooth::SmoothSignedInteger s1, s2;
     s1.setValue(5LL);
-    smooth::SmoothSignedInteger s2;
     s2.setValue(-3LL);
-    s1 += s2;
-    std::cout << "SmoothSignedInteger: 5 + (-3) = " << s1.value() << " (isNegative() = " << s1.isNegative()
-              << ")\n";
-
-    smooth::SmoothSignedInteger s3;
-    s3.setValue(3LL);
-    s3 += -10LL;
-    std::cout << "SmoothSignedInteger: 3 += -10 -> " << s3.value() << " (isNegative() = " << s3.isNegative()
+    smooth::SmoothSignedInteger s3 = s1 + s2;
+    std::cout << "SmoothSignedInteger: 5 + (-3) = " << s3.value() << " (isNegative() = " << s3.isNegative()
               << ")\n\n";
 
     // --- Representations demo -------------------------------------------
@@ -146,14 +137,24 @@ int main() {
     r.set(1, 0);  // 2^1 = 2
     r.set(0, 2);  // 3^2 = 9
 
-    std::cout << "Same number, viewed through all three representations:\n";
+    std::cout << "Same number, viewed through Dynamic/Sparse/RowValues:\n";
     std::cout << "Dynamic:\n";
     r.printDynamic();
     std::cout << "Sparse:\n";
     r.printSparse();
     std::cout << "RowValues:\n";
     r.printRowValues();
-    std::cout << "Value: " << r.value() << "\n\n";
+    std::cout << "Value: " << r.value() << "\n";
+
+    // Scalar can only hold a plain number (everything in column j = 0), so
+    // converting this one -- which has a bit in column 2 -- throws.
+    std::cout << "printScalar() on that same number throws (it has a term in column 2):\n";
+    try {
+        r.printScalar();
+    } catch (const std::exception& e) {
+        std::cout << "  caught: " << e.what() << "\n";
+    }
+    std::cout << "\n";
 
     // --- Dynamic growth, step by step -------------------------------------
     // DynamicMatrixRepresentation isn't gated by any capacity -- it starts
@@ -200,11 +201,38 @@ int main() {
     std::cout << "RowValues: n[0]=3 + n[0]=2, direct accumulation (no bit carry needed): ";
     rowA.print(std::cout);
 
+    // --- ScalarRepresentation ------------------------------------------------
+    // Stores the number as a single plain int/float rather than a bit grid:
+    // every term it can hold lives in column j = 0, so its value is just
+    // that one number. It's still a RepresentationBase, purely so a number
+    // using it can still convert to/from the others via the usual
+    // ensure()/forEachSet() machinery -- it's not a standalone type.
+    std::cout << "\n--- ScalarRepresentation ---\n";
+    smooth::ScalarRepresentation scalarA(false), scalarB(false);
+    scalarA.setColumnValue(0, 42.0);
+    scalarB.setColumnValue(0, 8.0);
+    scalarA.addInPlace(scalarB);
+    std::cout << "Scalar: 42 + 8, direct scalar addition (no bit decomposition at all): ";
+    scalarA.print(std::cout);
+
+    smooth::SmoothInteger plain;
+    plain.setValue(17LL);
+    std::cout << "SmoothInteger.setValue(17), printScalar(): ";
+    plain.printScalar();
+
+    std::cout << "That same number after also setting bit (0,2) [not column 0], printScalar() throws:\n";
+    plain.set(0, 2);
+    try {
+        plain.printScalar();
+    } catch (const std::exception& e) {
+        std::cout << "  caught: " << e.what() << "\n";
+    }
+
     // --- Metrics -------------------------------------------------------------
     // Optional, shared via the constructor: every representation conversion
     // (via ensure(), triggered here by the print*() calls) increments a
-    // counter named convert_<from>_to_<to>. a += b keeps a's metrics; a + b
-    // keeps a's unless a has none, in which case it falls back to b's.
+    // counter named convert_<from>_to_<to>. a + b keeps a's metrics unless
+    // a has none, in which case it falls back to b's.
     std::cout << "\n--- Metrics ---\n";
     auto metrics = std::make_shared<smooth::Metrics>();
     smooth::SmoothInteger m1(metrics);
@@ -220,10 +248,6 @@ int main() {
     metrics->print();
 
     smooth::SmoothInteger m2;  // no metrics
-    m1 += m2;
-    std::cout << "\nAfter m1 += m2 (m2 has no metrics), m1 still has its own: " << (m1.hasMetrics() ? "yes" : "no")
-              << "\n";
-
     smooth::SmoothInteger m3 = m1 + m2;
     std::cout << "m1 + m2 -> result keeps m1's metrics (m1 has some, m2 doesn't): "
               << (m3.metricsPtr() == metrics ? "same metrics object as m1" : "different") << "\n";

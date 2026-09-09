@@ -28,11 +28,11 @@ optional `std::shared_ptr<Metrics>` as their one constructor argument —
 see "Metrics" below.
 
 Every type shares its `get`/`set`/`clear`/`value`/`print*`/`setBounds`/
-`add`/`operator+=`/`operator+` behavior — see `SmoothNumberBase` and
-"Addition" below — and the two signed types add sign-related methods (and
-their own, sign-aware addition) on top (see "Signed types" below). All four
-are copyable (a copy deep-clones the underlying representation, sharing no
-state with the original) as well as movable.
+`operator+` behavior — see `SmoothNumberBase` and "Addition" below — and
+the two signed types add sign-related methods (and their own, sign-aware
+`operator+`) on top (see "Signed types" below). All four are copyable (a
+copy deep-clones the underlying representation, sharing no state with the
+original) as well as movable.
 
 ### `SmoothNumberBase`
 
@@ -110,6 +110,16 @@ each a class implementing `RepresentationBase`
   into the new, larger array. `reset()` drops it back to 0x0, so converting
   into Dynamic from another representation regrows it from scratch, one
   doubling at a time, as each set bit is replayed into it.
+- **Scalar** (`scalar_representation.hpp`) — stores the number as a single
+  plain value (an integer or a float) rather than a `(i, j)` bit grid:
+  every term it can hold lives in column `j = 0`, so its value is just that
+  one number (`3^0 = 1`). It's still a `RepresentationBase`, purely so a
+  number stored this way can still convert to and from the others through
+  the ordinary machinery — it isn't a standalone type of its own. Because
+  it can only hold column-0 terms, converting a number with a genuine
+  multi-column value (e.g. one with a bit at `(0, 2)`, i.e. `3^2`) into
+  Scalar — or `set()`/`setColumnValue()` on any column but 0 — throws
+  `std::invalid_argument`.
 
 Exactly one representation is **canonical** — the trusted, up-to-date copy
 (`Dynamic` by default). `set`/`get`/`value()` always operate through the
@@ -118,10 +128,11 @@ invalidates the other representations (a `set` to the same value it already
 had does not); an already-canonical representation is never redundantly
 reconverted. Which representation is canonical, and when (if ever) that
 changes, is decided internally — there is no public method to force it, by
-design.
+design (every number currently starts out, and stays, canonical on
+`Dynamic`).
 
-- `canonical()` — which `Representation` (`Sparse`, `RowValues`, or
-  `Dynamic`) is currently canonical (read-only).
+- `canonical()` — which `Representation` (`Sparse`, `RowValues`, `Dynamic`,
+  or `Scalar`) is currently canonical (read-only).
 - `printSparse(os = std::cout)` — converts to Sparse if needed, then prints
   the set of coordinates, e.g. `{(0, 2), (1, 0)}`.
 - `printRowValues(os = std::cout)` — converts to RowValues if needed, then
@@ -132,6 +143,10 @@ design.
   entries (negative index) and the whole-number entries (non-negative
   index); the whole-number part is the block below and to the right of the
   lines.
+- `printScalar(os = std::cout)` — converts to Scalar if needed, then prints
+  the number as a plain integer or float. Converting throws
+  `std::invalid_argument` if the number's value isn't representable as a
+  plain number (see Scalar, above).
 
 `value()` calls straight through to the canonical representation's own
 `value()`, so each avoids doing more work than it needs to:
@@ -142,6 +157,8 @@ design.
   set, computing `sum_j n_j * 3^j` directly, with no per-bit decoding.
 - Dynamic — walks only its own currently allocated capacity, which (after a
   conversion) is sized just large enough to cover the set bits.
+- Scalar — the stored value already *is* the total (`3^0 = 1`), so this is
+  just returning it, no computation at all.
 
 Converting one representation from another goes through `forEachSet(fn)`,
 which asks the *source* representation to invoke `fn(i, j)` once per set
@@ -188,32 +205,44 @@ constructor.
 
 ## Addition
 
-Every type supports adding another number of the same type, or a plain
-scalar, in place:
+Addition is purely value-returning — there is no `add()` method and no
+`operator+=`, only `operator+`, which never mutates either operand.
+Scalars can't be added either; use `setValue()` to build a plain number
+first, or the Scalar representation (below), and add that. Each concrete
+type defines its own `operator+`:
 
 ```cpp
-void add(const SmoothNumberBase& other);   // and Signed<Base>'s own overload
-void add(long long scalar);
-void add(double scalar);
-
-SmoothNumberBase& operator+=(const SmoothNumberBase& other);  // thin wrappers
-SmoothNumberBase& operator+=(long long scalar);               // over add()
-SmoothNumberBase& operator+=(double scalar);
+friend SmoothInteger operator+(SmoothInteger a, const SmoothInteger& b);
+friend SmoothFloat operator+(SmoothFloat a, const SmoothFloat& b);
+friend Signed<Base> operator+(Signed<Base> a, const Signed<Base>& b);  // both signed types
 ```
 
-plus a value-returning `operator+`, shared by all four types as a single
-template (`T operator+(T lhs, const T& rhs)`, and scalar overloads) that
-copies its left operand and adds into the copy — this is what the copy
-constructor mentioned above exists for.
+Each is a **hidden friend**: a `friend` function defined inline inside the
+class body, found only via argument-dependent lookup on its own operand
+types. That's needed because the in-place building block it calls,
+`SmoothNumberBase::addMatchingInPlace()` (and, for signed types,
+`subtractMagnitudeInPlace()`), is `protected` — not part of the public
+API, since it mutates in place — and a plain free function couldn't reach
+a protected member, but a friend defined inside a derived class can,
+through an object of that derived type, per ordinary protected-access
+rules. `operator+` copies its left operand (`a`, taken by value — this is
+what the copy constructor mentioned above exists for), mutates the copy in
+place using that protected primitive, and returns it.
 
-A scalar is added by converting it the same way `setValue()` does (placing
-it in column `j = 0`) and then adding that in — "converting the number"
-into a smooth number first, per the request that started this feature.
+**Representations must match.** `addMatchingInPlace()` throws
+`std::invalid_argument` unless `a.canonical() == b.canonical()` — there is
+no implicit reconciliation between two different representations the way
+`ensure()`'s `forEachSet`-based conversion provides elsewhere. In practice
+every freshly constructed number starts out (and, for now, stays)
+canonical on `Dynamic`, so two independently constructed numbers always
+match; the check exists for when that stops being universally true (e.g.
+if a future heuristic — or a future public API — ever picks a different
+representation for some numbers).
 
-**Unsigned types** (`add(const SmoothNumberBase&)`, in `SmoothNumberBase`)
-dispatch straight to the canonical representation's `addInPlace(other)` —
-each representation adds the 1s and handles carries however is natural for
-its own storage:
+**Unsigned types'** `addMatchingInPlace()` (in `SmoothNumberBase`)
+dispatches straight to the canonical representation's `addInPlace(other)`
+— each representation adds the 1s and handles carries however is natural
+for its own storage:
 
 - Sparse and Dynamic have no more direct way to add a number than walking
   `other`'s bits one at a time (captured up front via `forEachSet`, so this
@@ -229,16 +258,19 @@ its own storage:
   decompose `other` into bits first just to reconstruct those same totals.
   Only when `other` is some other representation does it fall back to
   reading `other`'s bits via `forEachSet` and accumulating each one's `2^i`.
+- Scalar adds the two stored values directly when `other` is also a
+  `ScalarRepresentation`; otherwise it decomposes `other`'s bits via
+  `forEachSet`, throwing if any of them fall outside column 0.
 
 **Signed types** need actual signed arithmetic, since the bit grid is
 magnitude-only and the sign lives in `Signed<Base>`'s own flag:
-`Signed<Base>::operator+=` combines magnitudes via `Base::add()` when both
-signs match, and otherwise subtracts the smaller magnitude from the larger
-and takes the larger operand's sign (a result of exactly zero is
-normalized back to non-negative). The subtraction step uses a second,
-protected primitive, `SmoothNumberBase::subtractMagnitudeInPlace()`, not
-exposed publicly since plain subtraction has no meaning for the two
-unsigned types.
+`Signed<Base>::operator+` combines magnitudes via `Base::addMatchingInPlace()`
+when both signs match, and otherwise subtracts the smaller magnitude from
+the larger and takes the larger operand's sign (a result of exactly zero
+is normalized back to non-negative). The subtraction step uses a second,
+protected primitive, `SmoothNumberBase::subtractMagnitudeInPlace()` (which
+enforces the same matching-representation rule), not exposed publicly
+since plain subtraction has no meaning for the two unsigned types.
 
 Unlike addition, that subtraction has no natural per-representation
 variation, so it isn't dispatched through `RepresentationBase` at all: it
@@ -283,21 +315,18 @@ Copying or moving a number carries its `Metrics` pointer along (still
 shared with the original), consistent with everything else about
 `SmoothNumberBase`'s copy semantics.
 
-Addition follows two rules for which `Metrics` a result ends up with:
-
-- **`a += b` always keeps a's metrics.** `add()`/`operator+=` never touch
-  `metrics_` themselves, so this falls out for free for the two unsigned
-  types — but `Signed<Base>::operator+=`'s "different signs, `|a| < |b|`"
-  branch internally replaces `*this` wholesale with a copy of `b` (to get
-  at `b`'s larger magnitude before subtracting), which would otherwise
-  silently adopt `b`'s metrics instead. It works around that by capturing
-  `this->metricsPtr()` up front and restoring it with `setMetricsPtr()`
-  after, regardless of which internal branch ran.
-- **`a + b` keeps a's metrics, unless a has none, in which case it falls
-  back to b's (if b has any).** The shared `operator+` template (see
-  "Addition") builds its result by copying `a` and adding `b` into that
-  copy — which, per the rule above, already keeps a's metrics — and then,
-  only if that copy still has no metrics, adopts `b`'s.
+**`a + b` keeps a's metrics, unless a has none, in which case it falls back
+to b's (if b has any).** For the two unsigned types this falls out
+directly: `operator+` copies `a` (carrying `a`'s metrics along) and adds
+`b` into that copy without `addMatchingInPlace()` ever touching
+`metrics_`, so the copy still has whatever `a` had; only if that's
+`nullptr` does it adopt `b`'s. `Signed<Base>::operator+` has to be more
+deliberate about it: its "different signs, `|a| < |b|`" branch builds the
+result out of a copy of `b` (to get at `b`'s larger magnitude before
+subtracting), which would otherwise silently carry `b`'s metrics through
+regardless of what `a` had. So it captures the correct choice (`a`'s,
+falling back to `b`'s) once up front, before any branch runs, and stamps
+it onto the final result at the end, regardless of which branch ran.
 
 ## Signed types
 
@@ -324,8 +353,8 @@ give it:
   input (`setNegative(v < 0)`), then hands the non-negative magnitude to
   `Base::setValue()`, so a negative value no longer throws on a signed
   type — it's encoded via the sign flag instead.
-- `add`/`operator+=` (`const Signed<Base>&`, `long long`, `double`) —
-  proper signed addition; see "Addition" above.
+- `operator+(Signed<Base>, const Signed<Base>&)` — proper, value-returning
+  signed addition; see "Addition" above.
 
 `set`/`get`/`clear`/`print*` are untouched — they still only ever see the
 magnitude. This is the "share logic where you can" part of the design: the
@@ -352,27 +381,30 @@ cmake --build build
 it, reading its value, using `setBounds()` as an optional guardrail, a
 `SmoothFloat` with fractional terms, `SmoothSignedInteger` /
 `SmoothSignedFloat` negation, converting plain numbers via `setValue()`
-(including a negative value on a signed type), number + number and
-number + scalar addition (`add()`, `operator+=`, and the value-returning
-`operator+`), signed addition with a sign flip, viewing a number through
-all three representations, using `DynamicMatrixRepresentation`,
-`SparseRepresentation`, and `RowValuesRepresentation` directly (since a
-`SmoothNumberBase`'s canonical representation always starts out, and for
-now stays, Dynamic) to run each representation's own `addInPlace()`
-strategy, including a `Sparse` carry, directly, and attaching a `Metrics`
-to a number to show its conversion counters, plus the `a += b` / `a + b`
-metrics-inheritance rules.
+(including a negative value on a signed type), value-returning `operator+`
+for both a plain and a signed sum, viewing a number through
+Dynamic/Sparse/RowValues plus `printScalar()` throwing on a number with a
+multi-column term, using `DynamicMatrixRepresentation`,
+`SparseRepresentation`, `RowValuesRepresentation`, and
+`ScalarRepresentation` directly (since a `SmoothNumberBase`'s canonical
+representation always starts out, and for now stays, Dynamic) to run each
+representation's own `addInPlace()` strategy, including a `Sparse` carry
+and Scalar's own throw for a non-column-0 term, and attaching a `Metrics`
+to a number to show its conversion counters and the `a + b`
+metrics-inheritance rule.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
 suite (no test framework linked in — see `CMakeLists.txt`) covering all of
 the above: bounds/fractional restrictions, `setValue()`, signed
-sign-handling, agreement across all three representations, each
-`RepresentationBase` implementation exercised directly (including
-`clone()` independence and `Sparse`'s carry), unsigned and signed addition
-(same-sign, both differing-sign directions, the zero tie, the
-cross-column/mixed-radix borrow case, and scalar addition), `Metrics`
-counters (including that redundant conversions aren't double-counted, and
-the `a += b`/`a + b` metrics-inheritance rules — notably that the signed
-swap branch still keeps a's metrics), and copy/move
-semantics. It builds as a second executable, `smooth_tests`, runnable
-directly or via `ctest`.
+sign-handling, agreement across Dynamic/Sparse/RowValues plus
+`printScalar()`'s success/throw cases, each `RepresentationBase`
+implementation exercised directly (including `clone()` independence,
+`Sparse`'s carry, and `ScalarRepresentation`'s column-0 restriction),
+value-returning unsigned and signed addition (same-sign, both
+differing-sign directions, the zero tie, and the cross-column/mixed-radix
+borrow case — and that neither operand is ever mutated), that addition
+requires matching representations, `Metrics` counters (including that
+redundant conversions aren't double-counted, and the `a + b`
+metrics-inheritance rule — notably that the signed swap branch still keeps
+a's metrics), and copy/move semantics. It builds as a second executable,
+`smooth_tests`, runnable directly or via `ctest`.

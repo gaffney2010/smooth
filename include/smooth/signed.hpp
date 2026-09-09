@@ -57,53 +57,42 @@ public:
         Base::setValue(v < 0.0 ? -v : v);
     }
 
-    // Full signed addition. Same sign: the magnitudes just combine (via
-    // Base::add(), i.e. SmoothNumberBase's ordinary "add the 1s and handle
-    // carries" addition), sign unchanged. Different signs: subtract the
-    // smaller magnitude from the larger (SmoothNumberBase::
-    // subtractMagnitudeInPlace(), protected precisely so only this signed-
-    // aware caller uses it) and take the larger operand's sign -- ordinary
-    // signed-number addition. A result of exactly zero is normalized back
-    // to non-negative, so isNegative() is never true for a zero value.
+    // Value-returning signed addition: never mutates a or b. Same sign:
+    // the magnitudes just combine (via Base::addMatchingInPlace(), i.e.
+    // SmoothNumberBase's ordinary "add the 1s and handle carries"
+    // addition -- which throws unless a.canonical() == b.canonical()),
+    // sign unchanged. Different signs: subtract the smaller magnitude from
+    // the larger (Base::subtractMagnitudeInPlace(), likewise requiring
+    // matching representations) and take the larger operand's sign --
+    // ordinary signed-number addition. A result of exactly zero is
+    // normalized back to non-negative, so isNegative() is never true for a
+    // zero value. A hidden friend, same as SmoothInteger/SmoothFloat's
+    // operator+ -- see SmoothInteger::operator+ for why.
     //
-    // a += b always keeps a's metrics: the swap branch below replaces
-    // *this wholesale with a copy of `other` (to get at other's larger
-    // magnitude), which would otherwise silently adopt other's metrics
-    // instead, so this->metricsPtr() is captured up front and restored
-    // afterward regardless of which branch ran.
-    Signed<Base>& operator+=(const Signed<Base>& other) {
-        auto myMetrics = this->metricsPtr();
-        if (negative_ == other.negative_) {
-            Base::add(other);
-        } else if (Base::value() >= other.Base::value()) {
-            this->subtractMagnitudeInPlace(other);
+    // Metrics: keeps a's, falling back to b's if a has none -- captured
+    // once up front (before any branch runs) and stamped on at the end,
+    // since the "different magnitudes, |a| < |b|" branch below builds its
+    // result out of a copy of b, which would otherwise carry b's metrics
+    // through regardless of what a's were.
+    friend Signed<Base> operator+(Signed<Base> a, const Signed<Base>& b) {
+        auto keepMetrics = a.metricsPtr();
+        if (!keepMetrics && b.hasMetrics()) keepMetrics = b.metricsPtr();
+
+        if (a.negative_ == b.negative_) {
+            a.Base::addMatchingInPlace(b);
+        } else if (a.Base::value() >= b.Base::value()) {
+            a.Base::subtractMagnitudeInPlace(b);
         } else {
-            Signed<Base> larger(other);
-            larger.subtractMagnitudeInPlace(*this);
-            *this = std::move(larger);
+            Signed<Base> result(b);
+            result.subtractMagnitudeInPlace(a);
+            result.negative_ = b.negative_;
+            a = std::move(result);
         }
-        this->setMetricsPtr(std::move(myMetrics));
-        if (Base::value() == 0.0) negative_ = false;
-        return *this;
-    }
 
-    Signed<Base>& operator+=(long long scalar) {
-        Signed<Base> delta;
-        delta.setValue(scalar);
-        return *this += delta;
+        a.setMetricsPtr(std::move(keepMetrics));
+        if (a.Base::value() == 0.0) a.negative_ = false;
+        return a;
     }
-
-    Signed<Base>& operator+=(double scalar) {
-        Signed<Base> delta;
-        delta.setValue(scalar);
-        return *this += delta;
-    }
-
-    // Named-method form, matching the rest of this library's naming
-    // (set/get/clear/setValue) alongside the operator+= sugar above.
-    void add(const Signed<Base>& other) { *this += other; }
-    void add(long long scalar) { *this += scalar; }
-    void add(double scalar) { *this += scalar; }
 
 private:
     bool negative_ = false;

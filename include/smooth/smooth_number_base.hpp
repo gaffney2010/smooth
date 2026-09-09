@@ -12,6 +12,7 @@
 #include "smooth/metrics.hpp"
 #include "smooth/representation_base.hpp"
 #include "smooth/row_values_representation.hpp"
+#include "smooth/scalar_representation.hpp"
 #include "smooth/sparse_representation.hpp"
 
 namespace smooth {
@@ -28,19 +29,20 @@ namespace smooth {
 //
 // Internally, the same logical bit grid can be held in more than one
 // representation (see representation_base.hpp and its implementations:
-// SparseRepresentation, RowValuesRepresentation, DynamicMatrixRepresentation).
-// None of them need any capacity declared up front -- each is either
-// naturally unbounded (Sparse, RowValues) or grows to fit whatever gets set
-// (Dynamic). Only one representation is canonical at a time -- it is the
-// trusted source of truth. The others are lazily (re)derived from it on
-// demand and are otherwise considered outdated/un-built. This class talks
-// to representations purely through the RepresentationBase interface, so
-// adding a new one means: adding an enumerator to Representation, adding a
-// slot to the construction/registration in the constructor below, and
-// writing the new class -- no other existing logic needs to change.
+// SparseRepresentation, RowValuesRepresentation, DynamicMatrixRepresentation,
+// ScalarRepresentation). None of them need any capacity declared up front --
+// each is either naturally unbounded (Sparse, RowValues, Scalar) or grows to
+// fit whatever gets set (Dynamic). Only one representation is canonical at a
+// time -- it is the trusted source of truth. The others are lazily
+// (re)derived from it on demand and are otherwise considered
+// outdated/un-built. This class talks to representations purely through the
+// RepresentationBase interface, so adding a new one means: adding an
+// enumerator to Representation, adding a slot to the
+// construction/registration in the constructor below, and writing the new
+// class -- no other existing logic needs to change.
 class SmoothNumberBase {
 public:
-    enum class Representation { Sparse, RowValues, Dynamic };
+    enum class Representation { Sparse, RowValues, Dynamic, Scalar };
 
     virtual ~SmoothNumberBase() = default;
 
@@ -146,6 +148,15 @@ public:
         repFor(Representation::Dynamic).print(os);
     }
 
+    // Converts to Scalar if needed, then prints it, as a plain integer or
+    // float. Converting throws std::invalid_argument if the number's value
+    // isn't representable as a plain number (i.e. it has a term with
+    // column j != 0 -- see ScalarRepresentation).
+    void printScalar(std::ostream& os = std::cout) {
+        ensure(Representation::Scalar);
+        repFor(Representation::Scalar).print(os);
+    }
+
     // Sum of 2^i * 3^j over all set bits, computed by whichever
     // representation is canonical (see each representation's value() for
     // its strategy). Uses double, so precision degrades for large
@@ -191,75 +202,6 @@ public:
         repFor(canonical_).setColumnValue(0, v);
     }
 
-    // Adds `other`'s value into this number in place, through the
-    // canonical representation's addInPlace() (see RepresentationBase) --
-    // each representation adds the 1s and handles carries however is
-    // natural for its own storage. Throws std::invalid_argument if `other`
-    // has fractional terms but this type doesn't allow them.
-    void add(const SmoothNumberBase& other) {
-        if (!allowFractional_ && other.allowFractional_) {
-            bool otherHasFractional = false;
-            other.repFor(other.canonical_).forEachSet([&otherHasFractional](int i, int j) {
-                if (i < 0 || j < 0) otherHasFractional = true;
-            });
-            if (otherHasFractional) {
-                throw std::invalid_argument(
-                    "SmoothNumberBase::add: other has fractional terms but this type doesn't allow them");
-            }
-        }
-        repFor(canonical_).addInPlace(other.repFor(other.canonical_));
-        invalidateAllExcept(canonical_);
-    }
-
-    // Adds a plain integer/float into this number in place, by converting
-    // it the same way setValue() does -- placing it entirely in column 0 --
-    // into a scratch representation, then adding that in. Throws
-    // std::invalid_argument for a negative scalar (see setValue()) or (for
-    // the double overload) a fractional scalar on a non-fractional type.
-    void add(long long scalar) {
-        if (scalar < 0) {
-            throw std::invalid_argument("SmoothNumberBase::add: scalar must be non-negative for this type");
-        }
-        RowValuesRepresentation delta(allowFractional_);
-        delta.setColumnValue(0, static_cast<double>(scalar));
-        repFor(canonical_).addInPlace(delta);
-        invalidateAllExcept(canonical_);
-    }
-
-    void add(double scalar) {
-        if (scalar < 0.0) {
-            throw std::invalid_argument("SmoothNumberBase::add: scalar must be non-negative for this type");
-        }
-        double frac = scalar - std::floor(scalar);
-        if (frac > 1e-9 && !allowFractional_) {
-            throw std::invalid_argument(
-                "SmoothNumberBase::add: scalar has a fractional part but this type doesn't allow fractional "
-                "terms");
-        }
-        RowValuesRepresentation delta(allowFractional_);
-        delta.setColumnValue(0, scalar);
-        repFor(canonical_).addInPlace(delta);
-        invalidateAllExcept(canonical_);
-    }
-
-    // Operator sugar over add(); returns *this so the usual +=/chained-call
-    // idioms work. Not virtual -- like value()/setValue(), Signed<> hides
-    // rather than overrides these (see signed.hpp).
-    SmoothNumberBase& operator+=(const SmoothNumberBase& other) {
-        add(other);
-        return *this;
-    }
-
-    SmoothNumberBase& operator+=(long long scalar) {
-        add(scalar);
-        return *this;
-    }
-
-    SmoothNumberBase& operator+=(double scalar) {
-        add(scalar);
-        return *this;
-    }
-
 protected:
     // allow_fractional lets i and j go negative, so the number can
     // represent fractional values (e.g. i = -1 contributes a factor of
@@ -272,17 +214,51 @@ protected:
         reps_[index(Representation::Sparse)] = std::make_unique<SparseRepresentation>(allow_fractional);
         reps_[index(Representation::RowValues)] = std::make_unique<RowValuesRepresentation>(allow_fractional);
         reps_[index(Representation::Dynamic)] = std::make_unique<DynamicMatrixRepresentation>(allow_fractional);
+        reps_[index(Representation::Scalar)] = std::make_unique<ScalarRepresentation>(allow_fractional);
         valid_[index(Representation::Dynamic)] = true;
+    }
+
+    // Adds other's value into this one's, in place, through the canonical
+    // representation's addInPlace() (see RepresentationBase) -- each
+    // representation adds the 1s and handles carries however is natural
+    // for its own storage. Protected: mutating in place is only ever used
+    // internally, to build the copy-based, value-returning operator+ (see
+    // smooth_integer.hpp, smooth_float.hpp, signed.hpp) -- it's not part of
+    // the public API.
+    //
+    // Throws std::invalid_argument if this->canonical() != other.canonical()
+    // (representations must match -- this never implicitly reconciles two
+    // different representations the way ensure()'s forEachSet-based
+    // conversion does), or if `other` has fractional terms this type
+    // doesn't allow.
+    void addMatchingInPlace(const SmoothNumberBase& other) {
+        requireMatchingRepresentation(other);
+        if (!allowFractional_ && other.allowFractional_) {
+            bool otherHasFractional = false;
+            other.repFor(other.canonical_).forEachSet([&otherHasFractional](int i, int j) {
+                if (i < 0 || j < 0) otherHasFractional = true;
+            });
+            if (otherHasFractional) {
+                throw std::invalid_argument(
+                    "SmoothNumberBase::addMatchingInPlace: other has fractional terms but this type doesn't "
+                    "allow them");
+            }
+        }
+        repFor(canonical_).addInPlace(other.repFor(other.canonical_));
+        invalidateAllExcept(canonical_);
     }
 
     // Subtracts other's magnitude from this one's, in place: this - other.
     // Precondition: this->value() >= other.value(), and `other` is the same
     // concrete type as `this` (so their allowFractional_ agree) -- callers
-    // (currently only Signed<Base>::operator+=, for combining operands with
+    // (currently only Signed<Base>'s operator+, for combining operands with
     // different signs) are responsible for both. Protected rather than
     // public: unlike addition, plain subtraction has no meaning for the two
     // unsigned types (their bit grid can't hold a negative result), so it's
     // only exposed as a building block for signed addition.
+    //
+    // Throws std::invalid_argument if this->canonical() != other.canonical()
+    // (representations must match, same as addMatchingInPlace()).
     //
     // Unlike addInPlace(), this isn't dispatched per representation: it
     // works by converting both operands to per-column totals (n_j, as in
@@ -295,6 +271,7 @@ protected:
     // cheaper for RowValues to do directly), so one shared implementation
     // covers every representation.
     void subtractMagnitudeInPlace(const SmoothNumberBase& other) {
+        requireMatchingRepresentation(other);
         std::map<int, double> totals;
         repFor(canonical_).forEachSet([&totals](int i, int j) { totals[j] += std::pow(2.0, i); });
         other.repFor(other.canonical_).forEachSet([&totals](int i, int j) { totals[j] -= std::pow(2.0, i); });
@@ -316,7 +293,7 @@ protected:
     }
 
 private:
-    static constexpr std::size_t kRepresentationCount = 3;
+    static constexpr std::size_t kRepresentationCount = 4;
 
     static std::size_t index(Representation r) { return static_cast<std::size_t>(r); }
 
@@ -328,12 +305,24 @@ private:
                 return "row_values";
             case Representation::Dynamic:
                 return "dynamic";
+            case Representation::Scalar:
+                return "scalar";
         }
         return "unknown";
     }
 
     RepresentationBase& repFor(Representation r) { return *reps_[index(r)]; }
     const RepresentationBase& repFor(Representation r) const { return *reps_[index(r)]; }
+
+    // Shared by addMatchingInPlace() and subtractMagnitudeInPlace(): both
+    // require this->canonical() == other.canonical() -- no automatic
+    // cross-representation reconciliation for addition, unlike ensure().
+    void requireMatchingRepresentation(const SmoothNumberBase& other) const {
+        if (canonical_ != other.canonical_) {
+            throw std::invalid_argument(
+                "SmoothNumberBase: representations must match to add (convert one to match the other first)");
+        }
+    }
 
     void checkBounds(int i, int j) const {
         if (!allowFractional_ && (i < 0 || j < 0)) {
@@ -407,40 +396,16 @@ private:
     Representation canonical_;
 };
 
-// Value-returning addition (a + b), built from a copy plus operator+= --
-// this is what the copy constructor above exists for. Templated once and
-// shared by every concrete type (SmoothInteger, SmoothFloat, and both
-// Signed<> types), each of which supplies its own operator+= (see
-// smooth_number_base.hpp's own SmoothNumberBase::operator+= and
-// signed.hpp's Signed<Base>::operator+=); T's own overload is always
-// chosen over the inherited SmoothNumberBase one when T = Signed<Base>,
-// since Signed<Base> declares operator+= itself and so hides (rather than
-// overloads-with) the base's version.
-//
-// Metrics: `lhs` is a copy of `a`, and `lhs += rhs` (per operator+='s own
-// contract) keeps that copy's -- i.e. a's -- metrics no matter what. This
-// is the one place that differs from plain operator+=: if a had no
-// metrics to begin with, the result falls back to adopting b's (if b has
-// any), rather than staying without one.
-template <typename T>
-T operator+(T lhs, const T& rhs) {
-    lhs += rhs;
-    if (!lhs.hasMetrics() && rhs.hasMetrics()) {
-        lhs.setMetricsPtr(rhs.metricsPtr());
-    }
-    return lhs;
-}
-
-template <typename T>
-T operator+(T lhs, long long rhs) {
-    lhs += rhs;
-    return lhs;
-}
-
-template <typename T>
-T operator+(T lhs, double rhs) {
-    lhs += rhs;
-    return lhs;
-}
+// There is deliberately no operator+=/add() here, and no free operator+
+// template either: addition never mutates in place, and each concrete type
+// (SmoothInteger, SmoothFloat, Signed<Base>) defines its own
+// value-returning operator+ as a hidden friend (see smooth_integer.hpp,
+// smooth_float.hpp, signed.hpp), built from a copy plus the protected
+// addMatchingInPlace()/subtractMagnitudeInPlace() above. A hidden friend is
+// used (rather than a shared free template, as before) because that
+// in-place building block is now protected, not public -- a plain free
+// function couldn't reach it, but a friend defined inside a derived class
+// can, through an object of that derived type, per ordinary protected-
+// access rules.
 
 }  // namespace smooth
