@@ -147,6 +147,40 @@ public:
         }
     }
 
+    // Convolves this's column totals with other's: since value() =
+    // sum_j n_j * 3^j, multiplying two of these together is exactly
+    // multiplying two polynomials in the variable 3 (or long
+    // multiplication in base 3, if you allow a "digit" n_j to be any
+    // magnitude rather than just 0..2) -- the product's column j1+j2 gets
+    // n_j1 * n_j2 added in, for every pair of columns (j1, j2). Building
+    // the whole result in a fresh map first (rather than writing into
+    // values_ as the pairs are found) is what makes this safe even when
+    // `other` is `*this` (squaring): `otherTotals` is captured as an
+    // independent snapshot before values_ is touched at all.
+    void multiplyInPlace(const RepresentationBase& other) override {
+        std::map<int, double> otherTotals;
+        if (const auto* rowValues = dynamic_cast<const RowValuesRepresentation*>(&other)) {
+            otherTotals = rowValues->values_;
+        } else {
+            other.forEachSet([&otherTotals](int i, int j) { otherTotals[j] += std::pow(2.0, i); });
+        }
+
+        std::map<int, double> product;
+        for (const auto& colA : values_) {
+            for (const auto& colB : otherTotals) {
+                product[colA.first + colB.first] += colA.second * colB.second;
+            }
+        }
+        for (auto it = product.begin(); it != product.end();) {
+            if (it->second == 0.0) {
+                it = product.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        values_ = std::move(product);
+    }
+
 private:
     // Adds delta onto column j's total, dropping the entry if that brings
     // it back to exactly zero (keeping the invariant that values_ only

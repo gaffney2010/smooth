@@ -71,6 +71,14 @@ public:
     // shared helper.
     void addInPlace(const RepresentationBase& other) override { addBitsWithCarry(*this, other); }
 
+    // Likewise, a set of coordinates has no more direct way to multiply
+    // than pairing up every one of its own terms with every one of
+    // other's and carrying each pairwise sum in, so this defers to the
+    // shared helper too. `*this` is passed as both the destination and the
+    // left-hand operand -- multiplyBitsWithCarry() snapshots both
+    // operands' bits before resetting the destination, so this is safe.
+    void multiplyInPlace(const RepresentationBase& other) override { multiplyBitsWithCarry(*this, *this, other); }
+
 private:
     std::set<std::pair<int, int>> coords_;
 };

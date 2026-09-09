@@ -28,9 +28,10 @@ optional `std::shared_ptr<Metrics>` as their one constructor argument —
 see "Metrics" below.
 
 Every type shares its `get`/`set`/`clear`/`value`/`print*`/`setBounds`/
-`operator+` behavior — see `SmoothNumberBase` and "Addition" below — and
-the two signed types add sign-related methods (and their own, sign-aware
-`operator+`) on top (see "Signed types" below). All four are copyable (a
+`operator+`/`operator*` behavior — see `SmoothNumberBase` and
+"Addition"/"Multiplication" below — and the two signed types add
+sign-related methods (and their own, sign-aware `operator+`/`operator*`) on
+top (see "Signed types" below). All four are copyable (a
 copy deep-clones the underlying representation, sharing no state with the
 original) as well as movable.
 
@@ -89,7 +90,7 @@ mistakes if you want that guardrail, nothing more.
 The same number can be held in one of several internal representations,
 each a class implementing `RepresentationBase`
 (`get`/`set`/`reset`/`value`/`print`/`forEachSet`/`setColumnValue`/
-`addInPlace`/`clone`):
+`addInPlace`/`multiplyInPlace`/`clone`):
 
 - **Sparse** (`sparse_representation.hpp`) — the set of `(i, j)` coordinates
   whose bit is set. A `std::set` — a literal list of the coordinates that
@@ -283,6 +284,50 @@ overflow in a column only ever carries within that same column, since
 `2^i` doubles without ever needing to touch a neighboring column's power of
 3.)
 
+## Multiplication
+
+`operator*` gets exactly the same treatment as `operator+`: purely
+value-returning (no `multiply()`, no `operator*=`), no scalars, and the
+same hidden-friend/protected-`...MatchingInPlace()`/matching-representation
+machinery, all for the same reasons described under "Addition" — so this
+section only covers what's different: the math, and each representation's
+strategy for it.
+
+`(2^i1 * 3^j1) * (2^i2 * 3^j2) = 2^(i1+i2) * 3^(j1+j2)`: multiplying two
+smooth numbers means pairing up *every* term of one with *every* term of
+the other and adding exponents. `SmoothNumberBase::multiplyMatchingInPlace()`
+dispatches to the canonical representation's `multiplyInPlace(other)`:
+
+- Sparse and Dynamic have no more direct way to multiply than forming
+  every pairwise sum of exponents and carrying each one in — both share
+  the `multiplyBitsWithCarry(dst, a, b)` helper (`representation_base.hpp`),
+  which captures both operands' terms up front (so `x.multiplyInPlace(x)`,
+  squaring `x`, is safe) before resetting `dst` and carrying each pairwise
+  term in via `addSingleBitWithCarry()` — the same one-term carry step
+  `addBitsWithCarry()` also uses, extracted out so addition and
+  multiplication share it. Notably, this is the *same* strategy for both
+  Sparse and Dynamic: being a raw bit grid rather than a `std::set` doesn't
+  change anything about it, so neither needs to convert to the other (or
+  to anything else) just to multiply.
+- RowValues instead convolves column totals: this is the same operation as
+  multiplying two polynomials in the variable 3, or long multiplication in
+  base 3 (except a "digit" `n_j` can be any magnitude, not just `0..2`) —
+  the product's column `j1 + j2` gets `n_j1 * n_j2` added in, for every
+  pair of columns `(j1, j2)`. When `other` is also a `RowValuesRepresentation`
+  its columns are used directly; otherwise its column totals are first
+  computed via `forEachSet`.
+- Scalar multiplies its one stored value directly by `other`'s when
+  `other` is also a `ScalarRepresentation`; otherwise `other`'s column `j`
+  contributes a term at column `0 + j = j`, so this throws unless every
+  such `j` is `0` — except when this Scalar's own value is exactly `0`,
+  since `0 * anything` is `0` regardless of `other`'s shape, so that case
+  never throws.
+
+Signed multiplication is simpler than signed addition: there's no
+subtraction to worry about; the result's sign is just whether exactly one
+operand was negative (the usual sign-XOR rule), with a zero product
+normalized back to non-negative the same way a zero sum is.
+
 ## Metrics
 
 ```cpp
@@ -355,6 +400,8 @@ give it:
   type — it's encoded via the sign flag instead.
 - `operator+(Signed<Base>, const Signed<Base>&)` — proper, value-returning
   signed addition; see "Addition" above.
+- `operator*(Signed<Base>, const Signed<Base>&)` — value-returning signed
+  multiplication (the sign-XOR rule); see "Multiplication" above.
 
 `set`/`get`/`clear`/`print*` are untouched — they still only ever see the
 magnitude. This is the "share logic where you can" part of the design: the
@@ -382,16 +429,17 @@ it, reading its value, using `setBounds()` as an optional guardrail, a
 `SmoothFloat` with fractional terms, `SmoothSignedInteger` /
 `SmoothSignedFloat` negation, converting plain numbers via `setValue()`
 (including a negative value on a signed type), value-returning `operator+`
-for both a plain and a signed sum, viewing a number through
-Dynamic/Sparse/RowValues plus `printScalar()` throwing on a number with a
-multi-column term, using `DynamicMatrixRepresentation`,
+and `operator*` for both a plain and a signed case, viewing a number
+through Dynamic/Sparse/RowValues plus `printScalar()` throwing on a number
+with a multi-column term, using `DynamicMatrixRepresentation`,
 `SparseRepresentation`, `RowValuesRepresentation`, and
 `ScalarRepresentation` directly (since a `SmoothNumberBase`'s canonical
 representation always starts out, and for now stays, Dynamic) to run each
-representation's own `addInPlace()` strategy, including a `Sparse` carry
-and Scalar's own throw for a non-column-0 term, and attaching a `Metrics`
-to a number to show its conversion counters and the `a + b`
-metrics-inheritance rule.
+representation's own `addInPlace()`/`multiplyInPlace()` strategy, including
+a `Sparse` carry (for both addition and a carry-colliding multiplication),
+a `RowValues` convolution, and Scalar's own throw for a non-column-0 term,
+and attaching a `Metrics` to a number to show its conversion counters and
+the `a + b` metrics-inheritance rule.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
 suite (no test framework linked in — see `CMakeLists.txt`) covering all of
@@ -399,12 +447,15 @@ the above: bounds/fractional restrictions, `setValue()`, signed
 sign-handling, agreement across Dynamic/Sparse/RowValues plus
 `printScalar()`'s success/throw cases, each `RepresentationBase`
 implementation exercised directly (including `clone()` independence,
-`Sparse`'s carry, and `ScalarRepresentation`'s column-0 restriction),
-value-returning unsigned and signed addition (same-sign, both
-differing-sign directions, the zero tie, and the cross-column/mixed-radix
-borrow case — and that neither operand is ever mutated), that addition
-requires matching representations, `Metrics` counters (including that
-redundant conversions aren't double-counted, and the `a + b`
-metrics-inheritance rule — notably that the signed swap branch still keeps
-a's metrics), and copy/move semantics. It builds as a second executable,
-`smooth_tests`, runnable directly or via `ctest`.
+`Sparse`'s addition and multiplication carries, `RowValues`'s convolution,
+and `ScalarRepresentation`'s column-0 restriction, including its `0 *
+anything` exemption), value-returning unsigned and signed addition
+(same-sign, both differing-sign directions, the zero tie, and the
+cross-column/mixed-radix borrow case — and that neither operand is ever
+mutated), value-returning unsigned and signed multiplication (including
+the sign-XOR rule and a zero product's sign normalization), that both
+addition and multiplication require matching representations, `Metrics`
+counters (including that redundant conversions aren't double-counted, and
+the `a + b` metrics-inheritance rule — notably that the signed swap branch
+still keeps a's metrics), and copy/move semantics. It builds as a second
+executable, `smooth_tests`, runnable directly or via `ctest`.

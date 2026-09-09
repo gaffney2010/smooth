@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <stdexcept>
+#include <string>
 
 #include "smooth/dynamic_matrix_representation.hpp"
 #include "smooth/metrics.hpp"
@@ -233,18 +234,29 @@ protected:
     // doesn't allow.
     void addMatchingInPlace(const SmoothNumberBase& other) {
         requireMatchingRepresentation(other);
-        if (!allowFractional_ && other.allowFractional_) {
-            bool otherHasFractional = false;
-            other.repFor(other.canonical_).forEachSet([&otherHasFractional](int i, int j) {
-                if (i < 0 || j < 0) otherHasFractional = true;
-            });
-            if (otherHasFractional) {
-                throw std::invalid_argument(
-                    "SmoothNumberBase::addMatchingInPlace: other has fractional terms but this type doesn't "
-                    "allow them");
-            }
-        }
+        requireCompatibleFractional(other, "addMatchingInPlace");
         repFor(canonical_).addInPlace(other.repFor(other.canonical_));
+        invalidateAllExcept(canonical_);
+    }
+
+    // Multiplies this one's value by other's, in place, through the
+    // canonical representation's multiplyInPlace() (see
+    // RepresentationBase) -- each representation multiplies however is
+    // natural for its own storage. Protected for the same reason as
+    // addMatchingInPlace() -- mutating in place is only ever used
+    // internally, to build the copy-based, value-returning operator* (see
+    // smooth_integer.hpp, smooth_float.hpp, signed.hpp).
+    //
+    // Throws std::invalid_argument if this->canonical() != other.canonical()
+    // (representations must match, same as addMatchingInPlace()), or if
+    // `other` has fractional terms this type doesn't allow -- multiplying
+    // two non-negative exponents can never produce a negative one, so this
+    // type's own bits can never be the source of a new fractional term;
+    // only other's can.
+    void multiplyMatchingInPlace(const SmoothNumberBase& other) {
+        requireMatchingRepresentation(other);
+        requireCompatibleFractional(other, "multiplyMatchingInPlace");
+        repFor(canonical_).multiplyInPlace(other.repFor(other.canonical_));
         invalidateAllExcept(canonical_);
     }
 
@@ -314,13 +326,31 @@ private:
     RepresentationBase& repFor(Representation r) { return *reps_[index(r)]; }
     const RepresentationBase& repFor(Representation r) const { return *reps_[index(r)]; }
 
-    // Shared by addMatchingInPlace() and subtractMagnitudeInPlace(): both
-    // require this->canonical() == other.canonical() -- no automatic
-    // cross-representation reconciliation for addition, unlike ensure().
+    // Shared by addMatchingInPlace(), multiplyMatchingInPlace(), and
+    // subtractMagnitudeInPlace(): all three require this->canonical() ==
+    // other.canonical() -- no automatic cross-representation reconciliation
+    // for arithmetic, unlike ensure().
     void requireMatchingRepresentation(const SmoothNumberBase& other) const {
         if (canonical_ != other.canonical_) {
             throw std::invalid_argument(
-                "SmoothNumberBase: representations must match to add (convert one to match the other first)");
+                "SmoothNumberBase: representations must match for this operation (convert one to match the "
+                "other first)");
+        }
+    }
+
+    // Shared by addMatchingInPlace() and multiplyMatchingInPlace(): both
+    // throw if `other` has a fractional (negative-index) term that this
+    // type doesn't allow. `caller` names the throwing operation, for the
+    // error message.
+    void requireCompatibleFractional(const SmoothNumberBase& other, const char* caller) const {
+        if (allowFractional_ || !other.allowFractional_) return;
+        bool otherHasFractional = false;
+        other.repFor(other.canonical_).forEachSet([&otherHasFractional](int i, int j) {
+            if (i < 0 || j < 0) otherHasFractional = true;
+        });
+        if (otherHasFractional) {
+            throw std::invalid_argument(std::string("SmoothNumberBase::") + caller +
+                                         ": other has fractional terms but this type doesn't allow them");
         }
     }
 
@@ -396,15 +426,16 @@ private:
     Representation canonical_;
 };
 
-// There is deliberately no operator+=/add() here, and no free operator+
-// template either: addition never mutates in place, and each concrete type
-// (SmoothInteger, SmoothFloat, Signed<Base>) defines its own
-// value-returning operator+ as a hidden friend (see smooth_integer.hpp,
-// smooth_float.hpp, signed.hpp), built from a copy plus the protected
-// addMatchingInPlace()/subtractMagnitudeInPlace() above. A hidden friend is
-// used (rather than a shared free template, as before) because that
-// in-place building block is now protected, not public -- a plain free
-// function couldn't reach it, but a friend defined inside a derived class
+// There is deliberately no operator+=/add()/operator*=/multiply() here, and
+// no free operator+/operator* template either: arithmetic never mutates in
+// place, and each concrete type (SmoothInteger, SmoothFloat, Signed<Base>)
+// defines its own value-returning operator+ and operator* as hidden friends
+// (see smooth_integer.hpp, smooth_float.hpp, signed.hpp), each built from a
+// copy plus the protected addMatchingInPlace()/multiplyMatchingInPlace()/
+// subtractMagnitudeInPlace() above. A hidden friend is used (rather than a
+// shared free template, as before addition worked this way) because those
+// in-place building blocks are protected, not public -- a plain free
+// function couldn't reach them, but a friend defined inside a derived class
 // can, through an object of that derived type, per ordinary protected-
 // access rules.
 

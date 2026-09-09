@@ -103,6 +103,23 @@ public:
         return result;
     }
 
+    // Value-returning signed multiplication: never mutates its two
+    // arguments, for the same reason as operator+ above. Much simpler than
+    // signed addition, though: magnitudes multiply via
+    // multiplyMatchingInPlace() regardless of sign, and the result's sign
+    // is just whether exactly one argument was negative (the usual XOR
+    // rule -- positive * positive and negative * negative are both
+    // positive), normalized back to non-negative for a zero result so
+    // isNegative() is never true there.
+    friend Signed<Base> operator*(Signed<Base> result, const Signed<Base>& b) {
+        bool negativeProduct = (result.negative_ != b.negative_);
+        result.Base::multiplyMatchingInPlace(b);
+        result.negative_ = negativeProduct;
+        if (result.Base::value() == 0.0) result.negative_ = false;
+        if (!result.hasMetrics() && b.hasMetrics()) result.setMetricsPtr(b.metricsPtr());
+        return result;
+    }
+
 private:
     bool negative_ = false;
 };

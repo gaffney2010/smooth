@@ -109,6 +109,14 @@ public:
     // as needed), so this defers to the shared helper.
     void addInPlace(const RepresentationBase& other) override { addBitsWithCarry(*this, other); }
 
+    // Likewise, a bit grid has no more direct way to multiply than pairing
+    // up every one of its own terms with every one of other's and
+    // carrying each pairwise sum in (growing as needed), so this defers to
+    // the same shared helper Sparse uses -- being a raw bit grid rather
+    // than a std::set doesn't change the strategy at all, so there's no
+    // need to convert to Sparse (or anything else) just to multiply.
+    void multiplyInPlace(const RepresentationBase& other) override { multiplyBitsWithCarry(*this, *this, other); }
+
 private:
     int firstRow() const { return -static_cast<int>(negRowCap_); }
     int firstCol() const { return -static_cast<int>(negColCap_); }

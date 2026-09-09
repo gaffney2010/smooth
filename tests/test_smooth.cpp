@@ -356,6 +356,92 @@ void testAddInPlacePerRepresentation() {
 }
 
 // ---------------------------------------------------------------------
+// multiplyInPlace(): pairwise exponent-sum with carry for Sparse/Dynamic
+// (the same helper, shared, as neither needs to convert to the other to
+// multiply), convolution of column totals for RowValues, direct scalar
+// multiplication for Scalar.
+// ---------------------------------------------------------------------
+void testMultiplyInPlacePerRepresentation() {
+    {
+        // A = 3 (bits (0,0),(1,0)), B = 3 (bits (0,0),(1,0)) -> 9, which
+        // requires a genuine carry collision at (1,0) partway through the
+        // pairwise sums (two different pairs land there before the final
+        // carry resolves it).
+        SparseRepresentation a(false), b(false);
+        a.set(0, 0, true);
+        a.set(1, 0, true);
+        b.set(0, 0, true);
+        b.set(1, 0, true);
+        a.multiplyInPlace(b);
+        checkNear(a.value(), 9.0, "Sparse multiplyInPlace: 3 * 3 = 9 (carry collision handled)");
+    }
+    {
+        DynamicMatrixRepresentation a(false), b(false);
+        a.set(0, 0, true);
+        a.set(1, 0, true);  // 3
+        b.set(0, 1, true);  // 3
+        a.multiplyInPlace(b);
+        checkNear(a.value(), 9.0, "Dynamic multiplyInPlace: 3 * 3 = 9 (same shared helper as Sparse)");
+    }
+    {
+        // Convolution: (3 + 2*3^1) * (1 + 4*3^2) = 9 * 37 = 333.
+        RowValuesRepresentation a(false), b(false);
+        a.setColumnValue(0, 3.0);
+        a.setColumnValue(1, 2.0);
+        b.setColumnValue(0, 1.0);
+        b.setColumnValue(2, 4.0);
+        a.multiplyInPlace(b);
+        checkNear(a.value(), 333.0, "RowValues multiplyInPlace: 9 * 37 = 333 (convolution)");
+    }
+    {
+        // Fallback path: other isn't a RowValuesRepresentation.
+        RowValuesRepresentation a(false);
+        a.setColumnValue(0, 2.0);
+        SparseRepresentation b(false);
+        b.set(0, 1, true);  // 3
+        a.multiplyInPlace(b);
+        checkNear(a.value(), 6.0, "RowValues.multiplyInPlace(Sparse) fallback: 2 * 3 = 6");
+    }
+    {
+        ScalarRepresentation a(false), b(false);
+        a.setColumnValue(0, 6.0);
+        b.setColumnValue(0, 7.0);
+        a.multiplyInPlace(b);
+        checkNear(a.value(), 42.0, "Scalar multiplyInPlace: 6 * 7 = 42 (direct scalar multiplication)");
+    }
+    {
+        // 0 * anything is always 0, even a term Scalar couldn't otherwise
+        // represent -- this never throws. A nonzero Scalar times such a
+        // term does throw, same restriction as everywhere else in Scalar.
+        ScalarRepresentation zero(false);
+        SparseRepresentation notScalar(false);
+        notScalar.set(0, 2, true);  // column 2 -- not representable as a scalar
+        zero.multiplyInPlace(notScalar);
+        checkNear(zero.value(), 0.0, "Scalar 0 * (non-column-0 term) = 0, no throw");
+
+        ScalarRepresentation nonzero(false);
+        nonzero.setColumnValue(0, 5.0);
+        checkThrows([&] { nonzero.multiplyInPlace(notScalar); },
+                    "Scalar (nonzero) * (non-column-0 term) throws");
+    }
+    {
+        // Self-multiplication (squaring) must be safe for every
+        // representation, since multiplyInPlace() snapshots both operands'
+        // bits/totals before touching the destination.
+        SparseRepresentation s(false);
+        s.set(0, 0, true);
+        s.set(0, 1, true);  // 1 + 3 = 4
+        s.multiplyInPlace(s);
+        checkNear(s.value(), 16.0, "Sparse self-multiply (squaring) is safe: 4^2 = 16");
+
+        RowValuesRepresentation r(false);
+        r.setColumnValue(0, 5.0);
+        r.multiplyInPlace(r);
+        checkNear(r.value(), 25.0, "RowValues self-multiply (squaring) is safe: 5^2 = 25");
+    }
+}
+
+// ---------------------------------------------------------------------
 // operator+ (the only way to add -- there is no add()/operator+= anymore)
 // for the two unsigned types. Always value-returning: never mutates
 // either operand.
@@ -459,6 +545,64 @@ void testSignedAddition() {
     SmoothSignedInteger borrowResult = x + y;
     checkNear(borrowResult.value(), 1.0, "cross-column borrow: 3 (column 1) - 2 (column 0) = 1");
     check(!borrowResult.isNegative(), "3 - 2 = 1 is not negative");
+}
+
+// ---------------------------------------------------------------------
+// operator* (the only way to multiply -- same "no in-place, no scalars,
+// representations must match" treatment as operator+) for the unsigned
+// types, and the sign-XOR rule for signed multiplication.
+// ---------------------------------------------------------------------
+void testMultiplication() {
+    SmoothInteger a, b;
+    a.setValue(6LL);
+    b.setValue(7LL);
+    SmoothInteger c = a * b;
+    checkNear(c.value(), 42.0, "SmoothInteger operator*: 6 * 7 = 42");
+    checkNear(a.value(), 6.0, "operator* does not mutate its left-hand operand");
+    checkNear(b.value(), 7.0, "operator* does not mutate its right-hand operand");
+
+    SmoothFloat f1, f2;
+    f1.setValue(1.5);
+    f2.setValue(2.0);
+    SmoothFloat f3 = f1 * f2;
+    checkNear(f3.value(), 3.0, "SmoothFloat operator*: 1.5 * 2 = 3");
+
+    // Same representations-must-match note as addition: every freshly
+    // constructed number starts out canonical() == Dynamic, so this always
+    // succeeds in practice; see testAdditionRequiresMatchingRepresentation.
+    SmoothInteger d, e;
+    d.setValue(3LL);
+    e.setValue(4LL);
+    SmoothInteger prod = d * e;
+    checkNear(prod.value(), 12.0, "multiplication succeeds when representations match");
+
+    // Signed: sign is the usual XOR rule (same signs -> positive, mixed ->
+    // negative), and a zero product is normalized back to non-negative.
+    SmoothSignedInteger p, q;
+    p.setValue(6LL);
+    q.setValue(7LL);
+    SmoothSignedInteger pos = p * q;
+    checkNear(pos.value(), 42.0, "signed (+)*(+) = (+): 6 * 7 = 42");
+    check(!pos.isNegative(), "result of (+)*(+) is not negative");
+
+    SmoothSignedInteger np, nq;
+    np.setValue(-6LL);
+    nq.setValue(-7LL);
+    SmoothSignedInteger negTimesNeg = np * nq;
+    checkNear(negTimesNeg.value(), 42.0, "signed (-)*(-) = (+): -6 * -7 = 42");
+    check(!negTimesNeg.isNegative(), "result of (-)*(-) is not negative");
+
+    SmoothSignedInteger mixed = p * nq;
+    checkNear(mixed.value(), -42.0, "signed (+)*(-) = (-): 6 * -7 = -42");
+    check(mixed.isNegative(), "result of (+)*(-) is negative");
+    checkNear(p.value(), 6.0, "operator* does not mutate the signed left-hand operand");
+    checkNear(nq.value(), -7.0, "operator* does not mutate the signed right-hand operand");
+
+    SmoothSignedInteger zero;
+    zero.setValue(0LL);
+    SmoothSignedInteger zeroProduct = zero * nq;
+    checkNear(zeroProduct.value(), 0.0, "0 * anything = 0");
+    check(!zeroProduct.isNegative(), "a zero product is normalized to non-negative, never a signed zero");
 }
 
 // ---------------------------------------------------------------------
@@ -601,9 +745,11 @@ int main() {
     testDynamicRepresentationGrowth();
     testScalarRepresentationDirectly();
     testAddInPlacePerRepresentation();
+    testMultiplyInPlacePerRepresentation();
     testUnsignedAddition();
     testAdditionRequiresMatchingRepresentation();
     testSignedAddition();
+    testMultiplication();
     testCopyAndMoveSemantics();
     testMetrics();
 

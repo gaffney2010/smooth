@@ -126,6 +126,33 @@ int main() {
     std::cout << "SmoothSignedInteger: 5 + (-3) = " << s3.value() << " (isNegative() = " << s3.isNegative()
               << ")\n\n";
 
+    // --- Multiplication ----------------------------------------------------
+    // operator* gets exactly the same treatment as operator+: value-
+    // returning only, representations must match, no scalars (build a
+    // plain number with setValue()/Scalar and multiply that instead).
+    // (2^i1*3^j1) * (2^i2*3^j2) = 2^(i1+i2)*3^(j1+j2), so multiplying means
+    // pairing up every term of one operand with every term of the other
+    // and adding exponents -- Sparse/Dynamic do this directly (carrying
+    // collisions the same way addition does), RowValues convolves its
+    // column totals (long multiplication in base 3), and Scalar just
+    // multiplies its one stored number by the other's.
+    std::cout << "--- Multiplication ---\n";
+    smooth::SmoothInteger mul1, mul2;
+    mul1.setValue(6LL);
+    mul2.setValue(7LL);
+    smooth::SmoothInteger mul3 = mul1 * mul2;
+    std::cout << "SmoothInteger: 6 * 7 = " << mul3.value() << " -- both operands unchanged: " << mul1.value()
+              << ", " << mul2.value() << "\n";
+
+    // Signed multiplication is the usual sign-XOR rule: same signs give a
+    // positive result, differing signs give a negative one.
+    smooth::SmoothSignedInteger sm1, sm2;
+    sm1.setValue(6LL);
+    sm2.setValue(-7LL);
+    smooth::SmoothSignedInteger sm3 = sm1 * sm2;
+    std::cout << "SmoothSignedInteger: 6 * (-7) = " << sm3.value() << " (isNegative() = " << sm3.isNegative()
+              << ")\n\n";
+
     // --- Representations demo -------------------------------------------
     // The class picks and tracks its own canonical (trusted) representation
     // internally -- there's no public way to force one. Each print function
@@ -201,6 +228,32 @@ int main() {
     std::cout << "RowValues: n[0]=3 + n[0]=2, direct accumulation (no bit carry needed): ";
     rowA.print(std::cout);
 
+    // --- multiplyInPlace() per representation --------------------------------
+    // Sparse and Dynamic share the exact same pairwise-exponent-sum-with-
+    // carry strategy addition uses (being a raw bit grid rather than a
+    // std::set doesn't change anything), so there's no need to convert
+    // either to the other just to multiply. RowValues instead convolves
+    // column totals -- long multiplication in base 3.
+    std::cout << "\n--- multiplyInPlace() per representation ---\n";
+    smooth::SparseRepresentation mulA(false), mulB(false);
+    mulA.set(0, 0, true);
+    mulA.set(1, 0, true);  // 3
+    mulB.set(0, 0, true);
+    mulB.set(1, 0, true);  // 3
+    mulA.multiplyInPlace(mulB);
+    std::cout << "Sparse: 3 * 3 = 9, via a carry collision mid-multiplication: ";
+    mulA.print(std::cout);
+    std::cout << "  value = " << mulA.value() << "\n";
+
+    smooth::RowValuesRepresentation mulRowA(false), mulRowB(false);
+    mulRowA.setColumnValue(0, 3.0);
+    mulRowA.setColumnValue(1, 2.0);  // 3 + 2*3 = 9
+    mulRowB.setColumnValue(0, 1.0);
+    mulRowB.setColumnValue(2, 4.0);  // 1 + 4*9 = 37
+    mulRowA.multiplyInPlace(mulRowB);
+    std::cout << "RowValues: 9 * 37 = 333, via convolution of column totals: ";
+    mulRowA.print(std::cout);
+
     // --- ScalarRepresentation ------------------------------------------------
     // Stores the number as a single plain int/float rather than a bit grid:
     // every term it can hold lives in column j = 0, so its value is just
@@ -214,6 +267,13 @@ int main() {
     scalarA.addInPlace(scalarB);
     std::cout << "Scalar: 42 + 8, direct scalar addition (no bit decomposition at all): ";
     scalarA.print(std::cout);
+
+    smooth::ScalarRepresentation scalarC(false), scalarD(false);
+    scalarC.setColumnValue(0, 6.0);
+    scalarD.setColumnValue(0, 7.0);
+    scalarC.multiplyInPlace(scalarD);
+    std::cout << "Scalar: 6 * 7, direct scalar multiplication: ";
+    scalarC.print(std::cout);
 
     smooth::SmoothInteger plain;
     plain.setValue(17LL);

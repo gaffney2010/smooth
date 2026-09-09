@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <functional>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -108,6 +109,30 @@ public:
             requireColumnZero(bit.second);
             value_ += std::pow(2.0, bit.first);
         }
+    }
+
+    // A plain number times another plain number is just their product --
+    // both live entirely in column 0, and 0 + 0 = 0, so the result does
+    // too. When `other` isn't also a Scalar, its own column j contributes
+    // a term at column 0 + j = j, which is only representable here if
+    // j == 0 -- otherwise this throws, same restriction as everywhere else
+    // in this class. A stored value of exactly 0 is exempted from that
+    // check: 0 * anything is always 0 regardless of other's shape, so
+    // multiplying by zero never has a reason to throw.
+    void multiplyInPlace(const RepresentationBase& other) override {
+        if (const auto* scalar = dynamic_cast<const ScalarRepresentation*>(&other)) {
+            value_ *= scalar->value_;
+            return;
+        }
+        if (value_ == 0.0) return;
+        std::map<int, double> otherTotals;
+        other.forEachSet([&otherTotals](int i, int j) { otherTotals[j] += std::pow(2.0, i); });
+        double product = 0.0;
+        for (const auto& col : otherTotals) {
+            requireColumnZero(col.first);
+            product += value_ * col.second;
+        }
+        value_ = product;
     }
 
 private:

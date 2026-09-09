@@ -29,6 +29,15 @@ public:
         if (!result.hasMetrics() && b.hasMetrics()) result.setMetricsPtr(b.metricsPtr());
         return result;
     }
+
+    // Value-returning multiplication: same shape as operator+ above, but
+    // builds the product via the protected multiplyMatchingInPlace()
+    // instead.
+    friend SmoothFloat operator*(SmoothFloat result, const SmoothFloat& b) {
+        result.multiplyMatchingInPlace(b);
+        if (!result.hasMetrics() && b.hasMetrics()) result.setMetricsPtr(b.metricsPtr());
+        return result;
+    }
 };
 
 }  // namespace smooth

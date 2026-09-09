@@ -36,6 +36,16 @@ public:
         if (!result.hasMetrics() && b.hasMetrics()) result.setMetricsPtr(b.metricsPtr());
         return result;
     }
+
+    // Value-returning multiplication: same shape as operator+ above (see
+    // its comment for why this is a hidden friend, and why mutating
+    // `result` in place is safe), but builds the product via the
+    // protected multiplyMatchingInPlace() instead.
+    friend SmoothInteger operator*(SmoothInteger result, const SmoothInteger& b) {
+        result.multiplyMatchingInPlace(b);
+        if (!result.hasMetrics() && b.hasMetrics()) result.setMetricsPtr(b.metricsPtr());
+        return result;
+    }
 };
 
 }  // namespace smooth
