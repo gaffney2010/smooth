@@ -37,14 +37,14 @@ public:
 protected:
     double convertLeaf(double raw) const override {
         requireNonNegative(raw);
-        DynamicMatrixRepresentation rep(/*allow_fractional=*/true);
+        DynamicMatrixRepresentation rep(/*allow_fractional=*/true, metricsPtr());
         rep.setColumnValue(0, raw);
         return rep.value();
     }
 
     double combine(Op op, double left, double right) const override {
-        DynamicMatrixRepresentation a(/*allow_fractional=*/true);
-        DynamicMatrixRepresentation b(/*allow_fractional=*/true);
+        DynamicMatrixRepresentation a(/*allow_fractional=*/true, metricsPtr());
+        DynamicMatrixRepresentation b(/*allow_fractional=*/true, metricsPtr());
         a.setColumnValue(0, left);
         b.setColumnValue(0, right);
         if (op == Op::Add) {

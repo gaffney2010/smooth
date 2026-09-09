@@ -20,9 +20,14 @@ namespace smooth {
 // copied into the new, larger array. It never shrinks back down except via
 // reset(). Its capacity is discovered purely from what gets set into it --
 // it takes no capacity up front and needs none.
+//
+// Every full-grid walk visits every cell, 1 or 0 -- each cell visited
+// increments the "bit_iterations" counter on metrics_, if one was given at
+// construction.
 class DynamicMatrixRepresentation : public RepresentationBase {
 public:
-    explicit DynamicMatrixRepresentation(bool /*allow_fractional*/) {}
+    explicit DynamicMatrixRepresentation(bool /*allow_fractional*/, std::shared_ptr<Metrics> metrics = nullptr)
+        : metrics_(std::move(metrics)) {}
 
     bool get(int i, int j) const override {
         if (!inCapacity(i, j)) return false;
@@ -56,6 +61,7 @@ public:
         double total = 0.0;
         for (int i = firstRow(); i < static_cast<int>(posRowCap_); ++i) {
             for (int j = firstCol(); j < static_cast<int>(posColCap_); ++j) {
+                bumpIteration();
                 if (get(i, j)) {
                     total += std::pow(2.0, static_cast<double>(i)) *
                              std::pow(3.0, static_cast<double>(j));
@@ -90,6 +96,7 @@ public:
     void forEachSet(const std::function<void(int, int)>& fn) const override {
         for (int i = firstRow(); i < static_cast<int>(posRowCap_); ++i) {
             for (int j = firstCol(); j < static_cast<int>(posColCap_); ++j) {
+                bumpIteration();
                 if (get(i, j)) fn(i, j);
             }
         }
@@ -106,16 +113,21 @@ public:
 
     // A bit grid has no more direct way to add a number than walking its
     // bits one at a time and carrying (each set() call growing the array
-    // as needed), so this defers to the shared helper.
-    void addInPlace(const RepresentationBase& other) override { addBitsWithCarry(*this, other); }
+    // as needed), so this defers to the shared helper (passing metrics_
+    // along, so its carries are counted).
+    void addInPlace(const RepresentationBase& other) override { addBitsWithCarry(*this, other, metrics_); }
 
     // Likewise, a bit grid has no more direct way to multiply than pairing
     // up every one of its own terms with every one of other's and
     // carrying each pairwise sum in (growing as needed), so this defers to
-    // the same shared helper Sparse uses -- being a raw bit grid rather
-    // than a std::set doesn't change the strategy at all, so there's no
-    // need to convert to Sparse (or anything else) just to multiply.
-    void multiplyInPlace(const RepresentationBase& other) override { multiplyBitsWithCarry(*this, *this, other); }
+    // the same shared helper Sparse uses (passing metrics_ along, so its
+    // bit operations and carries are counted) -- being a raw bit grid
+    // rather than a std::set doesn't change the strategy at all, so
+    // there's no need to convert to Sparse (or anything else) just to
+    // multiply.
+    void multiplyInPlace(const RepresentationBase& other) override {
+        multiplyBitsWithCarry(*this, *this, other, metrics_);
+    }
 
 private:
     int firstRow() const { return -static_cast<int>(negRowCap_); }
@@ -132,9 +144,14 @@ private:
         return ri * (negColCap_ + posColCap_) + rj;
     }
 
+    void bumpIteration() const {
+        if (metrics_) metrics_->increment("bit_iterations");
+    }
+
     std::string rowString(int i) const {
         std::string s;
         for (int j = firstCol(); j < static_cast<int>(posColCap_); ++j) {
+            bumpIteration();
             s += get(i, j) ? '1' : '0';
             if (j == -1 && negColCap_ > 0) {
                 s += " | ";
@@ -188,6 +205,7 @@ private:
             int origI = static_cast<int>(oi) - static_cast<int>(negRowCap_);
             std::size_t ni = static_cast<std::size_t>(origI + static_cast<int>(newNegRowCap));
             for (std::size_t oj = 0; oj < oldCols; ++oj) {
+                bumpIteration();
                 if (!bits_[oi * oldCols + oj]) continue;
                 int origJ = static_cast<int>(oj) - static_cast<int>(negColCap_);
                 std::size_t nj = static_cast<std::size_t>(origJ + static_cast<int>(newNegColCap));
@@ -207,6 +225,7 @@ private:
     std::size_t posColCap_ = 0;
     std::size_t negColCap_ = 0;
     std::vector<bool> bits_;
+    std::shared_ptr<Metrics> metrics_;
 };
 
 }  // namespace smooth

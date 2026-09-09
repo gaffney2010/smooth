@@ -7,6 +7,8 @@
 #include <utility>
 #include <vector>
 
+#include "smooth/metrics.hpp"
+
 namespace smooth {
 
 // Interface implemented by each internal storage strategy for a
@@ -130,9 +132,13 @@ inline void decomposeColumnValue(RepresentationBase& rep, int j, double n) {
 // into a cell that already holds one is the same as moving that bit up to
 // the next row (2 * 2^i * 3^j = 2^(i+1) * 3^j). This is the one-term core
 // that both addBitsWithCarry() and multiplyBitsWithCarry() below repeat
-// for however many terms they're combining.
-inline void addSingleBitWithCarry(RepresentationBase& dst, int i, int j) {
+// for however many terms they're combining. Each ripple step -- finding a
+// cell already occupied and having to move up -- increments the "carries"
+// counter on `metrics`, if one was given.
+inline void addSingleBitWithCarry(RepresentationBase& dst, int i, int j,
+                                   const std::shared_ptr<Metrics>& metrics = nullptr) {
     while (dst.get(i, j)) {
+        if (metrics) metrics->increment("carries");
         dst.set(i, j, false);
         ++i;
     }
@@ -144,11 +150,12 @@ inline void addSingleBitWithCarry(RepresentationBase& dst, int i, int j) {
 // `dst` one at a time via addSingleBitWithCarry(). `other`'s bits are
 // captured up front, so this is safe even if `other` and `dst` are the
 // same object (i.e. adding a number to itself).
-inline void addBitsWithCarry(RepresentationBase& dst, const RepresentationBase& other) {
+inline void addBitsWithCarry(RepresentationBase& dst, const RepresentationBase& other,
+                              const std::shared_ptr<Metrics>& metrics = nullptr) {
     std::vector<std::pair<int, int>> bits;
     other.forEachSet([&bits](int i, int j) { bits.emplace_back(i, j); });
     for (const auto& bit : bits) {
-        addSingleBitWithCarry(dst, bit.first, bit.second);
+        addSingleBitWithCarry(dst, bit.first, bit.second, metrics);
     }
 }
 
@@ -160,15 +167,21 @@ inline void addBitsWithCarry(RepresentationBase& dst, const RepresentationBase& 
 // before `dst` is reset, so this is safe even if `dst` aliases `a` and/or
 // `b` (e.g. an in-place `x.multiplyInPlace(x)`, squaring x, passes `x` as
 // dst, a, and b all at once).
+//
+// Every (termA, termB) pairing increments the "bit_operations" counter on
+// `metrics`, if one was given -- an n-term by m-term multiplication is
+// n*m pairings, hence n*m bit operations.
 inline void multiplyBitsWithCarry(RepresentationBase& dst, const RepresentationBase& a,
-                                   const RepresentationBase& b) {
+                                   const RepresentationBase& b,
+                                   const std::shared_ptr<Metrics>& metrics = nullptr) {
     std::vector<std::pair<int, int>> aBits, bBits;
     a.forEachSet([&aBits](int i, int j) { aBits.emplace_back(i, j); });
     b.forEachSet([&bBits](int i, int j) { bBits.emplace_back(i, j); });
     dst.reset();
     for (const auto& termA : aBits) {
         for (const auto& termB : bBits) {
-            addSingleBitWithCarry(dst, termA.first + termB.first, termA.second + termB.second);
+            if (metrics) metrics->increment("bit_operations");
+            addSingleBitWithCarry(dst, termA.first + termB.first, termA.second + termB.second, metrics);
         }
     }
 }

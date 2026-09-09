@@ -212,10 +212,12 @@ protected:
     // restriction any representation still enforces.
     explicit SmoothNumberBase(bool allow_fractional, std::shared_ptr<Metrics> metrics = nullptr)
         : allowFractional_(allow_fractional), metrics_(std::move(metrics)), canonical_(Representation::Dynamic) {
-        reps_[index(Representation::Sparse)] = std::make_unique<SparseRepresentation>(allow_fractional);
-        reps_[index(Representation::RowValues)] = std::make_unique<RowValuesRepresentation>(allow_fractional);
-        reps_[index(Representation::Dynamic)] = std::make_unique<DynamicMatrixRepresentation>(allow_fractional);
-        reps_[index(Representation::Scalar)] = std::make_unique<ScalarRepresentation>(allow_fractional);
+        reps_[index(Representation::Sparse)] = std::make_unique<SparseRepresentation>(allow_fractional, metrics_);
+        reps_[index(Representation::RowValues)] =
+            std::make_unique<RowValuesRepresentation>(allow_fractional, metrics_);
+        reps_[index(Representation::Dynamic)] =
+            std::make_unique<DynamicMatrixRepresentation>(allow_fractional, metrics_);
+        reps_[index(Representation::Scalar)] = std::make_unique<ScalarRepresentation>(allow_fractional, metrics_);
         valid_[index(Representation::Dynamic)] = true;
     }
 

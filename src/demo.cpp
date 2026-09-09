@@ -317,6 +317,48 @@ int main() {
     std::cout << "m2 + m1 -> result falls back to m1's metrics (m2 has none): "
               << (m4.metricsPtr() == metrics ? "same metrics object as m1" : "different") << "\n";
 
+    // Beyond conversions, each representation also instruments its own
+    // work: "carries" (a ripple-carry step during an add), "bit_operations"
+    // (one per (termA, termB) pairing during a multiply -- n bits times m
+    // bits is n*m), "scalar_operations" (one per integer/float multiply or
+    // add, for RowValues and Scalar), and "bit_iterations" (one per cell
+    // visited while looping -- meaning per set bit for Sparse, per grid
+    // cell for DynamicMatrix, per column for RowValues).
+    std::cout << "\nCounters for a single add + multiply, per representation:\n";
+    {
+        auto sparseMetrics = std::make_shared<smooth::Metrics>();
+        smooth::SparseRepresentation a(/*allow_fractional=*/true, sparseMetrics);
+        smooth::SparseRepresentation b(/*allow_fractional=*/true, sparseMetrics);
+        a.setColumnValue(0, 7);  // bits at rows 0,1,2
+        b.setColumnValue(0, 1);  // bit at row 0
+        a.addInPlace(b);         // 7 + 1 = 8: a 3-step carry chain
+        a.multiplyInPlace(b);
+        std::cout << "sparse:\n";
+        sparseMetrics->print();
+    }
+    {
+        auto dynamicMetrics = std::make_shared<smooth::Metrics>();
+        smooth::DynamicMatrixRepresentation a(/*allow_fractional=*/true, dynamicMetrics);
+        smooth::DynamicMatrixRepresentation b(/*allow_fractional=*/true, dynamicMetrics);
+        a.setColumnValue(0, 7);
+        b.setColumnValue(0, 1);
+        a.addInPlace(b);
+        a.multiplyInPlace(b);
+        std::cout << "matrix (dynamic):\n";
+        dynamicMetrics->print();
+    }
+    {
+        auto rowValuesMetrics = std::make_shared<smooth::Metrics>();
+        smooth::RowValuesRepresentation a(/*allow_fractional=*/true, rowValuesMetrics);
+        smooth::RowValuesRepresentation b(/*allow_fractional=*/true, rowValuesMetrics);
+        a.setColumnValue(0, 7);
+        b.setColumnValue(0, 1);
+        a.addInPlace(b);
+        a.multiplyInPlace(b);
+        std::cout << "row_values:\n";
+        rowValuesMetrics->print();
+    }
+
     // --- Plan ------------------------------------------------------------
     // A fluent builder for a scalar arithmetic expression. Building never
     // computes anything -- it just records a tree; left()/right() open and

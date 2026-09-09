@@ -346,11 +346,14 @@ tracker:
 - `print(os = std::cout)` — print every counter's current value, one per
   line, sorted by name.
 
-It's deliberately generic — any named event could be tallied on it — but
-for now the only thing that increments a counter is `SmoothNumberBase`
-counting representation conversions: every time `ensure()` actually
-converts (not when the target is already valid), it increments
-`convert_<from>_to_<to>`, e.g. `convert_dynamic_to_row_values`.
+It's deliberately generic — any named event can be tallied on it.
+`SmoothNumberBase` uses it to count representation conversions: every time
+`ensure()` actually converts (not when the target is already valid), it
+increments `convert_<from>_to_<to>`, e.g. `convert_dynamic_to_row_values`.
+Each representation also instruments its own internal work directly (see
+below), and since `SmoothNumberBase` constructs its four representations
+with the same `Metrics` it was given, those counters land on the same
+object automatically — no separate wiring needed.
 
 A number's `Metrics` is optional (`nullptr` by default) and, when given, is
 *shared*, not copied: `hasMetrics()`, `metricsPtr()`, and `setMetricsPtr()`
@@ -372,6 +375,51 @@ subtracting), which would otherwise silently carry `b`'s metrics through
 regardless of what `a` had. So it captures the correct choice (`a`'s,
 falling back to `b`'s) once up front, before any branch runs, and stamps
 it onto the final result at the end, regardless of which branch ran.
+
+### Instrumentation counters: `carries`, `bit_operations`, `scalar_operations`, `bit_iterations`
+
+Beyond conversions, each `RepresentationBase` implementation instruments
+its own add/multiply/loop work directly, when constructed with a
+`Metrics` (each one now takes an optional `std::shared_ptr<Metrics>` as a
+trailing constructor argument, exactly like `SmoothNumberBase` and `Plan`):
+
+- **`carries`** — one per ripple-carry step. Adding a bit into a cell that's
+  already occupied moves that bit up to the next row instead
+  (`addSingleBitWithCarry` in `representation_base.hpp`); each such step,
+  for both `SparseRepresentation` and `DynamicMatrixRepresentation`
+  (the two raw-bit-grid representations that share this helper), counts one
+  carry.
+- **`bit_operations`** — one per `(termA, termB)` pairing during a
+  multiply, in `multiplyBitsWithCarry` (also shared by Sparse and
+  DynamicMatrix): an *n*-bit by *m*-bit multiplication pairs every term of
+  one with every term of the other, so it's *n\*m* bit operations.
+- **`scalar_operations`** — one per plain integer/float multiply or add,
+  for the two representations that do arithmetic on raw numbers rather
+  than bits: `RowValuesRepresentation` (each call to its shared
+  `accumulate()` helper — the core of `set()` and `addInPlace()` — is one
+  operation; its convolution-based `multiplyInPlace()` counts 2 per
+  column pair, one multiply and one add) and `ScalarRepresentation`
+  (`set()`'s `value_ += delta`, and `addInPlace()`/`multiplyInPlace()`'s
+  scalar-to-scalar fast paths, are each one operation).
+- **`bit_iterations`** — one per cell visited while looping over a
+  representation's contents, where "cell" means something different per
+  representation, matching what it actually stores: for
+  `SparseRepresentation`, one per coordinate in its `std::set` (i.e. only
+  the 1s — it has no notion of the 0s in between); for
+  `DynamicMatrixRepresentation`, one per cell of its currently allocated
+  capacity, 1s and 0s alike (in `value()`, `print()`, `forEachSet()`, and
+  `growToFit()`'s copy loop); for `RowValuesRepresentation`, one per
+  column entry (i.e. one per stored "row" total `n_j`, regardless of that
+  row's magnitude) in `value()`, `print()`, `forEachSet()`, and both loop
+  levels of `multiplyInPlace()`'s convolution. `ScalarRepresentation`
+  holds a single value with nothing to loop over, so it has no
+  `bit_iterations` at all.
+
+`setColumnValue()`/`setValue()` (encoding a fresh number directly into a
+representation) and the bit-decomposition loops inside `forEachSet()` for
+RowValues/Scalar (recovering individual bits from a stored total) are
+deliberately *not* instrumented — they're decoding/encoding a value, not
+looping over or arithmetically combining an existing one.
 
 ## Signed types
 
@@ -580,7 +628,10 @@ representation's own `addInPlace()`/`multiplyInPlace()` strategy, including
 a `Sparse` carry (for both addition and a carry-colliding multiplication),
 a `RowValues` convolution, and Scalar's own throw for a non-column-0 term,
 attaching a `Metrics` to a number to show its conversion counters and the
-`a + b` metrics-inheritance rule, and building a `Plan` (the confirmed
+`a + b` metrics-inheritance rule, comparing the `carries`/`bit_operations`/
+`scalar_operations`/`bit_iterations` counters a single add-then-multiply
+produces on Sparse, DynamicMatrix, and RowValues directly, and building a
+`Plan` (the confirmed
 `3 * (4 + 2)` example, an unbracketed left-associative chain, and
 `number()` correctly capturing a signed operand's sign) and printing it,
 including a `Metrics` shared between a `Plan` and a `SmoothInteger` it
@@ -605,7 +656,12 @@ the sign-XOR rule and a zero product's sign normalization), that both
 addition and multiplication require matching representations, `Metrics`
 counters (including that redundant conversions aren't double-counted, and
 the `a + b` metrics-inheritance rule — notably that the signed swap branch
-still keeps a's metrics), copy/move semantics, and `Plan` (the confirmed
+still keeps a's metrics), the `carries`/`bit_operations`/
+`scalar_operations`/`bit_iterations` counters pinned down independently
+against each representation directly (a single and a multi-step carry
+chain, an *n*-by-*m* bit-operation count, each representation's own
+notion of a "cell" for `bit_iterations`, and both `scalar_operations`
+sources for RowValues and Scalar), copy/move semantics, and `Plan` (the confirmed
 example, unbracketed left-associative chaining, `number()`'s sign
 correctness, nested `left()`/`right()` groups two levels deep, `plan()`'s
 tree rendering, every usage-error case, and its own `Metrics` support —

@@ -27,7 +27,8 @@ namespace smooth {
 // value into this one.
 class ScalarRepresentation : public RepresentationBase {
 public:
-    explicit ScalarRepresentation(bool allow_fractional) : fractional_(allow_fractional), value_(0.0) {}
+    explicit ScalarRepresentation(bool allow_fractional, std::shared_ptr<Metrics> metrics = nullptr)
+        : fractional_(allow_fractional), value_(0.0), metrics_(std::move(metrics)) {}
 
     // Individual bits are recovered from the stored value by dividing out
     // 2^i and checking parity, the same approach RowValuesRepresentation
@@ -45,6 +46,7 @@ public:
         requireColumnZero(j);
         if (get(i, 0) == value) return false;
         double delta = std::pow(2.0, i);
+        if (metrics_) metrics_->increment("scalar_operations");
         value_ += value ? delta : -delta;
         return true;
     }
@@ -100,6 +102,7 @@ public:
     // hold.
     void addInPlace(const RepresentationBase& other) override {
         if (const auto* scalar = dynamic_cast<const ScalarRepresentation*>(&other)) {
+            if (metrics_) metrics_->increment("scalar_operations");
             value_ += scalar->value_;
             return;
         }
@@ -107,6 +110,7 @@ public:
         other.forEachSet([&bits](int i, int j) { bits.emplace_back(i, j); });
         for (const auto& bit : bits) {
             requireColumnZero(bit.second);
+            if (metrics_) metrics_->increment("scalar_operations");
             value_ += std::pow(2.0, bit.first);
         }
     }
@@ -121,6 +125,7 @@ public:
     // multiplying by zero never has a reason to throw.
     void multiplyInPlace(const RepresentationBase& other) override {
         if (const auto* scalar = dynamic_cast<const ScalarRepresentation*>(&other)) {
+            if (metrics_) metrics_->increment("scalar_operations");
             value_ *= scalar->value_;
             return;
         }
@@ -130,6 +135,7 @@ public:
         double product = 0.0;
         for (const auto& col : otherTotals) {
             requireColumnZero(col.first);
+            if (metrics_) metrics_->increment("scalar_operations", 2);  // one multiply, one add
             product += value_ * col.second;
         }
         value_ = product;
@@ -145,6 +151,7 @@ private:
 
     bool fractional_;
     double value_;
+    std::shared_ptr<Metrics> metrics_;
 };
 
 }  // namespace smooth

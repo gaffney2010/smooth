@@ -20,7 +20,8 @@ namespace smooth {
 // be fractional otherwise.
 class RowValuesRepresentation : public RepresentationBase {
 public:
-    explicit RowValuesRepresentation(bool allow_fractional) : fractional_(allow_fractional) {}
+    explicit RowValuesRepresentation(bool allow_fractional, std::shared_ptr<Metrics> metrics = nullptr)
+        : fractional_(allow_fractional), metrics_(std::move(metrics)) {}
 
     // Individual bits are recovered from n_j by dividing out 2^i and
     // checking parity. This is exact for the row ranges this class is
@@ -52,6 +53,7 @@ public:
     double value() const override {
         double total = 0.0;
         for (const auto& col : values_) {
+            bumpIteration();
             total += col.second * std::pow(3.0, static_cast<double>(col.first));
         }
         return total;
@@ -60,6 +62,7 @@ public:
     // One line per column j that has a set bit, showing n_j.
     void print(std::ostream& os) const override {
         for (const auto& col : values_) {
+            bumpIteration();
             os << "n[" << col.first << "] = ";
             if (fractional_) {
                 os << col.second;
@@ -76,6 +79,7 @@ public:
     // read off a binary fraction's digits.
     void forEachSet(const std::function<void(int, int)>& fn) const override {
         for (const auto& col : values_) {
+            bumpIteration();
             int j = col.first;
             double n = col.second;
 
@@ -167,7 +171,10 @@ public:
 
         std::map<int, double> product;
         for (const auto& colA : values_) {
+            bumpIteration();
             for (const auto& colB : otherTotals) {
+                bumpIteration();
+                if (metrics_) metrics_->increment("scalar_operations", 2);  // one multiply, one add
                 product[colA.first + colB.first] += colA.second * colB.second;
             }
         }
@@ -184,8 +191,10 @@ public:
 private:
     // Adds delta onto column j's total, dropping the entry if that brings
     // it back to exactly zero (keeping the invariant that values_ only
-    // ever holds nonzero columns).
+    // ever holds nonzero columns). This one addition is the "scalar_
+    // operations" primitive that set() and addInPlace() both go through.
     void accumulate(int j, double delta) {
+        if (metrics_) metrics_->increment("scalar_operations");
         double updated = values_[j] + delta;
         if (updated == 0.0) {
             values_.erase(j);
@@ -194,8 +203,13 @@ private:
         }
     }
 
+    void bumpIteration() const {
+        if (metrics_) metrics_->increment("bit_iterations");
+    }
+
     bool fractional_;
     std::map<int, double> values_;
+    std::shared_ptr<Metrics> metrics_;
 };
 
 }  // namespace smooth

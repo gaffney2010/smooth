@@ -14,7 +14,7 @@ namespace smooth {
 // deliberately generic: any named event can be tallied here.
 class Metrics {
 public:
-    void increment(const std::string& name) { ++counters_[name]; }
+    void increment(const std::string& name, long long count = 1) { counters_[name] += count; }
 
     void print(std::ostream& os = std::cout) const {
         for (const auto& counter : counters_) {

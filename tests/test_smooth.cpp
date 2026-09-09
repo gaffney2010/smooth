@@ -49,6 +49,20 @@ void checkThrows(Fn&& fn, const std::string& description) {
     check(threw, description);
 }
 
+// Reads a single named counter's current value out of a Metrics, without
+// depending on where it falls among the other counters' lines. Missing
+// counters (nothing incremented it yet) read as 0, same as Metrics itself
+// would report if asked directly.
+long long counterValue(const std::shared_ptr<Metrics>& metrics, const std::string& name) {
+    std::ostringstream out;
+    metrics->print(out);
+    std::string s = out.str();
+    std::string prefix = name + " = ";
+    auto pos = s.find(prefix);
+    if (pos == std::string::npos) return 0;
+    return std::stoll(s.substr(pos + prefix.size()));
+}
+
 // ---------------------------------------------------------------------
 // Basic set/get/clear/value, per concrete type
 // ---------------------------------------------------------------------
@@ -677,14 +691,22 @@ void testMetrics() {
 
         std::ostringstream out;
         metrics->print(out);
-        check(out.str() == "convert_dynamic_to_row_values = 1\nconvert_dynamic_to_sparse = 1\n",
+        check(out.str() ==
+                  "bit_iterations = 24\n"
+                  "convert_dynamic_to_row_values = 1\n"
+                  "convert_dynamic_to_sparse = 1\n"
+                  "scalar_operations = 2\n",
               "each representation conversion is counted once, redundant prints don't recount");
 
         n.set(2, 2);              // invalidates sparse/row_values again
         n.printSparse(discard);   // dynamic -> sparse, again
         std::ostringstream out2;
         metrics->print(out2);
-        check(out2.str() == "convert_dynamic_to_row_values = 1\nconvert_dynamic_to_sparse = 2\n",
+        check(out2.str() ==
+                  "bit_iterations = 51\n"
+                  "convert_dynamic_to_row_values = 1\n"
+                  "convert_dynamic_to_sparse = 2\n"
+                  "scalar_operations = 2\n",
               "re-converting after invalidation increments the counter again");
     }
 
@@ -729,6 +751,153 @@ void testMetrics() {
         SmoothSignedInteger result = a + b;
         checkNear(result.value(), -7.0, "signed swap-branch arithmetic still correct: 3 + (-10) = -7");
         check(result.metricsPtr() == metricsA, "signed swap-branch still keeps a's metrics, not b's");
+    }
+}
+
+// ---------------------------------------------------------------------
+// The four counters instrumented directly on the representations
+// (carries, bit_operations, scalar_operations, bit_iterations -- see
+// representation_base.hpp, sparse_representation.hpp,
+// dynamic_matrix_representation.hpp, row_values_representation.hpp,
+// scalar_representation.hpp). Checked against each representation
+// directly, with a fresh Metrics per case, so each counter's exact
+// semantics are pinned down independently of the others.
+// ---------------------------------------------------------------------
+void testInstrumentationCounters() {
+    // carries: one ripple step per cell that was already occupied and had
+    // to move up a row. 1 + 1 (both at row 0) needs exactly one carry, to
+    // produce 2 at row 1.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SparseRepresentation a(true, metrics), b(true, metrics);
+        a.set(0, 0, true);
+        b.set(0, 0, true);
+        a.addInPlace(b);
+        checkNear(a.value(), 2.0, "carries: 1 + 1 = 2");
+        check(counterValue(metrics, "carries") == 1, "carries: a single carry is counted once");
+    }
+    // 7 (bits at rows 0,1,2) + 1 (bit at row 0) = 8 ripples through three
+    // occupied cells before landing on the empty row 3.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SparseRepresentation a(true, metrics), b(true, metrics);
+        a.set(0, 0, true);
+        a.set(1, 0, true);
+        a.set(2, 0, true);
+        b.set(0, 0, true);
+        a.addInPlace(b);
+        checkNear(a.value(), 8.0, "carries: 7 + 1 = 8");
+        check(counterValue(metrics, "carries") == 3, "carries: a 3-step ripple chain is counted as 3");
+    }
+
+    // bit_operations: an n-bit by m-bit multiplication is n*m pairings, one
+    // per (termA, termB) pair -- regardless of how those pairings interact
+    // via carrying.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SparseRepresentation a(true, metrics), b(true, metrics);
+        a.set(0, 0, true);
+        a.set(5, 0, true);
+        b.set(0, 0, true);
+        b.set(5, 0, true);
+        b.set(10, 0, true);
+        a.multiplyInPlace(b);
+        check(counterValue(metrics, "bit_operations") == 6,
+              "bit_operations: 2-bit times 3-bit multiplication is 2*3 = 6 bit operations");
+    }
+
+    // bit_iterations, Sparse: only ever visits the 1s actually stored, not
+    // any notion of empty space, since coords_ only ever holds set bits.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SparseRepresentation a(true, metrics);
+        a.set(0, 0, true);
+        a.set(1, 0, true);
+        a.set(0, 1, true);
+        std::ostringstream discard;
+        a.value();                      // +3 (one per stored coordinate)
+        a.print(discard);               // +3
+        a.forEachSet([](int, int) {});  // +3
+        check(counterValue(metrics, "bit_iterations") == 9,
+              "bit_iterations (sparse): each of 3 full walks over 3 set bits adds 3, total 9");
+    }
+
+    // bit_iterations, DynamicMatrix: visits every cell in the currently
+    // allocated capacity, 1s and 0s alike -- growToFit()'s copy loop and
+    // value()/print()/forEachSet()'s grid walks all count every cell they
+    // check, not just the set ones.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        DynamicMatrixRepresentation a(true, metrics);
+        a.set(0, 0, true);  // grows from empty (0 cells) to a 1x1 grid
+        a.set(2, 0, true);  // grows the 1x1 grid to 4x1 (rows 0..3)
+        long long before = counterValue(metrics, "bit_iterations");
+        checkNear(a.value(), 5.0, "bit_iterations (dynamic): 2^0 + 2^2 = 5");
+        long long after = counterValue(metrics, "bit_iterations");
+        check(after - before == 4,
+              "bit_iterations (dynamic): value() walks every cell of the 4x1 capacity, not just the set ones");
+    }
+
+    // bit_iterations, RowValues: one per column entry visited, i.e. once
+    // per row in the "list of rows" sense -- regardless of how large that
+    // row's magnitude n_j is.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        RowValuesRepresentation a(true, metrics);
+        a.set(0, 0, true);
+        a.set(0, 2, true);
+        long long before = counterValue(metrics, "bit_iterations");
+        a.value();
+        long long after = counterValue(metrics, "bit_iterations");
+        check(after - before == 2,
+              "bit_iterations (row values): value() visits one entry per column, 2 columns -> 2");
+    }
+
+    // scalar_operations, RowValues: accumulate() (the shared add primitive
+    // behind set() and addInPlace()) counts one operation per call.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        RowValuesRepresentation a(true, metrics);
+        a.set(0, 0, true);
+        a.set(1, 0, true);
+        check(counterValue(metrics, "scalar_operations") == 2,
+              "scalar_operations (row values): two set() calls accumulate twice");
+    }
+    // multiplyInPlace's convolution counts 2 scalar operations (one
+    // multiply, one add) per (columnA, columnB) pair; a single-column by
+    // single-column multiply is exactly one pair.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        RowValuesRepresentation a(true, metrics), b(true, metrics);
+        a.setColumnValue(0, 3);  // direct assignment: not counted
+        b.setColumnValue(0, 4);
+        a.multiplyInPlace(b);
+        checkNear(a.value(), 12.0, "scalar_operations (row values): 3 * 4 = 12");
+        check(counterValue(metrics, "scalar_operations") == 2,
+              "scalar_operations (row values): one column pair multiplied is 2 ops (multiply + add)");
+    }
+
+    // scalar_operations, Scalar: set()'s value_ += delta is one operation.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        ScalarRepresentation a(true, metrics);
+        a.set(0, 0, true);
+        check(counterValue(metrics, "scalar_operations") == 1,
+              "scalar_operations (scalar): one set() call is one op");
+    }
+    // addInPlace/multiplyInPlace's scalar-to-scalar fast paths are also one
+    // operation each.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        ScalarRepresentation a(true, metrics), b(true, metrics);
+        a.setColumnValue(0, 3);  // direct assignment: not counted
+        b.setColumnValue(0, 4);
+        a.addInPlace(b);
+        checkNear(a.value(), 7.0, "scalar_operations (scalar): 3 + 4 = 7");
+        a.multiplyInPlace(b);
+        checkNear(a.value(), 28.0, "scalar_operations (scalar): 7 * 4 = 28");
+        check(counterValue(metrics, "scalar_operations") == 2,
+              "scalar_operations (scalar): addInPlace then multiplyInPlace is 1 op each, 2 total");
     }
 }
 
@@ -862,7 +1031,11 @@ void testPlan() {
 
         std::ostringstream out;
         metrics->print(out);
-        check(out.str() == "add = 1\nconvert_dynamic_to_sparse = 1\nconvert_to_scalar = 2\n",
+        check(out.str() ==
+                  "add = 1\n"
+                  "bit_iterations = 5\n"
+                  "convert_dynamic_to_sparse = 1\n"
+                  "convert_to_scalar = 2\n",
               "a Plan and a SmoothNumber sharing one Metrics tally onto the same counters");
     }
 }
@@ -875,7 +1048,7 @@ void testPlan() {
 // and which representation actually does the work.
 // ---------------------------------------------------------------------
 template <typename PlanType>
-void checkPlanZooVariant(const std::string& expectedName) {
+void checkPlanZooVariant(const std::string& expectedName, const std::string& expectedMetrics) {
     PlanType p;
     check(p.name() == expectedName, expectedName + ": name() matches");
 
@@ -900,14 +1073,18 @@ void checkPlanZooVariant(const std::string& expectedName) {
     PlanType(metrics).scalar(1).plus().scalar(2).calculate();
     std::ostringstream metricsOut;
     metrics->print(metricsOut);
-    check(metricsOut.str() == "add = 1\nconvert_to_" + expectedName + " = 2\n",
-          expectedName + ": Metrics counter is convert_to_" + expectedName);
+    check(metricsOut.str() == expectedMetrics, expectedName + ": Metrics counter is convert_to_" + expectedName);
 }
 
 void testPlanZoo() {
-    checkPlanZooVariant<SparsePlan>("sparse");
-    checkPlanZooVariant<MatrixPlan>("matrix");
-    checkPlanZooVariant<RowValuesPlan>("row_values");
+    // Beyond "add"/"convert_to_X", each representation's own instrumentation
+    // (bit_iterations, scalar_operations -- see representation_base.hpp,
+    // row_values_representation.hpp) also fires while combining two
+    // single-bit leaves (1 + 2), so the exact counters differ per variant.
+    checkPlanZooVariant<SparsePlan>("sparse", "add = 1\nbit_iterations = 5\nconvert_to_sparse = 2\n");
+    checkPlanZooVariant<MatrixPlan>("matrix", "add = 1\nbit_iterations = 8\nconvert_to_matrix = 2\n");
+    checkPlanZooVariant<RowValuesPlan>(
+        "row_values", "add = 1\nbit_iterations = 3\nconvert_to_row_values = 2\nscalar_operations = 1\n");
 
     // Base Plan itself is unaffected by any of this.
     check(Plan().name() == "scalar", "the base Plan's name() is still \"scalar\"");
@@ -943,6 +1120,7 @@ int main() {
     testMultiplication();
     testCopyAndMoveSemantics();
     testMetrics();
+    testInstrumentationCounters();
     testPlan();
     testPlanZoo();
 

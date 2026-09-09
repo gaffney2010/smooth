@@ -37,14 +37,14 @@ public:
 protected:
     double convertLeaf(double raw) const override {
         requireNonNegative(raw);
-        SparseRepresentation rep(/*allow_fractional=*/true);
+        SparseRepresentation rep(/*allow_fractional=*/true, metricsPtr());
         rep.setColumnValue(0, raw);
         return rep.value();
     }
 
     double combine(Op op, double left, double right) const override {
-        SparseRepresentation a(/*allow_fractional=*/true);
-        SparseRepresentation b(/*allow_fractional=*/true);
+        SparseRepresentation a(/*allow_fractional=*/true, metricsPtr());
+        SparseRepresentation b(/*allow_fractional=*/true, metricsPtr());
         a.setColumnValue(0, left);
         b.setColumnValue(0, right);
         if (op == Op::Add) {
