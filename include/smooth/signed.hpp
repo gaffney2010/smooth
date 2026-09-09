@@ -57,41 +57,50 @@ public:
         Base::setValue(v < 0.0 ? -v : v);
     }
 
-    // Value-returning signed addition: never mutates a or b. Same sign:
-    // the magnitudes just combine (via Base::addMatchingInPlace(), i.e.
-    // SmoothNumberBase's ordinary "add the 1s and handle carries"
-    // addition -- which throws unless a.canonical() == b.canonical()),
-    // sign unchanged. Different signs: subtract the smaller magnitude from
-    // the larger (Base::subtractMagnitudeInPlace(), likewise requiring
-    // matching representations) and take the larger operand's sign --
-    // ordinary signed-number addition. A result of exactly zero is
-    // normalized back to non-negative, so isNegative() is never true for a
-    // zero value. A hidden friend, same as SmoothInteger/SmoothFloat's
-    // operator+ -- see SmoothInteger::operator+ for why.
+    // Value-returning signed addition: never mutates its two arguments.
+    // `result` is a fresh copy of the left-hand argument (taken by value),
+    // distinct from whatever the caller passed -- see
+    // SmoothInteger::operator+ for the full explanation of that, and for
+    // why this is a hidden friend rather than a member or a free function.
     //
-    // Metrics: keeps a's, falling back to b's if a has none -- captured
-    // once up front (before any branch runs) and stamped on at the end,
-    // since the "different magnitudes, |a| < |b|" branch below builds its
-    // result out of a copy of b, which would otherwise carry b's metrics
-    // through regardless of what a's were.
-    friend Signed<Base> operator+(Signed<Base> a, const Signed<Base>& b) {
-        auto keepMetrics = a.metricsPtr();
+    // Same sign: the magnitudes just combine (via
+    // result.Base::addMatchingInPlace(b), i.e. SmoothNumberBase's ordinary
+    // "add the 1s and handle carries" addition -- which throws unless
+    // result.canonical() == b.canonical()), sign unchanged. Different
+    // signs: subtract the smaller magnitude from the larger
+    // (subtractMagnitudeInPlace(), likewise requiring matching
+    // representations) and take the larger argument's sign -- ordinary
+    // signed-number addition. When |result| < |b|, that means building the
+    // answer from a copy of `b` instead (into `swapped`, below), since
+    // subtractMagnitudeInPlace() only ever computes receiver-minus-argument
+    // and here it's `b` minus `result` that's needed; `swapped` is then
+    // moved into `result` so the rest of the function has one variable to
+    // finish up on. A result of exactly zero is normalized back to
+    // non-negative, so isNegative() is never true for a zero value.
+    //
+    // Metrics: keeps the left-hand argument's, falling back to the
+    // right-hand one's if the left-hand side has none -- captured once up
+    // front (before any branch runs) and stamped onto `result` at the end,
+    // since the swap case would otherwise carry `b`'s metrics through
+    // (via `swapped`) regardless of what the left-hand argument had.
+    friend Signed<Base> operator+(Signed<Base> result, const Signed<Base>& b) {
+        auto keepMetrics = result.metricsPtr();
         if (!keepMetrics && b.hasMetrics()) keepMetrics = b.metricsPtr();
 
-        if (a.negative_ == b.negative_) {
-            a.Base::addMatchingInPlace(b);
-        } else if (a.Base::value() >= b.Base::value()) {
-            a.Base::subtractMagnitudeInPlace(b);
+        if (result.negative_ == b.negative_) {
+            result.Base::addMatchingInPlace(b);
+        } else if (result.Base::value() >= b.Base::value()) {
+            result.Base::subtractMagnitudeInPlace(b);
         } else {
-            Signed<Base> result(b);
-            result.subtractMagnitudeInPlace(a);
-            result.negative_ = b.negative_;
-            a = std::move(result);
+            Signed<Base> swapped(b);
+            swapped.subtractMagnitudeInPlace(result);
+            swapped.negative_ = b.negative_;
+            result = std::move(swapped);
         }
 
-        a.setMetricsPtr(std::move(keepMetrics));
-        if (a.Base::value() == 0.0) a.negative_ = false;
-        return a;
+        result.setMetricsPtr(std::move(keepMetrics));
+        if (result.Base::value() == 0.0) result.negative_ = false;
+        return result;
     }
 
 private:
