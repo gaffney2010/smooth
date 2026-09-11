@@ -501,11 +501,15 @@ int main() {
               << ", calculate() = " << polymorphic->calculate() << "\n";
 
     // --- Transformation ------------------------------------------------------
-    // A value-preserving rewrite of a number's bit grid: since
-    // 2^i*3^j + 2^(i+1)*3^j = 2^i*3^(j+1), the two bits at (i, j) and
-    // (i+1, j) can be traded for the one bit at (i, j+1) (and back)
-    // without changing value() at all. applyTransformation() checks
-    // canApply() first and throws if it doesn't hold.
+    // A value-preserving rewrite of a number's bit grid, built from a
+    // fixed list of input offsets (each must hold a 1; applying always
+    // clears them) and output offsets (each gets carry-set to 1 -- just
+    // like ordinary addition -- if already occupied). Since
+    // 2^i*3^j + 2^(i+1)*3^j = 2^i*3^(j+1), MergeTransformation trades the
+    // two bits at (i, j)/(i+1, j) for the one bit at (i, j+1);
+    // SplitTransformation is the exact reverse. applyTransformation()
+    // checks canApply() first (only ever the inputs -- an occupied output
+    // is never a reason to reject) and throws if it doesn't hold.
     std::cout << "\n--- Transformation ---\n";
     smooth::SmoothInteger transformed;
     transformed.set(2, 0);  // 2^2 = 4
@@ -528,6 +532,32 @@ int main() {
     } catch (const std::exception& e) {
         std::cout << "merge(10, 10) throws (bits aren't set up for it): " << e.what() << "\n";
     }
+
+    // An occupied output doesn't block a merge -- it carries into it,
+    // exactly like ordinary addition would.
+    smooth::SmoothInteger collision;
+    collision.set(2, 0);  // 4
+    collision.set(3, 0);  // 8
+    collision.set(2, 1);  // 12  -- already occupies the merge's output
+    std::cout << "\nbefore merge with an occupied output: value = " << collision.value() << ", ";
+    collision.printSparse();
+    collision.applyTransformation(merge, 2, 0);
+    std::cout << "after merge(2, 0) (12 + 12 carries to 24 at (3, 1)): value = " << collision.value() << ", ";
+    collision.printSparse();
+
+    // Transformation is concrete, not an interface: a custom one, built
+    // directly from its own offset lists, works the same way --
+    // 2^i*3^j + 2^(i+1)*3^j + 2^i*3^(j+1) = 2^i*3^j*6 = 2^(i+1)*3^(j+1).
+    smooth::Transformation combineBothAxes({{0, 0}, {1, 0}, {0, 1}}, {{1, 1}});
+    smooth::SmoothInteger custom;
+    custom.set(0, 0);  // 1
+    custom.set(1, 0);  // 2
+    custom.set(0, 1);  // 3
+    std::cout << "\nbefore a custom Transformation: value = " << custom.value() << ", ";
+    custom.printSparse();
+    custom.applyTransformation(combineBothAxes, 0, 0);
+    std::cout << "after: value = " << custom.value() << ", ";
+    custom.printSparse();
 
     return 0;
 }

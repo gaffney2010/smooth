@@ -1,74 +1,99 @@
 #pragma once
 
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 #include "smooth/smooth_number_base.hpp"
 
 namespace smooth {
 
-// A value-preserving rewrite of a 3-smooth number's bit grid. The same
-// value can be held by more than one bit grid: since
-// 2^i * 3^j + 2^(i+1) * 3^j = 2^i * 3^j * (1 + 2) = 2^i * 3^(j+1), the two
-// bits at (i, j) and (i+1, j) can be traded for the single bit at
-// (i, j+1) (see MergeTransformation/SplitTransformation below) without
-// changing value() at all. A Transformation is one such trade, checked and
-// applied at a specific (i, j):
+// A value-preserving rewrite of a 3-smooth number's bit grid, anchored at
+// a given (i, j): a fixed list of **input** offsets (relative to the
+// anchor), each of which must currently hold a 1 -- applying the
+// transformation always clears every one of them back to 0 -- and a fixed
+// list of **output** offsets, each of which gets set to 1, ripple-carrying
+// up the row axis (exactly like ordinary addition -- see
+// addSingleBitWithCarry() in representation_base.hpp) if that position is
+// already occupied. Because an occupied output never blocks the
+// transformation (it just carries), canApply() only ever needs to check
+// the inputs.
 //
-// - canApply(n, i, j): whether every bit this transformation would touch
-//   is currently in the exact state it needs to start in -- both the bits
-//   being cleared (must be 1) and the bits being set (must be 0), so a
-//   transformation never has "nothing to do" or silently overwrites a bit
-//   that was already there.
-// - apply(n, i, j): performs the trade. Precondition: canApply(n, i, j).
-//   Callers that haven't just checked it should go through
-//   SmoothNumberBase::applyTransformation() instead (see
-//   smooth_number_base.hpp), which checks first and throws
-//   std::invalid_argument if the transformation doesn't apply, rather than
-//   applying it regardless.
+// canApply()/apply() operate directly through SmoothNumberBase's own
+// get()/set(), not RepresentationBase -- so a transformation that actually
+// changes a bit correctly invalidates every representation but the
+// canonical one, the same as any other set() call would.
 //
-// Both operate directly through SmoothNumberBase's own get()/set(), not
-// RepresentationBase -- so a transformation that actually changes a bit
-// correctly invalidates every representation but the canonical one, the
-// same as any other set() call would.
+// This is deliberately concrete, not an interface: every transformation
+// this library has fits this one shape (clear a fixed set of 1s, carry-set
+// a fixed set of new 1s), so there's no virtual dispatch to speak of.
+// Building a custom one is just
+// `Transformation({...input offsets...}, {...output offsets...})`.
 class Transformation {
 public:
-    virtual ~Transformation() = default;
+    Transformation(std::vector<std::pair<int, int>> inputs, std::vector<std::pair<int, int>> outputs)
+        : inputs_(std::move(inputs)), outputs_(std::move(outputs)) {}
 
-    virtual bool canApply(const SmoothNumberBase& n, int i, int j) const = 0;
+    // The only precondition: every input offset currently holds a 1. An
+    // already-occupied output offset is never a reason to reject --
+    // apply() carries through it instead.
+    bool canApply(const SmoothNumberBase& n, int i, int j) const {
+        for (const auto& offset : inputs_) {
+            if (!n.get(i + offset.first, j + offset.second)) return false;
+        }
+        return true;
+    }
 
-    virtual void apply(SmoothNumberBase& n, int i, int j) const = 0;
+    // Clears every input offset, then carry-sets every output offset, in
+    // order. Precondition: canApply(n, i, j). Callers that haven't just
+    // checked it should go through SmoothNumberBase::applyTransformation()
+    // instead (see smooth_number_base.hpp), which checks first and throws
+    // if it doesn't hold.
+    void apply(SmoothNumberBase& n, int i, int j) const {
+        for (const auto& offset : inputs_) {
+            n.set(i + offset.first, j + offset.second, false);
+        }
+        for (const auto& offset : outputs_) {
+            carrySet(n, i + offset.first, j + offset.second);
+        }
+    }
+
+private:
+    // Sets (i, j) to 1, ripple-carrying up the row axis within column j
+    // whenever a cell is already occupied -- moving a second 1 into an
+    // occupied cell is the same as moving that bit up to the next row
+    // (2 * 2^i * 3^j = 2^(i+1) * 3^j), the same one-term carry
+    // addSingleBitWithCarry() (representation_base.hpp) performs for
+    // ordinary addition, just through SmoothNumberBase's own get()/set()
+    // instead of a raw RepresentationBase.
+    static void carrySet(SmoothNumberBase& n, int i, int j) {
+        while (n.get(i, j)) {
+            n.set(i, j, false);
+            ++i;
+        }
+        n.set(i, j, true);
+    }
+
+    std::vector<std::pair<int, int>> inputs_;
+    std::vector<std::pair<int, int>> outputs_;
 };
 
 // Merges the two bits at (i, j) and (i+1, j) into the single bit at
-// (i, j+1): 2^i*3^j + 2^(i+1)*3^j = 2^i*3^(j+1). Applicable only when both
-// source bits are set and the destination bit is clear.
+// (i, j+1): 2^i*3^j + 2^(i+1)*3^j = 2^i*3^(j+1). If (i, j+1) is already
+// set, the merge still succeeds -- it carries into (i+1, j+1),
+// (i+2, j+1), ... until it lands on a clear cell, exactly like ordinary
+// addition would.
 class MergeTransformation : public Transformation {
 public:
-    bool canApply(const SmoothNumberBase& n, int i, int j) const override {
-        return n.get(i, j) && n.get(i + 1, j) && !n.get(i, j + 1);
-    }
-
-    void apply(SmoothNumberBase& n, int i, int j) const override {
-        n.set(i, j, false);
-        n.set(i + 1, j, false);
-        n.set(i, j + 1, true);
-    }
+    MergeTransformation() : Transformation({{0, 0}, {1, 0}}, {{0, 1}}) {}
 };
 
 // The reverse of MergeTransformation: splits the bit at (i, j+1) into the
-// two bits at (i, j) and (i+1, j). Applicable only when the source bit is
-// set and both destination bits are clear.
+// two bits at (i, j) and (i+1, j) -- each carrying independently (in that
+// order) if its destination is already occupied.
 class SplitTransformation : public Transformation {
 public:
-    bool canApply(const SmoothNumberBase& n, int i, int j) const override {
-        return n.get(i, j + 1) && !n.get(i, j) && !n.get(i + 1, j);
-    }
-
-    void apply(SmoothNumberBase& n, int i, int j) const override {
-        n.set(i, j + 1, false);
-        n.set(i, j, true);
-        n.set(i + 1, j, true);
-    }
+    SplitTransformation() : Transformation({{0, 1}}, {{0, 0}, {1, 0}}) {}
 };
 
 inline void SmoothNumberBase::applyTransformation(const Transformation& t, int i, int j) {

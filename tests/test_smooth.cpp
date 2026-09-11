@@ -661,7 +661,12 @@ void testCopyAndMoveSemantics() {
 }
 
 // ---------------------------------------------------------------------
-// Transformation: value-preserving bit-grid rewrites.
+// Transformation: value-preserving bit-grid rewrites, built from a fixed
+// list of input offsets (each must hold a 1; applying always clears them)
+// and output offsets (each gets carry-set to 1 -- ripple-carrying up the
+// row axis, exactly like ordinary addition, if already occupied).
+// canApply() only ever checks the inputs, since an occupied output is
+// never a reason to reject -- apply() carries through it instead.
 // 2^i*3^j + 2^(i+1)*3^j = 2^i*3^(j+1), so MergeTransformation/
 // SplitTransformation trade the two bits at (i, j)/(i+1, j) for the one
 // bit at (i, j+1), and back, without changing value() at all.
@@ -669,73 +674,86 @@ void testCopyAndMoveSemantics() {
 // throws if it doesn't hold, rather than applying regardless.
 // ---------------------------------------------------------------------
 void testTransformation() {
-    // MergeTransformation: applicable exactly when both source bits are
-    // set and the destination bit is clear.
+    // MergeTransformation: applicable exactly when both input bits are
+    // set -- the output bit's own state doesn't matter.
     {
         SmoothInteger n;
         n.set(0, 0);  // 2^0*3^0 = 1
         n.set(1, 0);  // 2^1*3^0 = 2
         MergeTransformation merge;
-        check(merge.canApply(n, 0, 0), "MergeTransformation: applicable when both source bits are set");
+        check(merge.canApply(n, 0, 0), "MergeTransformation: applicable when both input bits are set");
         checkNear(n.value(), 3.0, "before merge: 1 + 2 = 3");
 
         n.applyTransformation(merge, 0, 0);
         checkNear(n.value(), 3.0, "MergeTransformation preserves value(): still 3");
         check(!n.get(0, 0) && !n.get(1, 0) && n.get(0, 1),
-              "MergeTransformation moves the two source bits into the one destination bit");
+              "MergeTransformation moves the two input bits into the one output bit");
     }
     {
-        // Not applicable: only one of the two source bits is set.
+        // Not applicable: only one of the two input bits is set.
         SmoothInteger n;
         n.set(0, 0);
         MergeTransformation merge;
-        check(!merge.canApply(n, 0, 0), "MergeTransformation: not applicable with only one source bit set");
+        check(!merge.canApply(n, 0, 0), "MergeTransformation: not applicable with only one input bit set");
         checkThrows([&] { n.applyTransformation(merge, 0, 0); },
-                    "applyTransformation() throws when canApply() is false (missing source bit)");
+                    "applyTransformation() throws when canApply() is false (missing input bit)");
     }
     {
-        // Not applicable: the destination bit is already set.
+        // The output bit already being set doesn't block canApply() at
+        // all -- apply() carries into it instead of failing.
         SmoothInteger n;
-        n.set(0, 0);
-        n.set(1, 0);
-        n.set(0, 1);
+        n.set(2, 0);  // 2^2 = 4       )  inputs: merge these two
+        n.set(3, 0);  // 2^3 = 8       )
+        n.set(2, 1);  // 2^2*3 = 12    -- pre-existing bit at the output
         MergeTransformation merge;
-        check(!merge.canApply(n, 0, 0), "MergeTransformation: not applicable when the destination bit is set");
-        checkThrows([&] { n.applyTransformation(merge, 0, 0); },
-                    "applyTransformation() throws when canApply() is false (destination bit occupied)");
+        check(merge.canApply(n, 2, 0),
+              "MergeTransformation: still applicable even when the output bit is already set");
+        checkNear(n.value(), 24.0, "before merge (with output collision): 4 + 8 + 12 = 24");
+
+        n.applyTransformation(merge, 2, 0);
+        checkNear(n.value(), 24.0, "MergeTransformation preserves value() even when it has to carry");
+        check(!n.get(2, 0) && !n.get(3, 0) && !n.get(2, 1) && n.get(3, 1),
+              "an occupied output bit ripple-carries up the row axis (12 + 12 = 24 = 2^3*3^1) instead of "
+              "blocking the merge");
     }
 
     // SplitTransformation: the reverse -- applicable exactly when the
-    // source bit is set and both destination bits are clear.
+    // input bit is set; the output bits' own states don't matter.
     {
         SmoothInteger n;
         n.set(0, 1);  // 2^0*3^1 = 3
         SplitTransformation split;
-        check(split.canApply(n, 0, 0), "SplitTransformation: applicable when the source bit is set");
+        check(split.canApply(n, 0, 0), "SplitTransformation: applicable when the input bit is set");
         checkNear(n.value(), 3.0, "before split: 3");
 
         n.applyTransformation(split, 0, 0);
         checkNear(n.value(), 3.0, "SplitTransformation preserves value(): still 3");
         check(n.get(0, 0) && n.get(1, 0) && !n.get(0, 1),
-              "SplitTransformation moves the one source bit into the two destination bits");
+              "SplitTransformation moves the one input bit into the two output bits");
     }
     {
         SplitTransformation split;
         SmoothInteger n;
-        check(!split.canApply(n, 0, 0), "SplitTransformation: not applicable when the source bit is clear");
+        check(!split.canApply(n, 0, 0), "SplitTransformation: not applicable when the input bit is clear");
         checkThrows([&] { n.applyTransformation(split, 0, 0); },
-                    "applyTransformation() throws when canApply() is false (source bit clear)");
+                    "applyTransformation() throws when canApply() is false (input bit clear)");
     }
     {
-        // Not applicable: one of the destination bits is already set.
+        // Both output bits already occupied -- still applicable, and both
+        // carry (in order), still preserving the total value.
         SmoothInteger n;
-        n.set(0, 1);
-        n.set(0, 0);
+        n.set(2, 1);  // 2^2*3 = 12  -- input, to be split
+        n.set(2, 0);  // 2^2 = 4     -- pre-existing, collides with the first output
         SplitTransformation split;
-        check(!split.canApply(n, 0, 0),
-              "SplitTransformation: not applicable when a destination bit is already set");
-        checkThrows([&] { n.applyTransformation(split, 0, 0); },
-                    "applyTransformation() throws when canApply() is false (destination bit occupied)");
+        check(split.canApply(n, 2, 0),
+              "SplitTransformation: still applicable even when an output bit is already set");
+        checkNear(n.value(), 16.0, "before split (with output collision): 12 + 4 = 16");
+
+        n.applyTransformation(split, 2, 0);
+        checkNear(n.value(), 16.0, "SplitTransformation preserves value() even when it has to carry");
+        check(!n.get(2, 0) && !n.get(3, 0) && !n.get(2, 1) && n.get(4, 0),
+              "the first output's carry (4 + 4 = 8, landing at row 3) collides with the second output's own "
+              "target, carrying again (8 + 8 = 16, landing at row 4)");
     }
 
     // Merge then split is a round trip: back to the original bit layout.
@@ -763,6 +781,25 @@ void testTransformation() {
               "after a merge, a different representation (RowValues) reflects the new layout: only column 1 "
               "(n_1 = 4, i.e. 4*3^1 = 12) has anything set");
         checkNear(n.value(), 12.0, "value is unchanged by re-deriving a different representation");
+    }
+
+    // Transformation itself is concrete and general: a custom one, built
+    // directly from its own input/output offset lists (not one of the two
+    // named presets), works exactly the same way. This one combines three
+    // bits across both axes at once: 2^i*3^j + 2^(i+1)*3^j + 2^i*3^(j+1) =
+    // 2^i*3^j*(1+2+3) = 2^i*3^j*6 = 2^(i+1)*3^(j+1).
+    {
+        Transformation combineBothAxes({{0, 0}, {1, 0}, {0, 1}}, {{1, 1}});
+        SmoothInteger n;
+        n.set(0, 0);  // 1
+        n.set(1, 0);  // 2
+        n.set(0, 1);  // 3
+        checkNear(n.value(), 6.0, "before custom transformation: 1 + 2 + 3 = 6");
+        check(combineBothAxes.canApply(n, 0, 0), "a custom Transformation's canApply() checks its own input list");
+        n.applyTransformation(combineBothAxes, 0, 0);
+        checkNear(n.value(), 6.0, "a custom Transformation still preserves value()");
+        check(!n.get(0, 0) && !n.get(1, 0) && !n.get(0, 1) && n.get(1, 1),
+              "a custom Transformation clears all of its inputs and carry-sets all of its outputs");
     }
 
     // Works for negative indices on a fractional type too -- the identity
