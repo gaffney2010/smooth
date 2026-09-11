@@ -661,6 +661,126 @@ void testCopyAndMoveSemantics() {
 }
 
 // ---------------------------------------------------------------------
+// Transformation: value-preserving bit-grid rewrites.
+// 2^i*3^j + 2^(i+1)*3^j = 2^i*3^(j+1), so MergeTransformation/
+// SplitTransformation trade the two bits at (i, j)/(i+1, j) for the one
+// bit at (i, j+1), and back, without changing value() at all.
+// SmoothNumberBase::applyTransformation() checks canApply() first and
+// throws if it doesn't hold, rather than applying regardless.
+// ---------------------------------------------------------------------
+void testTransformation() {
+    // MergeTransformation: applicable exactly when both source bits are
+    // set and the destination bit is clear.
+    {
+        SmoothInteger n;
+        n.set(0, 0);  // 2^0*3^0 = 1
+        n.set(1, 0);  // 2^1*3^0 = 2
+        MergeTransformation merge;
+        check(merge.canApply(n, 0, 0), "MergeTransformation: applicable when both source bits are set");
+        checkNear(n.value(), 3.0, "before merge: 1 + 2 = 3");
+
+        n.applyTransformation(merge, 0, 0);
+        checkNear(n.value(), 3.0, "MergeTransformation preserves value(): still 3");
+        check(!n.get(0, 0) && !n.get(1, 0) && n.get(0, 1),
+              "MergeTransformation moves the two source bits into the one destination bit");
+    }
+    {
+        // Not applicable: only one of the two source bits is set.
+        SmoothInteger n;
+        n.set(0, 0);
+        MergeTransformation merge;
+        check(!merge.canApply(n, 0, 0), "MergeTransformation: not applicable with only one source bit set");
+        checkThrows([&] { n.applyTransformation(merge, 0, 0); },
+                    "applyTransformation() throws when canApply() is false (missing source bit)");
+    }
+    {
+        // Not applicable: the destination bit is already set.
+        SmoothInteger n;
+        n.set(0, 0);
+        n.set(1, 0);
+        n.set(0, 1);
+        MergeTransformation merge;
+        check(!merge.canApply(n, 0, 0), "MergeTransformation: not applicable when the destination bit is set");
+        checkThrows([&] { n.applyTransformation(merge, 0, 0); },
+                    "applyTransformation() throws when canApply() is false (destination bit occupied)");
+    }
+
+    // SplitTransformation: the reverse -- applicable exactly when the
+    // source bit is set and both destination bits are clear.
+    {
+        SmoothInteger n;
+        n.set(0, 1);  // 2^0*3^1 = 3
+        SplitTransformation split;
+        check(split.canApply(n, 0, 0), "SplitTransformation: applicable when the source bit is set");
+        checkNear(n.value(), 3.0, "before split: 3");
+
+        n.applyTransformation(split, 0, 0);
+        checkNear(n.value(), 3.0, "SplitTransformation preserves value(): still 3");
+        check(n.get(0, 0) && n.get(1, 0) && !n.get(0, 1),
+              "SplitTransformation moves the one source bit into the two destination bits");
+    }
+    {
+        SplitTransformation split;
+        SmoothInteger n;
+        check(!split.canApply(n, 0, 0), "SplitTransformation: not applicable when the source bit is clear");
+        checkThrows([&] { n.applyTransformation(split, 0, 0); },
+                    "applyTransformation() throws when canApply() is false (source bit clear)");
+    }
+    {
+        // Not applicable: one of the destination bits is already set.
+        SmoothInteger n;
+        n.set(0, 1);
+        n.set(0, 0);
+        SplitTransformation split;
+        check(!split.canApply(n, 0, 0),
+              "SplitTransformation: not applicable when a destination bit is already set");
+        checkThrows([&] { n.applyTransformation(split, 0, 0); },
+                    "applyTransformation() throws when canApply() is false (destination bit occupied)");
+    }
+
+    // Merge then split is a round trip: back to the original bit layout.
+    {
+        SmoothInteger n;
+        n.set(2, 0);
+        n.set(3, 0);
+        n.applyTransformation(MergeTransformation(), 2, 0);
+        n.applyTransformation(SplitTransformation(), 2, 0);
+        check(n.get(2, 0) && n.get(3, 0) && !n.get(2, 1), "merge then split round-trips to the original bits");
+    }
+
+    // A transformation that actually changes a bit invalidates every
+    // representation but the canonical one, the same as any other set()
+    // call -- printRowValues() (a different representation entirely)
+    // reflects the post-merge layout correctly.
+    {
+        SmoothInteger n;
+        n.set(2, 0);
+        n.set(3, 0);
+        n.applyTransformation(MergeTransformation(), 2, 0);
+        std::ostringstream out;
+        n.printRowValues(out);
+        check(out.str() == "n[1] = 4\n",
+              "after a merge, a different representation (RowValues) reflects the new layout: only column 1 "
+              "(n_1 = 4, i.e. 4*3^1 = 12) has anything set");
+        checkNear(n.value(), 12.0, "value is unchanged by re-deriving a different representation");
+    }
+
+    // Works for negative indices on a fractional type too -- the identity
+    // 2^i*3^j + 2^(i+1)*3^j = 2^i*3^(j+1) doesn't care about the sign of i
+    // or j.
+    {
+        SmoothFloat n;
+        n.set(-2, 0);  // 2^-2 = 0.25
+        n.set(-1, 0);  // 2^-1 = 0.5
+        checkNear(n.value(), 0.75, "before merge (fractional): 0.25 + 0.5 = 0.75");
+        n.applyTransformation(MergeTransformation(), -2, 0);
+        checkNear(n.value(), 0.75, "MergeTransformation preserves value() for negative indices too");
+        check(!n.get(-2, 0) && !n.get(-1, 0) && n.get(-2, 1),
+              "MergeTransformation moves bits correctly for negative i");
+    }
+}
+
+// ---------------------------------------------------------------------
 // Metrics: optional per-number counter tracking, incremented once per
 // representation conversion, and the a+=b / a+b metrics-inheritance
 // rules.
@@ -1359,6 +1479,7 @@ int main() {
     testSignedAddition();
     testMultiplication();
     testCopyAndMoveSemantics();
+    testTransformation();
     testMetrics();
     testInstrumentationCounters();
     testPlan();

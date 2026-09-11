@@ -500,5 +500,34 @@ int main() {
     std::cout << "\nThrough a Plan*: name() = " << polymorphic->name()
               << ", calculate() = " << polymorphic->calculate() << "\n";
 
+    // --- Transformation ------------------------------------------------------
+    // A value-preserving rewrite of a number's bit grid: since
+    // 2^i*3^j + 2^(i+1)*3^j = 2^i*3^(j+1), the two bits at (i, j) and
+    // (i+1, j) can be traded for the one bit at (i, j+1) (and back)
+    // without changing value() at all. applyTransformation() checks
+    // canApply() first and throws if it doesn't hold.
+    std::cout << "\n--- Transformation ---\n";
+    smooth::SmoothInteger transformed;
+    transformed.set(2, 0);  // 2^2 = 4
+    transformed.set(3, 0);  // 2^3 = 8
+    std::cout << "before merge: value = " << transformed.value() << ", ";
+    transformed.printSparse();
+
+    smooth::MergeTransformation merge;
+    transformed.applyTransformation(merge, 2, 0);
+    std::cout << "after merge(2, 0): value = " << transformed.value() << ", ";
+    transformed.printSparse();
+
+    smooth::SplitTransformation split;
+    transformed.applyTransformation(split, 2, 0);
+    std::cout << "after split(2, 0): value = " << transformed.value() << ", ";
+    transformed.printSparse();
+
+    try {
+        transformed.applyTransformation(merge, 10, 10);
+    } catch (const std::exception& e) {
+        std::cout << "merge(10, 10) throws (bits aren't set up for it): " << e.what() << "\n";
+    }
+
     return 0;
 }

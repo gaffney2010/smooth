@@ -18,6 +18,13 @@
 
 namespace smooth {
 
+// Forward-declared, not included: Transformation (transformation.hpp)
+// needs SmoothNumberBase's full definition (its canApply()/apply()
+// implementations call n.get()/n.set()), so the dependency can't run the
+// other way too -- applyTransformation() below is declared here but
+// defined in transformation.hpp, once Transformation is fully known.
+class Transformation;
+
 // Shared engine behind all four concrete 3-smooth number types
 // (SmoothInteger, SmoothFloat, and their Signed<> counterparts -- see
 // smooth_integer.hpp, smooth_float.hpp, signed.hpp). Represents a 3-smooth
@@ -129,6 +136,13 @@ public:
     }
 
     void clear(int i, int j) { set(i, j, false); }
+
+    // Checks that `t` can be applied at (i, j) (see Transformation, in
+    // transformation.hpp) and, if so, applies it; throws
+    // std::invalid_argument otherwise. Defined out-of-line in
+    // transformation.hpp, once Transformation itself is fully defined --
+    // see the forward-declaration comment above.
+    void applyTransformation(const Transformation& t, int i, int j);
 
     // Converts to Sparse if needed, then prints it.
     void printSparse(std::ostream& os = std::cout) {

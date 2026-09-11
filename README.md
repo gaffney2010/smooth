@@ -341,6 +341,64 @@ subtraction to worry about; the result's sign is just whether exactly one
 operand was negative (the usual sign-XOR rule), with a zero product
 normalized back to non-negative the same way a zero sum is.
 
+## Transformation
+
+```cpp
+#include "smooth/smooth.hpp"
+
+smooth::SmoothInteger n;
+n.set(2, 0);  // 2^2 = 4
+n.set(3, 0);  // 2^3 = 8
+
+smooth::MergeTransformation merge;
+n.applyTransformation(merge, 2, 0);
+n.printSparse();  // {(2, 1)}  -- still 12, just represented differently
+```
+
+The same value can be held by more than one bit grid: since
+`2^i*3^j + 2^(i+1)*3^j = 2^i*3^j*(1+2) = 2^i*3^(j+1)`, the two bits at
+`(i, j)` and `(i+1, j)` can be traded for the single bit at `(i, j+1)`
+without changing `value()` at all. A `Transformation`
+(`include/smooth/transformation.hpp`) is one such value-preserving trade,
+checked and applied at a specific `(i, j)`:
+
+- `canApply(const SmoothNumberBase& n, int i, int j) const` — whether
+  every bit this transformation would touch is currently in the exact
+  state it needs to start in: both the bits being cleared (must be `1`)
+  and the bits being set (must be `0`). A transformation is never
+  "partially" applicable — it's all-or-nothing at a given `(i, j)`, so it
+  never has nothing to do, and never silently overwrites a bit that was
+  already there.
+- `apply(SmoothNumberBase& n, int i, int j) const` — performs the trade.
+  Precondition: `canApply(n, i, j)`.
+
+Both operate directly through `SmoothNumberBase`'s own `get()`/`set()`, not
+`RepresentationBase` — so a transformation that actually changes a bit
+correctly invalidates every representation but the canonical one, exactly
+like any other `set()` call.
+
+`SmoothNumberBase::applyTransformation(const Transformation& t, int i, int j)`
+is the usual way to use one: it calls `canApply()` first, throwing
+`std::invalid_argument` if it doesn't hold, then `apply()` — so a
+transformation can never silently do nothing, or apply itself somewhere it
+shouldn't.
+
+Two concrete transformations are provided, one the exact reverse of the
+other:
+
+- `MergeTransformation` — merges the two bits at `(i, j)` and `(i+1, j)`
+  into the one bit at `(i, j+1)`. Applicable only when both source bits are
+  set and the destination bit is clear.
+- `SplitTransformation` — splits the bit at `(i, j+1)` back into the two
+  bits at `(i, j)` and `(i+1, j)`. Applicable only when the source bit is
+  set and both destination bits are clear.
+
+Applying one and then the other is always a round trip back to the
+original bit layout. Both work the same way for negative `i`/`j` on a
+fractional type (`SmoothFloat`/`SmoothSignedFloat`) as for non-negative
+ones — the underlying identity doesn't care about the sign of either
+exponent.
+
 ## Metrics
 
 ```cpp
@@ -766,11 +824,14 @@ silently reading its unsigned magnitude) and printing it, including a
 `number()`, tallying both under the same counters; and, from
 `plan_zoo`, `SparsePlan`/`MatrixPlan`/`RowValuesPlan` all computing the
 same expression (each `plan()`-printed under its own `name()`), plus one
-used polymorphically through a `Plan*`; and `numberVia()` against the same
+used polymorphically through a `Plan*`; `numberVia()` against the same
 three real `SmoothInteger`s fed into `SparsePlan` and then `RowValuesPlan`,
 showing each one forcing a different real conversion
 (`convert_dynamic_to_sparse` vs. `convert_dynamic_to_row_values`) for the
-exact same numbers, alongside the rest of each run's `Metrics`.
+exact same numbers, alongside the rest of each run's `Metrics`; and
+`MergeTransformation`/`SplitTransformation`, applied and reversed on the
+same number, plus `applyTransformation()` throwing when asked to apply
+somewhere the bits aren't set up for it.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
 suite (no test framework linked in — see `CMakeLists.txt`) covering all of
@@ -793,7 +854,13 @@ still keeps a's metrics), the `carries`/`bit_operations`/
 against each representation directly (a single and a multi-step carry
 chain, an *n*-by-*m* bit-operation count, each representation's own
 notion of a "cell" for `bit_iterations`, and both `scalar_operations`
-sources for RowValues and Scalar), copy/move semantics, and `DefaultPlan`
+sources for RowValues and Scalar), copy/move semantics,
+`MergeTransformation`/`SplitTransformation` (each direction's `canApply()`
+correctly rejecting a missing source bit or an already-occupied
+destination bit, `applyTransformation()` throwing in each such case, a
+merge-then-split round trip, that a different representation correctly
+reflects the new layout after a merge, and that both work the same way for
+negative indices on a fractional type), and `DefaultPlan`
 (the confirmed example, unbracketed left-associative chaining, that
 `number()` throws for a negative signed operand instead of silently
 reading its unsigned magnitude — proving `T::value()` really is resolved
