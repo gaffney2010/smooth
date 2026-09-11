@@ -6,6 +6,7 @@
 #include "smooth/plan_zoo.hpp"
 #include "smooth/representation_zoo.hpp"
 #include "smooth/smooth.hpp"
+#include "smooth/ternary_form_cluster.hpp"
 #include "smooth/transformation_zoo.hpp"
 
 int main() {
@@ -618,6 +619,28 @@ int main() {
     binaryRep->print(std::cout);
     std::cout << "18 = 16 + 2 = 10010 in binary, reached after "
               << binaryMetrics->get("transformations_applied") << " splits\n";
+
+    // --- TernaryFormCluster -------------------------------------------------
+    // First runs BinaryFormCluster (collapsing whatever column layout the
+    // number started with down into column 0), then works column by column:
+    // so long as a column's total has more than one bit, subtracts 3 from
+    // it and adds 1 to the next column -- value-preserving, since
+    // 3 * 3^j = 3^(j+1) -- until that column is a single bit (or empty),
+    // then moves to the next. This can only run on a RowValuesRepresentation
+    // directly, since "subtract 3" needs each column's magnitude as one
+    // number, not individual bits with no borrow-subtraction of their own.
+    std::cout << "\n--- TernaryFormCluster ---\n";
+    smooth::SmoothInteger toTernary;
+    toTernary.setValue(13LL);  // 13 = 2^2 + 3^2, not itself a single term
+    std::cout << "before: value = " << toTernary.value() << "\n";
+    auto ternaryRep = toTernary.representationAs(smooth::SmoothInteger::Representation::RowValues);
+    smooth::TernaryFormCluster ternaryCluster;
+    auto ternaryMetrics = std::make_shared<smooth::Metrics>();
+    ternaryCluster.run(*ternaryRep, ternaryMetrics);
+    std::cout << "after: value = " << ternaryRep->value() << "\n";
+    ternaryRep->print(std::cout);
+    std::cout << "13 = 4*3^0 + 1*3^2, reached after " << ternaryMetrics->get("transformations_applied")
+              << " subtract-3/add-1 steps\n";
 
     return 0;
 }

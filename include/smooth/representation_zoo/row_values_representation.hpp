@@ -114,6 +114,26 @@ public:
         }
     }
 
+    // Reads column j's current n_j (0.0 if that column has nothing set).
+    // Not part of RepresentationBase -- no other representation stores a
+    // whole column's magnitude as a single number to read back -- so this
+    // is RowValuesRepresentation-specific, same as columnValue()'s write
+    // counterpart below. TernaryFormCluster (ternary_form_cluster.hpp) is
+    // the one caller: it works directly with each column's magnitude
+    // rather than decomposing it into individual bits.
+    double columnValue(int j) const {
+        auto it = values_.find(j);
+        return it == values_.end() ? 0.0 : it->second;
+    }
+
+    // Adds delta onto column j's total -- unlike setColumnValue() above,
+    // this has no "column must start at zero" precondition, since it's
+    // just accumulate() (already used internally by set()/addInPlace())
+    // exposed publicly for TernaryFormCluster, which needs to adjust two
+    // columns' totals directly (subtract 3 from one, add 1 to the next)
+    // without decomposing either into individual bits.
+    void addToColumnValue(int j, double delta) { accumulate(j, delta); }
+
     std::unique_ptr<RepresentationBase> clone() const override {
         return std::make_unique<RowValuesRepresentation>(*this);
     }

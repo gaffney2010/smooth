@@ -545,6 +545,52 @@ above column 0 still gets split all the way down to it, and a bit already
 at column 0 is left alone, since producing it would require an anchor at
 column -1, which is disallowed.
 
+### TernaryFormCluster
+
+```cpp
+#include "smooth/smooth.hpp"
+#include "smooth/ternary_form_cluster.hpp"
+
+smooth::SmoothInteger n;
+n.setValue(13LL);  // 13 = 2^2 + 3^2, not itself a single term
+auto rep = n.representationAs(smooth::SmoothInteger::Representation::RowValues);
+
+smooth::TernaryFormCluster toTernary;
+toTernary.run(*rep);
+rep->print();  // n[0] = 4, n[2] = 1  -- 13 = 4*3^0 + 1*3^2
+```
+
+`TernaryFormCluster` (`include/smooth/ternary_form_cluster.hpp`) reduces a
+number to a form where every nonzero column holds exactly one bit — i.e.
+every nonzero `n_j` (`RowValuesRepresentation`'s own per-column total —
+see "Four concrete types" above) is a single power of two, never an
+arbitrary magnitude. It first runs `BinaryFormCluster` (collapsing
+whatever column layout the number started with down into column 0's
+`n_0`, so the final result only ever depends on the number's value, never
+on how it got there), then works column by column starting at 0: so long
+as that column's total has more than one bit set, subtracts 3 from it and
+adds 1 to the next column — value-preserving, since `3 * 3^j = 3^(j+1)` —
+until it's down to a single bit (or gone entirely), then moves to the
+next column. A carry only ever flows to a strictly higher column, so
+nothing already finished is ever revisited.
+
+This always terminates without ever going negative: the descending
+sequence `n_j, n_j - 3, n_j - 6, ...` is confined to one residue class mod
+3, and that class's smallest nonnegative member — 0, 1, or 2 — always has
+at most one bit set. So the loop is guaranteed to stop at or before
+reaching it, never below.
+
+Unlike `BinaryFormCluster`, this can't be built from `Transformation`s at
+all: "subtract 3 from a column's total" is an ordinary magnitude
+subtraction, and in general that needs a borrow across bits — exactly the
+kind of arbitrary-precision subtraction `Transformation` has no way to
+express (it only ever clears/carry-sets a small *fixed* set of bit
+offsets, never however many bits a particular borrow happens to touch).
+`RowValuesRepresentation` sidesteps the problem by already storing each
+column's total as a single number rather than exploded bits, which is why
+`TernaryFormCluster::run()` requires one and throws
+`std::invalid_argument` for anything else.
+
 ## Metrics
 
 ```cpp
@@ -1024,9 +1070,12 @@ from `plan_zoo`, `MergingSparsePlan` computing the same expressions as
 `SparsePlan`, with `plan()` showing each `Multiply` node's operands wrapped
 in `cluster(merge)` while `Add` nodes are left bare, and a side-by-side
 `bit_operations` comparison against plain `SparsePlan` for the same
-multiplication; and `BinaryFormCluster` reducing 18 (a single bit at
+multiplication; `BinaryFormCluster` reducing 18 (a single bit at
 `(1, 2)`) down to its binary form (bits at `(1, 0)` and `(4, 0)`, i.e.
-`16 + 2`), with a `Metrics` attached to show how many splits it took.
+`16 + 2`), with a `Metrics` attached to show how many splits it took; and
+`TernaryFormCluster` reducing 13 (not itself a single term) down to two
+single-bit columns, `n[0] = 4` and `n[2] = 1`, with a `Metrics` attached
+to show how many subtract-3/add-1 steps it took.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
 suite (no test framework linked in — see `CMakeLists.txt`) covering all of
@@ -1075,7 +1124,18 @@ single split with no carry, an already-binary number left untouched, a
 carry-cascade case confirming 18 converges to exactly its true binary
 form — bits at rows 1 and 4, nowhere else — the `transformations_applied`
 counter, and value preservation, plus the column-0-only guarantee, checked
-across a range of representative numbers including 0), and `DefaultPlan`
+across a range of representative numbers including 0), `TernaryFormCluster`
+(a number already a single bit left untouched past `BinaryFormCluster`'s
+own no-op, 9 draining fully out of columns 0 and 1 to land as a single
+bit at column 2 — matching its own single-term sparse form exactly — with
+the exact `transformations_applied` count checked, 13 landing on two
+single-bit columns instead of collapsing to one, that the result only
+depends on the total value and not the starting column layout — built
+directly via `setColumnValue()` rather than `SmoothInteger::setValue()` —
+value preservation and the single-bit-per-column guarantee checked across
+a range of representative numbers, and that running it against anything
+other than a `RowValuesRepresentation` throws `std::invalid_argument`),
+and `DefaultPlan`
 (the confirmed example, unbracketed left-associative chaining, that
 `number()` throws for a negative signed operand instead of silently
 reading its unsigned magnitude — proving `T::value()` really is resolved

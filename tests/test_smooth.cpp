@@ -16,6 +16,7 @@
 #include "smooth/plan_zoo.hpp"
 #include "smooth/representation_zoo.hpp"
 #include "smooth/smooth.hpp"
+#include "smooth/ternary_form_cluster.hpp"
 #include "smooth/transformation_algorithm_cluster.hpp"
 #include "smooth/transformation_zoo.hpp"
 
@@ -1072,6 +1073,118 @@ void testBinaryFormCluster() {
 }
 
 // ---------------------------------------------------------------------
+// TernaryFormCluster: BinaryFormCluster followed by a column-by-column
+// subtract-3/add-1-to-next-column reduction, so every nonzero column of a
+// RowValuesRepresentation ends up holding a single power of two.
+// ---------------------------------------------------------------------
+void testTernaryFormCluster() {
+    auto isSingleBit = [](double n) {
+        long long w = static_cast<long long>(std::llround(n));
+        return (w & (w - 1)) == 0;  // true for 0 and every power of two
+    };
+
+    TernaryFormCluster cluster;
+
+    // Already a single bit, no factor of 3 to redistribute at all: a
+    // no-op past the initial (also no-op) BinaryFormCluster pass.
+    {
+        SmoothInteger n;
+        n.setValue(4LL);
+        auto rep = n.representationAs(SmoothInteger::Representation::RowValues);
+        cluster.run(*rep);
+        auto* rv = dynamic_cast<RowValuesRepresentation*>(rep.get());
+        checkNear(rep->value(), 4.0, "TernaryFormCluster::run() preserves value(): still 4");
+        check(rv->columnValue(0) == 4.0, "4 is already a single bit -- column 0 is untouched");
+    }
+
+    // 9 = 1001 binary (2 bits) at column 0: needs exactly 3 subtract-3
+    // steps to drain column 0 (9 -> 6 -> 3 -> 0), carrying 3 into column 1
+    // (still 2 bits, 011), which itself needs one more step (3 -> 0),
+    // carrying 1 into column 2 -- landing on 9 = 1 * 3^2 exactly, matching
+    // its own single-term sparse form.
+    {
+        SmoothInteger n;
+        n.setValue(9LL);
+        auto rep = n.representationAs(SmoothInteger::Representation::RowValues);
+        auto metrics = std::make_shared<Metrics>();
+        cluster.run(*rep, metrics);
+        auto* rv = dynamic_cast<RowValuesRepresentation*>(rep.get());
+        checkNear(rep->value(), 9.0, "TernaryFormCluster::run() preserves value(): still 9");
+        check(rv->columnValue(0) == 0.0 && rv->columnValue(1) == 0.0 && rv->columnValue(2) == 1.0,
+              "9 = 1 * 3^2: columns 0 and 1 empty out entirely, column 2 ends at 1");
+        check(metrics->get("transformations_applied") == 4,
+              "9 needs 4 subtract-3/add-1 steps total (3 draining column 0, 1 draining column 1)");
+    }
+
+    // 13 = 2^2 + 3^2 doesn't collapse to a single term: two columns end up
+    // nonzero (0 and 2), each holding its own single bit.
+    {
+        SmoothInteger n;
+        n.setValue(13LL);
+        auto rep = n.representationAs(SmoothInteger::Representation::RowValues);
+        cluster.run(*rep);
+        auto* rv = dynamic_cast<RowValuesRepresentation*>(rep.get());
+        checkNear(rep->value(), 13.0, "TernaryFormCluster::run() preserves value(): still 13");
+        check(rv->columnValue(0) == 4.0 && rv->columnValue(2) == 1.0 && rv->columnValue(1) == 0.0,
+              "13 = 4 * 3^0 + 1 * 3^2: two surviving columns, each a single bit");
+    }
+
+    // The result only ever depends on the total value, never on the
+    // starting column layout: build 11 (= 5*3^0 + 2*3^1) directly via
+    // setColumnValue() rather than SmoothInteger's own column-0-only
+    // setValue(), confirming BinaryFormCluster's initial pass really does
+    // collapse an arbitrary starting layout before the column-by-column
+    // reduction begins.
+    {
+        RowValuesRepresentation rep(/*allow_fractional=*/false);
+        rep.setColumnValue(0, 5.0);
+        rep.setColumnValue(1, 2.0);
+        checkNear(rep.value(), 11.0, "before: 5*3^0 + 2*3^1 = 11");
+        cluster.run(rep);
+        checkNear(rep.value(), 11.0, "TernaryFormCluster::run() preserves value(): still 11");
+        bool allSingle = true;
+        rep.forEachSet([&](int, int j) {
+            if (!isSingleBit(rep.columnValue(j))) allSingle = false;
+        });
+        check(allSingle, "every surviving column is a single bit, regardless of the starting layout");
+    }
+
+    // Every surviving column really does end up a single bit (power of two
+    // or absent), and the value is preserved, across a range of numbers.
+    {
+        for (long long v : {0LL, 1LL, 2LL, 3LL, 7LL, 100LL, 12345LL}) {
+            SmoothInteger n;
+            n.setValue(v);
+            auto rep = n.representationAs(SmoothInteger::Representation::RowValues);
+            cluster.run(*rep);
+            auto* rv = dynamic_cast<RowValuesRepresentation*>(rep.get());
+            check(rep->value() == static_cast<double>(v), "value is preserved for v=" + std::to_string(v));
+            bool allSingle = true;
+            rep->forEachSet([&](int, int j) {
+                if (!isSingleBit(rv->columnValue(j))) allSingle = false;
+            });
+            check(allSingle, "every surviving column is a single bit for v=" + std::to_string(v));
+        }
+    }
+
+    // Running it against anything other than a RowValuesRepresentation is
+    // a usage error -- there's no way to subtract 3 from an arbitrary
+    // column's magnitude without decomposing it into individual bits
+    // first, which this cluster deliberately doesn't do.
+    {
+        SparseRepresentation rep(/*allow_fractional=*/true);
+        rep.set(0, 0, true);
+        bool threw = false;
+        try {
+            cluster.run(rep);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        check(threw, "TernaryFormCluster::run() throws std::invalid_argument for a non-RowValuesRepresentation");
+    }
+}
+
+// ---------------------------------------------------------------------
 // Metrics: optional per-number counter tracking, incremented once per
 // representation conversion, and the a+=b / a+b metrics-inheritance
 // rules.
@@ -1846,6 +1959,7 @@ int main() {
     testTransformation();
     testTransformationAlgorithmCluster();
     testBinaryFormCluster();
+    testTernaryFormCluster();
     testMetrics();
     testInstrumentationCounters();
     testPlan();
