@@ -14,7 +14,7 @@ namespace smooth {
 // and combine() (inherited, unchanged, from Plan) runs its own
 // addInPlace()/multiplyInPlace() (direct column-total accumulation for
 // addition, and convolution -- long multiplication in base 3 -- for
-// multiplication, see row_values_representation.hpp). buildBlueprint() is
+// multiplication, see representation_zoo/row_values_representation.hpp). buildBlueprint() is
 // the entire strategy -- see plan.hpp's wrapLeavesWithEnsure() for what it
 // does. Everything else (building, plan(), calculate(), combine(),
 // Metrics, error-handling) is inherited as-is.

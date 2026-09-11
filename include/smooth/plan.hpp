@@ -8,13 +8,10 @@
 #include <utility>
 #include <vector>
 
-#include "smooth/dynamic_matrix_representation.hpp"
 #include "smooth/metrics.hpp"
 #include "smooth/representation_base.hpp"
-#include "smooth/row_values_representation.hpp"
-#include "smooth/scalar_representation.hpp"
+#include "smooth/representation_zoo.hpp"
 #include "smooth/smooth_number_base.hpp"
-#include "smooth/sparse_representation.hpp"
 
 namespace smooth {
 

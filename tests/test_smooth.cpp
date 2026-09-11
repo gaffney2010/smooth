@@ -11,12 +11,10 @@
 #include <string>
 #include <utility>
 
-#include "smooth/dynamic_matrix_representation.hpp"
 #include "smooth/plan_zoo.hpp"
-#include "smooth/row_values_representation.hpp"
-#include "smooth/scalar_representation.hpp"
+#include "smooth/representation_zoo.hpp"
 #include "smooth/smooth.hpp"
-#include "smooth/sparse_representation.hpp"
+#include "smooth/transformation_zoo.hpp"
 
 using namespace smooth;
 

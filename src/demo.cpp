@@ -2,12 +2,10 @@
 #include <memory>
 #include <sstream>
 
-#include "smooth/dynamic_matrix_representation.hpp"
 #include "smooth/plan_zoo.hpp"
-#include "smooth/row_values_representation.hpp"
-#include "smooth/scalar_representation.hpp"
+#include "smooth/representation_zoo.hpp"
 #include "smooth/smooth.hpp"
-#include "smooth/sparse_representation.hpp"
+#include "smooth/transformation_zoo.hpp"
 
 int main() {
     smooth::SmoothInteger n;  // whole numbers only, no capacity to declare

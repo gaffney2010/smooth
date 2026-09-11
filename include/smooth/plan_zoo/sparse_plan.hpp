@@ -13,7 +13,7 @@ namespace smooth {
 // scalar()/number()/numberVia() leaf ends up as a SparseRepresentation,
 // and combine() (inherited, unchanged, from Plan) runs its own
 // addInPlace()/multiplyInPlace() (the pairwise-exponent-sum-with-carry
-// strategy, see sparse_representation.hpp). buildBlueprint() is the entire
+// strategy, see representation_zoo/sparse_representation.hpp). buildBlueprint() is the entire
 // strategy -- see plan.hpp's wrapLeavesWithEnsure() for what it does and
 // Plan's class comment for how the resulting Ensure steps are executed and
 // printed. Everything else (building, plan(), calculate(), combine(),

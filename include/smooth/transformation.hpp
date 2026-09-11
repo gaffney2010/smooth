@@ -28,7 +28,9 @@ namespace smooth {
 // this library has fits this one shape (clear a fixed set of 1s, carry-set
 // a fixed set of new 1s), so there's no virtual dispatch to speak of.
 // Building a custom one is just
-// `Transformation({...input offsets...}, {...output offsets...})`.
+// `Transformation({...input offsets...}, {...output offsets...})`. See
+// transformation_zoo/ for the two named presets (MergeTransformation/
+// SplitTransformation), built exactly that way.
 class Transformation {
 public:
     Transformation(std::vector<std::pair<int, int>> inputs, std::vector<std::pair<int, int>> outputs)
@@ -76,24 +78,6 @@ private:
 
     std::vector<std::pair<int, int>> inputs_;
     std::vector<std::pair<int, int>> outputs_;
-};
-
-// Merges the two bits at (i, j) and (i+1, j) into the single bit at
-// (i, j+1): 2^i*3^j + 2^(i+1)*3^j = 2^i*3^(j+1). If (i, j+1) is already
-// set, the merge still succeeds -- it carries into (i+1, j+1),
-// (i+2, j+1), ... until it lands on a clear cell, exactly like ordinary
-// addition would.
-class MergeTransformation : public Transformation {
-public:
-    MergeTransformation() : Transformation({{0, 0}, {1, 0}}, {{0, 1}}) {}
-};
-
-// The reverse of MergeTransformation: splits the bit at (i, j+1) into the
-// two bits at (i, j) and (i+1, j) -- each carrying independently (in that
-// order) if its destination is already occupied.
-class SplitTransformation : public Transformation {
-public:
-    SplitTransformation() : Transformation({{0, 1}}, {{0, 0}, {1, 0}}) {}
 };
 
 inline void SmoothNumberBase::applyTransformation(const Transformation& t, int i, int j) {

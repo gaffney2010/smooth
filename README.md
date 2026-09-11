@@ -88,33 +88,38 @@ mistakes if you want that guardrail, nothing more.
 ### Internal representations
 
 The same number can be held in one of several internal representations,
-each a class implementing `RepresentationBase`
-(`get`/`set`/`reset`/`value`/`print`/`forEachSet`/`setColumnValue`/
-`addInPlace`/`multiplyInPlace`/`clone`):
+each a class implementing `RepresentationBase` (`representation_base.hpp`;
+`get`/`set`/`reset`/`value`/`print`/`forEachSet`/`setColumnValue`/
+`addInPlace`/`multiplyInPlace`/`clone`) and living in
+`include/smooth/representation_zoo/`
+(`include/smooth/representation_zoo.hpp` is a convenience header pulling
+in all four, mirroring `plan_zoo.hpp`/`transformation_zoo.hpp`):
 
-- **Sparse** (`sparse_representation.hpp`) — the set of `(i, j)` coordinates
-  whose bit is set. A `std::set` — a literal list of the coordinates that
-  are actually on.
-- **RowValues** (`row_values_representation.hpp`) — one number `n_j` per
-  column `j` that has anything set, where `n_j = sum_i (bit(i,j) ? 2^i : 0)`,
-  so the total value is `sum_j n_j * 3^j`. Stored as a `std::map<int,
-  double>` keyed by `j` (an entry is dropped once it returns to zero), so it
-  only ever holds entries for columns with something in them. `n_j` is an
-  integer if the number doesn't allow fractional terms, and may be
-  fractional otherwise.
-- **Dynamic** (`dynamic_matrix_representation.hpp`) — a bit grid that starts
-  at 0x0 and grows only as needed: whenever `set()` turns on a bit outside
-  the currently allocated range, the array doubles in whichever of the four
-  directions (more positive rows, more negative rows, more positive
-  columns, more negative columns) ran out — repeatedly, if one `set()` call
-  jumps far past the current capacity — and the old contents are copied
-  into the new, larger array. `reset()` drops it back to 0x0, so converting
-  into Dynamic from another representation regrows it from scratch, one
-  doubling at a time, as each set bit is replayed into it.
-- **Scalar** (`scalar_representation.hpp`) — stores the number as a single
-  plain value (an integer or a float) rather than a `(i, j)` bit grid:
-  every term it can hold lives in column `j = 0`, so its value is just that
-  one number (`3^0 = 1`). It's still a `RepresentationBase`, purely so a
+- **Sparse** (`representation_zoo/sparse_representation.hpp`) — the set of
+  `(i, j)` coordinates whose bit is set. A `std::set` — a literal list of
+  the coordinates that are actually on.
+- **RowValues** (`representation_zoo/row_values_representation.hpp`) — one
+  number `n_j` per column `j` that has anything set, where
+  `n_j = sum_i (bit(i,j) ? 2^i : 0)`, so the total value is
+  `sum_j n_j * 3^j`. Stored as a `std::map<int, double>` keyed by `j` (an
+  entry is dropped once it returns to zero), so it only ever holds entries
+  for columns with something in them. `n_j` is an integer if the number
+  doesn't allow fractional terms, and may be fractional otherwise.
+- **Dynamic** (`representation_zoo/dynamic_matrix_representation.hpp`) — a
+  bit grid that starts at 0x0 and grows only as needed: whenever `set()`
+  turns on a bit outside the currently allocated range, the array doubles
+  in whichever of the four directions (more positive rows, more negative
+  rows, more positive columns, more negative columns) ran out —
+  repeatedly, if one `set()` call jumps far past the current capacity —
+  and the old contents are copied into the new, larger array. `reset()`
+  drops it back to 0x0, so converting into Dynamic from another
+  representation regrows it from scratch, one doubling at a time, as each
+  set bit is replayed into it.
+- **Scalar** (`representation_zoo/scalar_representation.hpp`) — stores the
+  number as a single plain value (an integer or a float) rather than a
+  `(i, j)` bit grid: every term it can hold lives in column `j = 0`, so its
+  value is just that one number (`3^0 = 1`). It's still a
+  `RepresentationBase`, purely so a
   number stored this way can still convert to and from the others through
   the ordinary machinery — it isn't a standalone type of its own. Because
   it can only hold column-0 terms, converting a number with a genuine
@@ -345,6 +350,7 @@ normalized back to non-negative the same way a zero sum is.
 
 ```cpp
 #include "smooth/smooth.hpp"
+#include "smooth/transformation_zoo.hpp"  // for MergeTransformation/SplitTransformation
 
 smooth::SmoothInteger n;
 n.set(2, 0);  // 2^2 = 4
@@ -400,14 +406,18 @@ lists directly:
 smooth::Transformation combineBothAxes({{0, 0}, {1, 0}, {0, 1}}, {{1, 1}});
 ```
 
-Two presets are provided, one the exact reverse of the other — each is
-just a `Transformation` constructed with a fixed pair of offset lists:
+Two presets are provided in `include/smooth/transformation_zoo/`, one the
+exact reverse of the other — each is just a `Transformation` constructed
+with a fixed pair of offset lists (`include/smooth/transformation_zoo.hpp`
+is a convenience header pulling in both, mirroring `plan_zoo.hpp`/
+`representation_zoo.hpp`; `transformation.hpp` itself, and `smooth.hpp`,
+only give you the general `Transformation` class, not these two presets):
 
-- `MergeTransformation` — inputs `{(0, 0), (1, 0)}`, output `{(0, 1)}`:
-  merges the two bits at `(i, j)` and `(i+1, j)` into the one bit at
-  `(i, j+1)`.
-- `SplitTransformation` — input `{(0, 1)}`, outputs `{(0, 0), (1, 0)}`: the
-  exact reverse.
+- `MergeTransformation` (`transformation_zoo/merge_transformation.hpp`) —
+  inputs `{(0, 0), (1, 0)}`, output `{(0, 1)}`: merges the two bits at
+  `(i, j)` and `(i+1, j)` into the one bit at `(i, j+1)`.
+- `SplitTransformation` (`transformation_zoo/split_transformation.hpp`) —
+  input `{(0, 1)}`, outputs `{(0, 0), (1, 0)}`: the exact reverse.
 
 Applying one and then the other is always a round trip back to the
 original bit layout (even when one of them had to carry along the way —
