@@ -455,6 +455,52 @@ fractional type (`SmoothFloat`/`SmoothSignedFloat`) as for non-negative
 ones — the underlying identities don't care about the sign of either
 exponent.
 
+## TransformationAlgorithmCluster
+
+```cpp
+#include "smooth/representation_zoo.hpp"
+#include "smooth/transformation_algorithm_cluster.hpp"
+#include "smooth/transformation_zoo.hpp"
+
+smooth::MergeTransformation merge;
+smooth::TransformationAlgorithmCluster cluster({&merge}, "merge");
+
+smooth::SparseRepresentation rep(/*allow_fractional=*/true);
+rep.setColumnValue(0, 15);  // 15 = 1111 binary -> 4 set bits
+cluster.run(rep);
+rep.print();  // {(0, 1), (2, 1)}  -- down to 2 bits, still worth 15
+```
+
+`TransformationAlgorithmCluster` (`include/smooth/transformation_algorithm_cluster.hpp`)
+greedily applies a small family of `Transformation`s across an entire
+`RepresentationBase` — `run(RepresentationBase& rep, metrics = nullptr)` —
+until none of them can fire anywhere anymore: a fixed point. It always
+terminates, since every successful application strictly reduces the
+representation's total set-bit count (it clears at least as many bits —
+its inputs, plus however many occupied cells a carry rippled through — as
+it ever sets).
+
+The interesting part is doing this *without* rescanning the whole
+representation after every single application. Clearing a bit can only
+ever remove an opportunity for some transformation to fire, never create
+one — a new opportunity can only ever appear at a cell that just became
+`1`, i.e. one of the previous application's own output landings (see
+`Transformation::applyAndReportLandings()`, which `canApply()`/`apply()`
+are themselves now templated on — over anything with `get(int, int) const`/
+`set(int, int, bool)` — precisely so the exact same `Transformation` class
+works directly on a `RepresentationBase` here, not just a
+`SmoothNumberBase`). So `run()` seeds a worklist from `rep`'s own set bits
+(via `forEachSet()` — already just the actual `1`s, not a full grid scan),
+and after every application, only re-examines the cells right around where
+that application's outputs landed, rather than looking anywhere else.
+If given a `Metrics`, it increments `transformations_applied` once per
+successful application (`Transformation` itself never touches `Metrics` at
+all, so this is the only place that count is available).
+
+`TransformationAlgorithmCluster` is what `MergingSparsePlan` (see
+"plan_zoo" below) uses to search for, and repeatedly apply,
+`MergeTransformation` before every multiply.
+
 ## Metrics
 
 ```cpp
@@ -614,9 +660,12 @@ else); building never computes anything, and never touches a
 `RepresentationBase`. Compiling (the first call to `plan()`/`calculate()`)
 turns that declaration into a **blueprint**: the same tree, but with
 explicit `Ensure(target)` steps spliced in wherever a leaf needs to become
-a specific representation. The blueprint is what's actually executed —
-*and printed by `plan()`* — so every conversion a `Plan` performs shows up
-as a real, inspectable step, never hidden inside a virtual call:
+a specific representation (or, for a strategy like `MergingSparsePlan` —
+see "plan_zoo" below — `Cluster` steps wherever a
+`TransformationAlgorithmCluster` needs to run). The blueprint is what's
+actually executed — *and printed by `plan()`* — so every conversion (or
+transformation cluster) a `Plan` performs shows up as a real, inspectable
+step, never hidden inside a virtual call:
 
 ```cpp
 smooth::SparsePlan().scalar(1).plus().scalar(2).plan();
@@ -772,9 +821,11 @@ instead of `DefaultPlan`'s `ScalarRepresentation` — nothing else about
 `Plan` changes; building, `plan()`, `calculate()`, combining, `Metrics`, and
 error-handling are all inherited as-is. `include/smooth/plan_zoo.hpp` is a
 convenience header pulling in all of them, mirroring `smooth.hpp`. For now
-there are three, with more meant to follow as this library explores which
-representation is actually fastest for what — each one's `buildBlueprint()`
-is exactly `return wrapLeavesWithEnsure(declaration, Representation::X);`:
+there are four, with more meant to follow as this library explores which
+representation — and which transformation clusters — are actually fastest
+for what. Three of the four are as simple as strategies get: each one's
+`buildBlueprint()` is exactly
+`return wrapLeavesWithEnsure(declaration, Representation::X);`:
 
 - `SparsePlan` (`name()` → `"sparse"`) — `Representation::Sparse` →
   `SparseRepresentation`.
@@ -786,6 +837,37 @@ is exactly `return wrapLeavesWithEnsure(declaration, Representation::X);`:
   vs. `"dynamic"` — for this one variant only).
 - `RowValuesPlan` (`name()` → `"row_values"`) — `Representation::RowValues`
   → `RowValuesRepresentation`.
+
+The fourth, `MergingSparsePlan` (`name()` → `"merging_sparse"`), builds on
+`SparsePlan` rather than reimplementing `wrapLeavesWithEnsure` from
+scratch: it calls `SparsePlan::buildBlueprint()` first, then walks the
+result and wraps both operands of every `Multiply` node (however deeply
+nested) in a `Cluster` step running a `TransformationAlgorithmCluster`
+containing just `MergeTransformation` (see "TransformationAlgorithmCluster"
+above) — greedily coalescing each operand's set bits before the multiply
+actually runs, since `multiplyBitsWithCarry`'s cost is one `bit_operation`
+per pair of set bits, so fewer bits in means a cheaper multiply. `Add`
+nodes are left untouched, since addition has no such pairwise blowup to
+shrink:
+
+```cpp
+#include "smooth/plan_zoo.hpp"
+
+auto metrics = std::make_shared<smooth::Metrics>();
+smooth::MergingSparsePlan p(metrics);
+p.scalar(15).times().scalar(15);
+p.plan();
+// multiply
+// ├─ cluster(merge)
+// │  └─ ensure(sparse)
+// │     └─ scalar: 15
+// └─ cluster(merge)
+//    └─ ensure(sparse)
+//       └─ scalar: 15
+// = 225
+metrics->print();
+// transformations_applied = ...   <- however many merges it took
+```
 
 Because every `numberVia()` leaf's `Ensure` step genuinely calls
 `n.representationAs(target)` (see "Plan" above), each of these three
@@ -838,7 +920,7 @@ a negative value — the same reason `SmoothNumberBase::setValue()` rejects
 a negative value for the two unsigned types), so a negative `scalar()` leaf
 throws `std::invalid_argument` — this restriction now lives once, centrally,
 in `Plan::scalar()` itself (see "Plan" above), so it applies uniformly to
-`DefaultPlan` and to all three of these. `DefaultPlan` and all three of
+`DefaultPlan` and to all four of these. `DefaultPlan` and all four of
 these — and `Plan` itself — share a common base pointer:
 `std::unique_ptr<Plan>` holding any of them dispatches
 `name()`/`calculate()`/etc. virtually and destructs safely, since `Plan`
@@ -890,7 +972,15 @@ same number; a merge that has to carry because its output bit is already
 occupied (12 + 12 carrying to 24); a custom `Transformation` built
 directly from its own offset lists, combining bits across both axes at
 once; and `SpreadTransformation(4)` bridging two bits 4 columns apart
-into `(i+2, j)` plus a 3-bit staircase.
+into `(i+2, j)` plus a 3-bit staircase; a `TransformationAlgorithmCluster`
+running just `MergeTransformation` to fixed point over a number with
+several independent merge opportunities and one collision-triggered
+cascade, with a `Metrics` attached to show `transformations_applied`; and,
+from `plan_zoo`, `MergingSparsePlan` computing the same expressions as
+`SparsePlan`, with `plan()` showing each `Multiply` node's operands wrapped
+in `cluster(merge)` while `Add` nodes are left bare, and a side-by-side
+`bit_operations` comparison against plain `SparsePlan` for the same
+multiplication.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
 suite (no test framework linked in — see `CMakeLists.txt`) covering all of
@@ -930,7 +1020,11 @@ work the same way for negative indices on a fractional type, and
 `checkTransformationPreservesValue()` — confirming, directly from each
 transformation's own `inputs()`/`outputs()` and independent of ever
 calling `apply()`, that every transformation this library has is actually
-value-preserving), and `DefaultPlan`
+value-preserving), `TransformationAlgorithmCluster` (a single merge, two
+independent merges applied in one `run()`, a collision-triggered cascade,
+a fully-packed number where every bit eventually merges, the
+`transformations_applied` counter, and a no-op case confirming an
+already-fixed-point number is left untouched), and `DefaultPlan`
 (the confirmed example, unbracketed left-associative chaining, that
 `number()` throws for a negative signed operand instead of silently
 reading its unsigned magnitude — proving `T::value()` really is resolved
@@ -945,7 +1039,12 @@ memoized compilation, and propagation to a `SmoothNumber` sharing the same
 `Ensure` step it forces above each leaf, that a negative leaf throws
 immediately at `scalar()`, its `Metrics` counter name, that `DefaultPlan`'s
 `name()` is unaffected, and polymorphic dispatch/destruction through a
-`Plan*`), `validateBlueprint()` (three deliberately broken `Plan`
+`Plan*`), `MergingSparsePlan` (`name()`, correctness against both an
+add-inside-multiply and a squared expression, `plan()`'s exact printed
+tree confirming `cluster(merge)` wraps only `Multiply` operands and never
+an `Add` node, a `bit_operations`/`transformations_applied` comparison
+against plain `SparsePlan` for the same multiplication, and that a nested
+`Multiply` gets its own inner `Cluster` wrapping too), `validateBlueprint()` (three deliberately broken `Plan`
 subclasses — one that tampers with a leaf's value, one that swaps in the
 wrong declaration shape, one that produces a malformed `Ensure` node — each
 confirmed to throw, plus a normal, correct `buildBlueprint()` confirmed

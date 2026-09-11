@@ -19,18 +19,23 @@ namespace smooth {
 // transformation (it just carries), canApply() only ever needs to check
 // the inputs.
 //
-// canApply()/apply() operate directly through SmoothNumberBase's own
-// get()/set(), not RepresentationBase -- so a transformation that actually
-// changes a bit correctly invalidates every representation but the
-// canonical one, the same as any other set() call would.
+// canApply()/apply()/applyAndReportLandings() are templated over anything
+// that looks like a bit grid -- `bool get(int, int) const` and
+// `set(int, int, bool)` -- so the exact same Transformation works directly
+// on a SmoothNumberBase (get()/set() there correctly invalidate every
+// representation but the canonical one, same as any other set() call) or
+// directly on a bare RepresentationBase (which is what
+// TransformationAlgorithmCluster -- transformation_algorithm_cluster.hpp
+// -- and Plan (plan.hpp) need, since a Plan's blueprint execution works
+// with representations directly, never a SmoothNumberBase).
 //
 // This is deliberately concrete, not an interface: every transformation
 // this library has fits this one shape (clear a fixed set of 1s, carry-set
 // a fixed set of new 1s), so there's no virtual dispatch to speak of.
 // Building a custom one is just
 // `Transformation({...input offsets...}, {...output offsets...})`. See
-// transformation_zoo/ for the two named presets (MergeTransformation/
-// SplitTransformation), built exactly that way.
+// transformation_zoo/ for the named presets (MergeTransformation/
+// SplitTransformation/SpreadTransformation), built exactly that way.
 class Transformation {
 public:
     Transformation(std::vector<std::pair<int, int>> inputs, std::vector<std::pair<int, int>> outputs)
@@ -39,7 +44,8 @@ public:
     // The only precondition: every input offset currently holds a 1. An
     // already-occupied output offset is never a reason to reject --
     // apply() carries through it instead.
-    bool canApply(const SmoothNumberBase& n, int i, int j) const {
+    template <typename Bits>
+    bool canApply(const Bits& n, int i, int j) const {
         for (const auto& offset : inputs_) {
             if (!n.get(i + offset.first, j + offset.second)) return false;
         }
@@ -51,20 +57,39 @@ public:
     // checked it should go through SmoothNumberBase::applyTransformation()
     // instead (see smooth_number_base.hpp), which checks first and throws
     // if it doesn't hold.
-    void apply(SmoothNumberBase& n, int i, int j) const {
+    template <typename Bits>
+    void apply(Bits& n, int i, int j) const {
+        applyAndReportLandings(n, i, j);
+    }
+
+    // Same as apply(), but also returns where each output actually landed
+    // after carrying -- the "frontier" of what changed. Clearing an input
+    // can only ever remove an opportunity for some other transformation
+    // (never create one), so these landings are the *only* cells worth
+    // re-examining for new opportunities after this call -- exactly what
+    // TransformationAlgorithmCluster (transformation_algorithm_cluster.hpp)
+    // uses this for, to avoid rescanning an entire representation after
+    // every single application.
+    template <typename Bits>
+    std::vector<std::pair<int, int>> applyAndReportLandings(Bits& n, int i, int j) const {
         for (const auto& offset : inputs_) {
             n.set(i + offset.first, j + offset.second, false);
         }
+        std::vector<std::pair<int, int>> landings;
+        landings.reserve(outputs_.size());
         for (const auto& offset : outputs_) {
-            carrySet(n, i + offset.first, j + offset.second);
+            landings.push_back(carrySet(n, i + offset.first, j + offset.second));
         }
+        return landings;
     }
 
     // Exposed so external code can check a transformation's own
     // well-formedness directly -- e.g. that summing 2^i*3^j over the
     // inputs equals the same sum over the outputs, which is exactly what
     // "value-preserving" means, without needing to construct a
-    // SmoothNumberBase or call apply() at all.
+    // SmoothNumberBase or call apply() at all -- and so
+    // TransformationAlgorithmCluster can compute candidate anchors from a
+    // transformation's own input offsets.
     const std::vector<std::pair<int, int>>& inputs() const { return inputs_; }
     const std::vector<std::pair<int, int>>& outputs() const { return outputs_; }
 
@@ -74,14 +99,16 @@ private:
     // occupied cell is the same as moving that bit up to the next row
     // (2 * 2^i * 3^j = 2^(i+1) * 3^j), the same one-term carry
     // addSingleBitWithCarry() (representation_base.hpp) performs for
-    // ordinary addition, just through SmoothNumberBase's own get()/set()
-    // instead of a raw RepresentationBase.
-    static void carrySet(SmoothNumberBase& n, int i, int j) {
+    // ordinary addition, just through Bits's own get()/set() instead of a
+    // specific RepresentationBase. Returns where it finally landed.
+    template <typename Bits>
+    static std::pair<int, int> carrySet(Bits& n, int i, int j) {
         while (n.get(i, j)) {
             n.set(i, j, false);
             ++i;
         }
         n.set(i, j, true);
+        return {i, j};
     }
 
     std::vector<std::pair<int, int>> inputs_;

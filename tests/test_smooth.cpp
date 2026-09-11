@@ -15,6 +15,7 @@
 #include "smooth/plan_zoo.hpp"
 #include "smooth/representation_zoo.hpp"
 #include "smooth/smooth.hpp"
+#include "smooth/transformation_algorithm_cluster.hpp"
 #include "smooth/transformation_zoo.hpp"
 
 using namespace smooth;
@@ -897,6 +898,99 @@ void testTransformation() {
 }
 
 // ---------------------------------------------------------------------
+// TransformationAlgorithmCluster: greedily applies a family of
+// Transformations across an entire representation until none of them can
+// fire anywhere anymore, using a worklist seeded from the representation's
+// own set bits and re-examined only around each application's own output
+// landings -- never a full rescan.
+// ---------------------------------------------------------------------
+void testTransformationAlgorithmCluster() {
+    MergeTransformation merge;
+    TransformationAlgorithmCluster cluster({&merge}, "merge");
+
+    // A single merge, no cascading needed.
+    {
+        SparseRepresentation rep(/*allow_fractional=*/true);
+        rep.set(0, 0, true);
+        rep.set(1, 0, true);
+        checkNear(rep.value(), 3.0, "before: 1 + 2 = 3");
+        cluster.run(rep);
+        checkNear(rep.value(), 3.0, "cluster.run() preserves value(): still 3");
+        check(!rep.get(0, 0) && !rep.get(1, 0) && rep.get(0, 1), "the single merge opportunity is taken");
+    }
+
+    // Two independent, non-adjacent merges (0+1 and 2+3): both should be
+    // found and applied, without touching each other.
+    {
+        SparseRepresentation rep(/*allow_fractional=*/true);
+        rep.set(0, 0, true);
+        rep.set(1, 0, true);
+        rep.set(2, 0, true);
+        rep.set(3, 0, true);
+        checkNear(rep.value(), 15.0, "before: 1 + 2 + 4 + 8 = 15");
+        cluster.run(rep);
+        checkNear(rep.value(), 15.0, "cluster.run() preserves value(): still 15");
+        check(rep.get(0, 1) && rep.get(2, 1) && !rep.get(0, 0) && !rep.get(1, 0) && !rep.get(2, 0) &&
+                  !rep.get(3, 0),
+              "both independent merges (0+1 and 2+3) are found and applied, reaching a fixed point with no "
+              "adjacent pairs left");
+    }
+
+    // A merge whose output lands on an already-occupied cell must carry --
+    // and the worklist must notice the *new* set bit that carry produces
+    // and keep going, not stop after the first merge.
+    {
+        SparseRepresentation rep(/*allow_fractional=*/true);
+        rep.set(0, 0, true);  // 1  )  merge target
+        rep.set(1, 0, true);  // 2  )
+        rep.set(0, 1, true);  // 3  -- already occupies (0, 1), the merge's own output
+        checkNear(rep.value(), 6.0, "before: 1 + 2 + 3 = 6");
+        cluster.run(rep);
+        checkNear(rep.value(), 6.0, "cluster.run() preserves value(), even through a carry mid-cluster");
+        check(rep.get(1, 1) && !rep.get(0, 0) && !rep.get(1, 0) && !rep.get(0, 1),
+              "the merge's carry (colliding with the pre-existing bit at (0, 1)) is followed to its landing "
+              "at (1, 1) = 2*3 = 6, reaching a fixed point");
+    }
+
+    // A fully-packed run of consecutive bits: repeated cascading merges,
+    // each one's carry landing possibly triggering another.
+    {
+        SparseRepresentation rep(/*allow_fractional=*/true);
+        for (int row = 0; row <= 5; ++row) rep.set(row, 0, true);  // 1+2+4+8+16+32 = 63
+        checkNear(rep.value(), 63.0, "before: 1+2+4+8+16+32 = 63");
+        cluster.run(rep);
+        checkNear(rep.value(), 63.0, "cluster.run() preserves value() across a fully-packed run: still 63");
+        check(rep.get(0, 1) && rep.get(2, 1) && rep.get(4, 1),
+              "a fully-packed run of 6 bits collapses to 3, at every other row in column 1");
+    }
+
+    // metrics: "transformations_applied" counts one per successful
+    // application (2, for the two independent merges above).
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SparseRepresentation rep(/*allow_fractional=*/true);
+        rep.set(0, 0, true);
+        rep.set(1, 0, true);
+        rep.set(2, 0, true);
+        rep.set(3, 0, true);
+        cluster.run(rep, metrics);
+        check(metrics->get("transformations_applied") == 2,
+              "TransformationAlgorithmCluster::run() counts one \"transformations_applied\" per successful "
+              "application when given a Metrics");
+    }
+
+    // Nothing to do: run() on an already-fixed-point representation is a
+    // safe no-op.
+    {
+        SparseRepresentation rep(/*allow_fractional=*/true);
+        rep.set(0, 0, true);
+        rep.set(2, 0, true);  // not adjacent to (0, 0) -- no merge opportunity
+        cluster.run(rep);
+        check(rep.get(0, 0) && rep.get(2, 0), "run() on an already-fixed-point representation changes nothing");
+    }
+}
+
+// ---------------------------------------------------------------------
 // Metrics: optional per-number counter tracking, incremented once per
 // representation conversion, and the a+=b / a+b metrics-inheritance
 // rules.
@@ -1447,6 +1541,79 @@ void testPlanZoo() {
 }
 
 // ---------------------------------------------------------------------
+// MergingSparsePlan: SparsePlan, plus a TransformationAlgorithmCluster
+// (just MergeTransformation) run on both operands before every multiply --
+// never before an add, since merging only helps a multiply's n*m
+// bit_operations blowup. Both operands of *every* Multiply node get
+// wrapped, however deeply nested.
+// ---------------------------------------------------------------------
+void testMergingSparsePlan() {
+    check(MergingSparsePlan().name() == "merging_sparse", "MergingSparsePlan::name() is \"merging_sparse\"");
+
+    // Correctness: same result as SparsePlan, for both a pure-add and a
+    // mixed expression.
+    checkNear(MergingSparsePlan().scalar(3).times().left().scalar(4).plus().scalar(2).right().calculate(), 18.0,
+              "MergingSparsePlan: 3 * (4 + 2) = 18, same as SparsePlan");
+    checkNear(MergingSparsePlan().scalar(15).times().scalar(15).calculate(), 225.0,
+              "MergingSparsePlan: 15 * 15 = 225");
+
+    // The printed tree shows cluster(merge) wrapping each Multiply
+    // operand, but *not* wrapping Add's operands.
+    {
+        MergingSparsePlan p;
+        p.scalar(3).times().left().scalar(4).plus().scalar(2).right();
+        std::ostringstream out;
+        p.plan(out);
+        check(out.str() ==
+                  "multiply\n"
+                  "├─ cluster(merge)\n"
+                  "│  └─ ensure(sparse)\n"
+                  "│     └─ scalar: 3\n"
+                  "└─ cluster(merge)\n"
+                  "   └─ add\n"
+                  "      ├─ ensure(sparse)\n"
+                  "      │  └─ scalar: 4\n"
+                  "      └─ ensure(sparse)\n"
+                  "         └─ scalar: 2\n"
+                  "= 18\n",
+              "MergingSparsePlan wraps both of multiply's operands in cluster(merge), but add's operands are "
+              "untouched");
+    }
+
+    // Merging shrinks the bit count feeding into multiplyBitsWithCarry()'s
+    // n*m pairwise blowup: 15 = 1111 binary (4 bits) merges down to 2 bits
+    // ((0,1) and (2,1)), so 15*15 costs 2*2 = 4 bit_operations instead of
+    // SparsePlan's unmerged 4*4 = 16.
+    {
+        auto sparseMetrics = std::make_shared<Metrics>();
+        SparsePlan(sparseMetrics).scalar(15).times().scalar(15).calculate();
+        auto mergingMetrics = std::make_shared<Metrics>();
+        MergingSparsePlan(mergingMetrics).scalar(15).times().scalar(15).calculate();
+
+        check(sparseMetrics->get("bit_operations") == 16, "SparsePlan: unmerged 15*15 costs 4*4 = 16 bit_operations");
+        check(mergingMetrics->get("bit_operations") == 4,
+              "MergingSparsePlan: each 15 merges down to 2 bits first, so 15*15 costs only 2*2 = 4 "
+              "bit_operations");
+        check(mergingMetrics->get("transformations_applied") == 4,
+              "MergingSparsePlan: 2 merges per operand (4 bits -> 2 bits), 2 operands = 4 total");
+    }
+
+    // Nested multiplies: every Multiply node's operands get wrapped,
+    // however deep -- including the *result* of an inner multiply, before
+    // it feeds into the outer one.
+    {
+        MergingSparsePlan p;
+        p.left().scalar(3).times().scalar(4).right().times().scalar(5);
+        checkNear(p.calculate(), 60.0, "MergingSparsePlan: (3 * 4) * 5 = 60");
+        std::ostringstream out;
+        p.plan(out);
+        std::string tree = out.str();
+        check(tree.find("cluster(merge)\n│  └─ multiply\n") != std::string::npos,
+              "the inner multiply's own result is wrapped in cluster(merge) before feeding the outer multiply");
+    }
+}
+
+// ---------------------------------------------------------------------
 // SmoothNumberBase::valueAs()/representationAs() and Plan::numberVia(): the
 // mechanism that lets a Plan-driven computation force an existing number
 // through its own real ensure()-driven conversion into that Plan's own
@@ -1596,10 +1763,12 @@ int main() {
     testMultiplication();
     testCopyAndMoveSemantics();
     testTransformation();
+    testTransformationAlgorithmCluster();
     testMetrics();
     testInstrumentationCounters();
     testPlan();
     testPlanZoo();
+    testMergingSparsePlan();
     testBlueprintValidation();
     testNumberViaForcesConversion();
 

@@ -571,5 +571,28 @@ int main() {
     std::cout << "after: value = " << spread.value() << ", ";
     spread.printSparse();
 
+    // --- MergingSparsePlan ----------------------------------------------------
+    // A TransformationAlgorithmCluster greedily applies a family of
+    // Transformations across an entire representation until none of them
+    // can fire anywhere anymore -- MergingSparsePlan uses one containing
+    // just MergeTransformation, run on both operands before every multiply
+    // (never before an add -- merging only helps a multiply's n*m
+    // bit_operations blowup). 15 = 1111 binary (4 bits) merges down to just
+    // 2 bits first, so 15*15 costs 2*2 = 4 bit_operations instead of
+    // SparsePlan's unmerged 4*4 = 16 -- and the printed tree shows exactly
+    // where each cluster ran.
+    std::cout << "\n--- MergingSparsePlan ---\n";
+    smooth::MergingSparsePlan mergingPlan;
+    mergingPlan.scalar(15).times().scalar(15);
+    mergingPlan.plan();
+
+    auto plainSparseMetrics = std::make_shared<smooth::Metrics>();
+    smooth::SparsePlan(plainSparseMetrics).scalar(15).times().scalar(15).calculate();
+    auto mergingMetrics = std::make_shared<smooth::Metrics>();
+    smooth::MergingSparsePlan(mergingMetrics).scalar(15).times().scalar(15).calculate();
+    std::cout << "\nSparsePlan bit_operations for 15*15: " << plainSparseMetrics->get("bit_operations") << "\n";
+    std::cout << "MergingSparsePlan bit_operations for 15*15: " << mergingMetrics->get("bit_operations")
+              << " (after " << mergingMetrics->get("transformations_applied") << " merges)\n";
+
     return 0;
 }
