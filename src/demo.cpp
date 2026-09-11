@@ -557,5 +557,19 @@ int main() {
     std::cout << "after: value = " << custom.value() << ", ";
     custom.printSparse();
 
+    // SpreadTransformation(n): bridges (i, j) and (i, j+n) -- n columns
+    // apart -- into (i+2, j) plus a staircase of bits at
+    // (i+1, j+1) .. (i+1, j+n-1). For n = 1 the staircase is empty, so
+    // it's just MergeTransformation applied twice into the same cell.
+    smooth::SmoothInteger spread;
+    spread.set(0, 0);  // 1
+    spread.set(0, 4);  // 3^4 = 81
+    std::cout << "\nbefore SpreadTransformation(4): value = " << spread.value() << ", ";
+    spread.printSparse();
+    smooth::SpreadTransformation spread4(4);
+    spread.applyTransformation(spread4, 0, 0);
+    std::cout << "after: value = " << spread.value() << ", ";
+    spread.printSparse();
+
     return 0;
 }

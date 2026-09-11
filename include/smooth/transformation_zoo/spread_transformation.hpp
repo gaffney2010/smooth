@@ -1,0 +1,56 @@
+#pragma once
+
+#include <stdexcept>
+#include <utility>
+#include <vector>
+
+#include "smooth/transformation.hpp"
+
+namespace smooth {
+
+// Bridges the two bits at (i, j) and (i, j+n), n columns apart, into
+// (i+2, j) plus a "staircase" of bits at (i+1, j+1), (i+1, j+2), ...,
+// (i+1, j+n-1):
+//
+//   2^i*3^j + 2^i*3^(j+n)
+//     = 2^i*3^j * (1 + 3^n)
+//     = 2^i*3^j * (4 + 2*(3 + 3^2 + ... + 3^(n-1)))            [1 + 3^n = 4 + 2*sum_{k=1}^{n-1} 3^k]
+//     = 2^(i+2)*3^j + sum_{k=1}^{n-1} 2^(i+1)*3^(j+k)
+//
+// For n = 1, the staircase is empty (there's no k with 1 <= k <= 0), so
+// this reduces to exactly MergeTransformation applied twice in a row:
+// (i, j) and (i, j+1) both feed straight into (i+2, j).
+//
+// n must be at least 1 -- the constructor throws std::invalid_argument
+// otherwise, since n = 0 would make both inputs the same cell (needing it
+// to independently hold two 1s at once, which a bit grid can't represent)
+// and a negative n would put the second input at a column *before* j,
+// breaking the staircase's ascending order.
+class SpreadTransformation : public Transformation {
+public:
+    explicit SpreadTransformation(int n) : Transformation(inputOffsets(n), outputOffsets(n)) {}
+
+private:
+    static std::vector<std::pair<int, int>> inputOffsets(int n) {
+        requirePositive(n);
+        return {{0, 0}, {0, n}};
+    }
+
+    static std::vector<std::pair<int, int>> outputOffsets(int n) {
+        requirePositive(n);
+        std::vector<std::pair<int, int>> offsets;
+        offsets.emplace_back(2, 0);
+        for (int k = 1; k <= n - 1; ++k) {
+            offsets.emplace_back(1, k);
+        }
+        return offsets;
+    }
+
+    static void requirePositive(int n) {
+        if (n < 1) {
+            throw std::invalid_argument("SpreadTransformation: n must be at least 1");
+        }
+    }
+};
+
+}  // namespace smooth

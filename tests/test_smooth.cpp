@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "smooth/plan_zoo.hpp"
 #include "smooth/representation_zoo.hpp"
@@ -45,6 +46,25 @@ void checkThrows(Fn&& fn, const std::string& description) {
         threw = true;
     }
     check(threw, description);
+}
+
+// Sums 2^i*3^j over a list of (i, j) offsets, i.e. exactly what
+// Transformation::inputs()/outputs() would total up if anchored at
+// (0, 0) -- the most direct way to check that a Transformation is
+// well-formed (its outputs really do add up to the same value as its
+// inputs) without constructing a SmoothNumberBase or calling apply() at
+// all.
+double offsetsValue(const std::vector<std::pair<int, int>>& offsets) {
+    double total = 0.0;
+    for (const auto& offset : offsets) {
+        total += std::pow(2.0, offset.first) * std::pow(3.0, offset.second);
+    }
+    return total;
+}
+
+void checkTransformationPreservesValue(const Transformation& t, const std::string& name) {
+    checkNear(offsetsValue(t.inputs()), offsetsValue(t.outputs()),
+              name + ": summing 2^i*3^j over its inputs and outputs gives the same value at (i, j) = (0, 0)");
 }
 
 // Reads a single named counter's current value out of a Metrics, without
@@ -798,6 +818,67 @@ void testTransformation() {
         checkNear(n.value(), 6.0, "a custom Transformation still preserves value()");
         check(!n.get(0, 0) && !n.get(1, 0) && !n.get(0, 1) && n.get(1, 1),
               "a custom Transformation clears all of its inputs and carry-sets all of its outputs");
+    }
+
+    // SpreadTransformation(n): bridges (i, j) and (i, j+n) into (i+2, j)
+    // plus a staircase of bits at (i+1, j+1), ..., (i+1, j+n-1):
+    // 2^i*3^j + 2^i*3^(j+n) = 2^i*3^j*(1+3^n) = 2^(i+2)*3^j +
+    // sum_{k=1}^{n-1} 2^(i+1)*3^(j+k).
+    {
+        // n = 1: the staircase is empty, so this is just (i, j) and
+        // (i, j+1) both feeding into (i+2, j) -- 1 + 3 = 4.
+        SmoothInteger n;
+        n.set(0, 0);
+        n.set(0, 1);
+        checkNear(n.value(), 4.0, "before SpreadTransformation(1): 1 + 3 = 4");
+        SpreadTransformation spread1(1);
+        check(spread1.canApply(n, 0, 0), "SpreadTransformation(1): applicable when both input bits are set");
+        n.applyTransformation(spread1, 0, 0);
+        checkNear(n.value(), 4.0, "SpreadTransformation(1) preserves value(): still 4");
+        check(n.get(2, 0) && !n.get(0, 0) && !n.get(0, 1),
+              "SpreadTransformation(1) has an empty staircase -- both inputs land directly on (i+2, j)");
+    }
+    {
+        // n = 4: a real staircase of 3 bits between the two inputs.
+        SmoothInteger n;
+        n.set(0, 0);  // 1
+        n.set(0, 4);  // 3^4 = 81
+        checkNear(n.value(), 82.0, "before SpreadTransformation(4): 1 + 81 = 82");
+        SpreadTransformation spread4(4);
+        n.applyTransformation(spread4, 0, 0);
+        checkNear(n.value(), 82.0, "SpreadTransformation(4) preserves value(): still 82");
+        check(n.get(2, 0) && n.get(1, 1) && n.get(1, 2) && n.get(1, 3) && !n.get(0, 0) && !n.get(0, 4),
+              "SpreadTransformation(4) produces (i+2, j) plus the 3-bit staircase (i+1, j+1..j+3)");
+    }
+    {
+        // canApply() is false when only one input bit is set -- same as
+        // Merge/Split, an occupied output is never a reason to reject.
+        SmoothInteger n;
+        n.set(0, 0);
+        SpreadTransformation spread(3);
+        check(!spread.canApply(n, 0, 0), "SpreadTransformation: not applicable with only one input bit set");
+        checkThrows([&] { n.applyTransformation(spread, 0, 0); },
+                    "applyTransformation() throws when canApply() is false (missing input bit)");
+    }
+    {
+        // n must be at least 1 -- the constructor itself throws for a
+        // degenerate or backwards n.
+        checkThrows([] { SpreadTransformation(0); }, "SpreadTransformation(0) throws: n must be at least 1");
+        checkThrows([] { SpreadTransformation(-1); }, "SpreadTransformation(-1) throws: n must be at least 1");
+    }
+
+    // Sanity check, independent of ever calling apply(): for every
+    // transformation this library has, summing 2^i*3^j over its own
+    // inputs() and outputs() gives the same value at (i, j) = (0, 0) --
+    // exactly what "value-preserving" means, checked directly against each
+    // transformation's own offset lists rather than by exercising it
+    // against a SmoothNumberBase.
+    {
+        checkTransformationPreservesValue(MergeTransformation(), "MergeTransformation");
+        checkTransformationPreservesValue(SplitTransformation(), "SplitTransformation");
+        checkTransformationPreservesValue(SpreadTransformation(1), "SpreadTransformation(1)");
+        checkTransformationPreservesValue(SpreadTransformation(2), "SpreadTransformation(2)");
+        checkTransformationPreservesValue(SpreadTransformation(5), "SpreadTransformation(5)");
     }
 
     // Works for negative indices on a fractional type too -- the identity

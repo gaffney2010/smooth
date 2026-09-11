@@ -406,25 +406,54 @@ lists directly:
 smooth::Transformation combineBothAxes({{0, 0}, {1, 0}, {0, 1}}, {{1, 1}});
 ```
 
-Two presets are provided in `include/smooth/transformation_zoo/`, one the
-exact reverse of the other — each is just a `Transformation` constructed
-with a fixed pair of offset lists (`include/smooth/transformation_zoo.hpp`
-is a convenience header pulling in both, mirroring `plan_zoo.hpp`/
-`representation_zoo.hpp`; `transformation.hpp` itself, and `smooth.hpp`,
-only give you the general `Transformation` class, not these two presets):
+`inputs()`/`outputs()` hand back those two lists directly (as
+`const std::vector<std::pair<int, int>>&`) — enough to check a
+transformation's own well-formedness (that summing `2^i*3^j` over its
+inputs matches the same sum over its outputs, evaluated directly at
+`(i, j) = (0, 0)`) without ever constructing a `SmoothNumberBase` or
+calling `apply()` at all; `tests/test_smooth.cpp`'s
+`checkTransformationPreservesValue()` does exactly this, for every
+transformation below.
+
+Three presets are provided in `include/smooth/transformation_zoo/`, each
+just a `Transformation` constructed with a fixed pair of offset lists
+(`include/smooth/transformation_zoo.hpp` is a convenience header pulling
+in all three, mirroring `plan_zoo.hpp`/`representation_zoo.hpp`;
+`transformation.hpp` itself, and `smooth.hpp`, only give you the general
+`Transformation` class, not these presets):
 
 - `MergeTransformation` (`transformation_zoo/merge_transformation.hpp`) —
   inputs `{(0, 0), (1, 0)}`, output `{(0, 1)}`: merges the two bits at
   `(i, j)` and `(i+1, j)` into the one bit at `(i, j+1)`.
 - `SplitTransformation` (`transformation_zoo/split_transformation.hpp`) —
-  input `{(0, 1)}`, outputs `{(0, 0), (1, 0)}`: the exact reverse.
+  input `{(0, 1)}`, outputs `{(0, 0), (1, 0)}`: the exact reverse of
+  `MergeTransformation`.
+- `SpreadTransformation(int n)` (`transformation_zoo/spread_transformation.hpp`)
+  — inputs `{(0, 0), (0, n)}`, outputs `{(2, 0)} ∪ {(1, k) : 1 <= k <= n-1}`:
+  bridges the two bits at `(i, j)` and `(i, j+n)` — `n` columns apart —
+  into `(i+2, j)` plus a "staircase" of bits at `(i+1, j+1), (i+1, j+2),
+  ..., (i+1, j+n-1)`:
+  ```
+  2^i*3^j + 2^i*3^(j+n)
+    = 2^i*3^j * (1 + 3^n)
+    = 2^i*3^j * (4 + 2*(3 + 3^2 + ... + 3^(n-1)))
+    = 2^(i+2)*3^j + sum_{k=1}^{n-1} 2^(i+1)*3^(j+k)
+  ```
+  For `n = 1` the staircase is empty, so this reduces to exactly
+  `MergeTransformation` applied twice into the same cell: `(i, j)` and
+  `(i, j+1)` both land on `(i+2, j)`. The constructor throws
+  `std::invalid_argument` for `n < 1` — `n = 0` would need the single cell
+  `(i, j)` to independently hold two `1`s at once, which a bit grid can't
+  represent, and a negative `n` would put the second input at a column
+  *before* `j`, breaking the staircase's ascending order.
 
-Applying one and then the other is always a round trip back to the
-original bit layout (even when one of them had to carry along the way —
-carrying is itself value-preserving, so a sequence of carries is too).
-Both work the same way for negative `i`/`j` on a fractional type
-(`SmoothFloat`/`SmoothSignedFloat`) as for non-negative ones — the
-underlying identity doesn't care about the sign of either exponent.
+Applying `MergeTransformation` and then `SplitTransformation` is always a
+round trip back to the original bit layout (even when one of them had to
+carry along the way — carrying is itself value-preserving, so a sequence
+of carries is too). All three work the same way for negative `i`/`j` on a
+fractional type (`SmoothFloat`/`SmoothSignedFloat`) as for non-negative
+ones — the underlying identities don't care about the sign of either
+exponent.
 
 ## Metrics
 
@@ -858,9 +887,10 @@ showing each one forcing a different real conversion
 exact same numbers, alongside the rest of each run's `Metrics`;
 `MergeTransformation`/`SplitTransformation`, applied and reversed on the
 same number; a merge that has to carry because its output bit is already
-occupied (12 + 12 carrying to 24); and a custom `Transformation` built
+occupied (12 + 12 carrying to 24); a custom `Transformation` built
 directly from its own offset lists, combining bits across both axes at
-once.
+once; and `SpreadTransformation(4)` bridging two bits 4 columns apart
+into `(i+2, j)` plus a 3-bit staircase.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
 suite (no test framework linked in — see `CMakeLists.txt`) covering all of
@@ -884,16 +914,23 @@ against each representation directly (a single and a multi-step carry
 chain, an *n*-by-*m* bit-operation count, each representation's own
 notion of a "cell" for `bit_iterations`, and both `scalar_operations`
 sources for RowValues and Scalar), copy/move semantics,
-`MergeTransformation`/`SplitTransformation` (each direction's `canApply()`
-correctly rejecting a missing input bit, `applyTransformation()` throwing
-in that case, that an already-occupied output bit doesn't block
-`canApply()` at all — it carries instead, including a case where *both* of
-`SplitTransformation`'s outputs are occupied and carry in sequence, still
-preserving the total value — a merge-then-split round trip, that a
-different representation correctly reflects the new layout after a merge,
-a custom `Transformation` built directly from its own input/output offset
-lists, and that both presets work the same way for negative indices on a
-fractional type), and `DefaultPlan`
+`MergeTransformation`/`SplitTransformation`/`SpreadTransformation` (each
+direction's `canApply()` correctly rejecting a missing input bit,
+`applyTransformation()` throwing in that case, that an already-occupied
+output bit doesn't block `canApply()` at all — it carries instead,
+including a case where *both* of `SplitTransformation`'s outputs are
+occupied and carry in sequence, still preserving the total value — a
+merge-then-split round trip, that a different representation correctly
+reflects the new layout after a merge, a custom `Transformation` built
+directly from its own input/output offset lists,
+`SpreadTransformation(1)`'s empty-staircase special case and
+`SpreadTransformation(4)`'s full 3-bit staircase, `SpreadTransformation`'s
+constructor throwing for `n < 1`, that both `Merge`/`SplitTransformation`
+work the same way for negative indices on a fractional type, and
+`checkTransformationPreservesValue()` — confirming, directly from each
+transformation's own `inputs()`/`outputs()` and independent of ever
+calling `apply()`, that every transformation this library has is actually
+value-preserving), and `DefaultPlan`
 (the confirmed example, unbracketed left-associative chaining, that
 `number()` throws for a negative signed operand instead of silently
 reading its unsigned magnitude — proving `T::value()` really is resolved

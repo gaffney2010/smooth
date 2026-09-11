@@ -60,6 +60,14 @@ public:
         }
     }
 
+    // Exposed so external code can check a transformation's own
+    // well-formedness directly -- e.g. that summing 2^i*3^j over the
+    // inputs equals the same sum over the outputs, which is exactly what
+    // "value-preserving" means, without needing to construct a
+    // SmoothNumberBase or call apply() at all.
+    const std::vector<std::pair<int, int>>& inputs() const { return inputs_; }
+    const std::vector<std::pair<int, int>>& outputs() const { return outputs_; }
+
 private:
     // Sets (i, j) to 1, ripple-carrying up the row axis within column j
     // whenever a cell is already occupied -- moving a second 1 into an
