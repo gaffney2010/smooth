@@ -473,12 +473,24 @@ rep.print();  // {(0, 1), (2, 1)}  -- down to 2 bits, still worth 15
 
 `TransformationAlgorithmCluster` (`include/smooth/transformation_algorithm_cluster.hpp`)
 greedily applies a small family of `Transformation`s across an entire
-`RepresentationBase` — `run(RepresentationBase& rep, metrics = nullptr)` —
-until none of them can fire anywhere anymore: a fixed point. It always
-terminates, since every successful application strictly reduces the
-representation's total set-bit count (it clears at least as many bits —
-its inputs, plus however many occupied cells a carry rippled through — as
-it ever sets).
+`RepresentationBase` —
+`run(RepresentationBase& rep, metrics = nullptr, allowed = nullptr)` —
+until none of them can fire anywhere anymore: a fixed point.
+
+Whether that fixed point is ever actually reached depends on the family.
+`{MergeTransformation}` always terminates on its own: every successful
+application strictly reduces the representation's total set-bit count (it
+clears at least as many bits — its inputs, plus however many occupied
+cells a carry rippled through — as it ever sets), and that count can't go
+negative. But nothing about being made of `Transformation`s guarantees
+that in general — `{SplitTransformation}` alone is the exact reverse of a
+merge (it *grows* the bit count) and has no floor of its own: nothing
+about `SplitTransformation` knows column 0 is special, so splitting a bit
+that's already reached column 0 just produces column -1, then -2, forever.
+The optional trailing `allowed(int i, int j)` predicate is for exactly
+this: it bounds the region a search is allowed to explore, so a family
+with no natural floor can still be made to terminate at a boundary the
+caller chooses. See `BinaryFormCluster` below for a real example.
 
 The interesting part is doing this *without* rescanning the whole
 representation after every single application. Clearing a bit can only
@@ -500,6 +512,38 @@ all, so this is the only place that count is available).
 `TransformationAlgorithmCluster` is what `MergingSparsePlan` (see
 "plan_zoo" below) uses to search for, and repeatedly apply,
 `MergeTransformation` before every multiply.
+
+### BinaryFormCluster
+
+```cpp
+#include "smooth/binary_form_cluster.hpp"
+#include "smooth/smooth.hpp"
+
+smooth::SmoothInteger n;
+n.set(1, 2);  // 2^1 * 3^2 = 18
+auto rep = n.representationAs(smooth::SmoothInteger::Representation::Sparse);
+
+smooth::BinaryFormCluster toBinary;
+toBinary.run(*rep);
+rep->print();  // {(1, 0), (4, 0)}  -- 18 = 16 + 2, its ordinary binary form
+```
+
+`BinaryFormCluster` (`include/smooth/binary_form_cluster.hpp`) repeatedly
+applies `SplitTransformation` — the reverse of `MergeTransformation`,
+splitting the bit at `(i, j+1)` into `(i, j)` and `(i+1, j)` — until every
+set bit lands in column 0, i.e. until the number is a plain sum of
+distinct powers of 2: its ordinary binary representation, just laid out
+one grid row per set bit instead of packed into a machine integer.
+
+This is exactly the family `TransformationAlgorithmCluster`'s own doc
+comment above warns about: `SplitTransformation` alone has no natural
+floor, so left to run unbounded it doesn't stop at column 0 — it keeps
+going, into column -1, -2, and so on, forever. `BinaryFormCluster` is
+`TransformationAlgorithmCluster({&split}, "binary_form")`, always called
+with `allowed = [](int, int j){ return j >= 0; }`: every bit that starts
+above column 0 still gets split all the way down to it, and a bit already
+at column 0 is left alone, since producing it would require an anchor at
+column -1, which is disallowed.
 
 ## Metrics
 
@@ -980,7 +1024,9 @@ from `plan_zoo`, `MergingSparsePlan` computing the same expressions as
 `SparsePlan`, with `plan()` showing each `Multiply` node's operands wrapped
 in `cluster(merge)` while `Add` nodes are left bare, and a side-by-side
 `bit_operations` comparison against plain `SparsePlan` for the same
-multiplication.
+multiplication; and `BinaryFormCluster` reducing 18 (a single bit at
+`(1, 2)`) down to its binary form (bits at `(1, 0)` and `(4, 0)`, i.e.
+`16 + 2`), with a `Metrics` attached to show how many splits it took.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
 suite (no test framework linked in — see `CMakeLists.txt`) covering all of
@@ -1024,7 +1070,12 @@ value-preserving), `TransformationAlgorithmCluster` (a single merge, two
 independent merges applied in one `run()`, a collision-triggered cascade,
 a fully-packed number where every bit eventually merges, the
 `transformations_applied` counter, and a no-op case confirming an
-already-fixed-point number is left untouched), and `DefaultPlan`
+already-fixed-point number is left untouched), `BinaryFormCluster` (a
+single split with no carry, an already-binary number left untouched, a
+carry-cascade case confirming 18 converges to exactly its true binary
+form — bits at rows 1 and 4, nowhere else — the `transformations_applied`
+counter, and value preservation, plus the column-0-only guarantee, checked
+across a range of representative numbers including 0), and `DefaultPlan`
 (the confirmed example, unbracketed left-associative chaining, that
 `number()` throws for a negative signed operand instead of silently
 reading its unsigned magnitude — proving `T::value()` really is resolved

@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "smooth/binary_form_cluster.hpp"
 #include "smooth/plan_zoo.hpp"
 #include "smooth/representation_zoo.hpp"
 #include "smooth/smooth.hpp"
@@ -991,6 +992,86 @@ void testTransformationAlgorithmCluster() {
 }
 
 // ---------------------------------------------------------------------
+// BinaryFormCluster: SplitTransformation, run to fixed point but bounded
+// to column >= 0 -- see its own class comment (binary_form_cluster.hpp)
+// for why the bound is required at all: unlike merge, split alone has no
+// natural floor, so an unbounded run() would never terminate.
+// ---------------------------------------------------------------------
+void testBinaryFormCluster() {
+    BinaryFormCluster cluster;
+
+    // A single bit with one factor of 3: splits once, no carry needed.
+    {
+        SparseRepresentation rep(/*allow_fractional=*/true);
+        rep.set(0, 1, true);  // 2^0 * 3^1 = 3
+        checkNear(rep.value(), 3.0, "before: 3");
+        cluster.run(rep);
+        checkNear(rep.value(), 3.0, "BinaryFormCluster::run() preserves value(): still 3");
+        check(rep.get(0, 0) && rep.get(1, 0) && !rep.get(0, 1),
+              "3 = 1 + 2 splits into column 0's bits at rows 0 and 1");
+    }
+
+    // Already in binary form: a safe no-op.
+    {
+        SparseRepresentation rep(/*allow_fractional=*/true);
+        rep.set(0, 0, true);
+        rep.set(3, 0, true);
+        cluster.run(rep);
+        check(rep.get(0, 0) && rep.get(3, 0), "run() on an already-binary representation changes nothing");
+    }
+
+    // A carry cascade during splitting: 18 = 2 * 3^2, a single bit at
+    // (1, 2). Splitting repeatedly must reach exactly 18's binary form,
+    // 10010 (bits at rows 1 and 4), even though intermediate splits land on
+    // cells that are already occupied and have to carry.
+    {
+        SmoothInteger n;
+        n.setValue(18LL);
+        auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
+        cluster.run(*rep);
+        checkNear(rep->value(), 18.0, "BinaryFormCluster::run() preserves value(): still 18");
+        int count = 0;
+        bool allCol0 = true;
+        rep->forEachSet([&](int, int j) {
+            ++count;
+            if (j != 0) allCol0 = false;
+        });
+        check(allCol0, "every surviving bit lands in column 0");
+        check(count == 2 && rep->get(1, 0) && rep->get(4, 0),
+              "18 = 10010 in binary: exactly bits at rows 1 and 4");
+    }
+
+    // metrics: "transformations_applied" counts one per successful split.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SparseRepresentation rep(/*allow_fractional=*/true);
+        rep.set(0, 1, true);  // 3 -- one split needed
+        cluster.run(rep, metrics);
+        check(metrics->get("transformations_applied") == 1,
+              "BinaryFormCluster::run() counts one \"transformations_applied\" per successful split");
+    }
+
+    // Value preservation, and that every surviving bit really does land in
+    // column 0, across a range of representative numbers, including 0.
+    {
+        for (long long v : {0LL, 1LL, 7LL, 100LL, 12345LL}) {
+            SmoothInteger n;
+            n.setValue(v);
+            auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
+            cluster.run(*rep);
+            bool allCol0 = true;
+            long long recomputed = 0;
+            rep->forEachSet([&](int i, int j) {
+                if (j != 0) allCol0 = false;
+                recomputed += (1LL << i);
+            });
+            check(allCol0, "every surviving bit lands in column 0 for v=" + std::to_string(v));
+            check(recomputed == v, "the binary form recomputes back to v=" + std::to_string(v));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
 // Metrics: optional per-number counter tracking, incremented once per
 // representation conversion, and the a+=b / a+b metrics-inheritance
 // rules.
@@ -1764,6 +1845,7 @@ int main() {
     testCopyAndMoveSemantics();
     testTransformation();
     testTransformationAlgorithmCluster();
+    testBinaryFormCluster();
     testMetrics();
     testInstrumentationCounters();
     testPlan();

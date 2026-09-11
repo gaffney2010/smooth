@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <set>
 #include <string>
@@ -15,12 +16,26 @@ namespace smooth {
 
 // A small family of Transformations, greedily applied across an entire
 // RepresentationBase until none of them can fire anywhere anymore -- a
-// fixed point. This always terminates: every successful application
-// strictly reduces the representation's total set-bit count (it clears at
-// least as many bits -- its inputs, plus however many occupied cells a
-// carry rippled through -- as it ever sets, since a carry ripple clears
-// each occupied cell it passes through before finally landing on exactly
-// one clear one), so it can't run forever.
+// fixed point.
+//
+// Whether that fixed point is ever reached depends on the family. A
+// family like {MergeTransformation} always terminates on its own: every
+// successful application strictly reduces the representation's total
+// set-bit count (it clears at least as many bits -- its inputs, plus
+// however many occupied cells a carry rippled through -- as it ever sets,
+// since a carry ripple clears each occupied cell it passes through before
+// finally landing on exactly one clear one), and that count can't go
+// negative, so it can't run forever. But a family isn't guaranteed that
+// property just by being made of Transformations -- {SplitTransformation}
+// alone, for instance, is the exact reverse of a merge (it *grows* the bit
+// count) and has no floor of its own: nothing about SplitTransformation
+// knows that column 0 is special, so splitting a bit that has already
+// reached column 0 just produces column -1, then -2, forever. That's what
+// the optional `allowed` predicate below is for -- it lets a caller bound
+// the region a fixed-point search is allowed to explore, turning a search
+// that would otherwise run forever into one that provably terminates at
+// the boundary. See BinaryFormCluster (binary_form_cluster.hpp) for
+// exactly this: {SplitTransformation}, bounded to column >= 0.
 //
 // The interesting part is doing this *without* rescanning the whole
 // representation after every single application. Clearing a bit can only
@@ -46,8 +61,12 @@ public:
     // If `metrics` is given, increments "transformations_applied" once per
     // successful application (Transformation itself doesn't touch Metrics
     // at all -- see transformation.hpp -- so this is the only place that
-    // count is available).
-    void run(RepresentationBase& rep, const std::shared_ptr<Metrics>& metrics = nullptr) const {
+    // count is available). If `allowed` is given, an anchor is only ever
+    // tried when `allowed(i, j)` is true -- see the class comment above for
+    // why a family without its own natural floor (or ceiling) needs this to
+    // terminate at all.
+    void run(RepresentationBase& rep, const std::shared_ptr<Metrics>& metrics = nullptr,
+             const std::function<bool(int, int)>& allowed = nullptr) const {
         // (transformation index, i, j): a candidate anchor worth checking.
         using Candidate = std::tuple<std::size_t, int, int>;
         std::vector<Candidate> worklist;
@@ -60,7 +79,10 @@ public:
             // checking (its other inputs might already be satisfied).
             for (std::size_t t = 0; t < transformations_.size(); ++t) {
                 for (const auto& offset : transformations_[t]->inputs()) {
-                    Candidate candidate{t, i - offset.first, j - offset.second};
+                    int ai = i - offset.first;
+                    int aj = j - offset.second;
+                    if (allowed && !allowed(ai, aj)) continue;
+                    Candidate candidate{t, ai, aj};
                     if (queued.insert(candidate).second) worklist.push_back(candidate);
                 }
             }

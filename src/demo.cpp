@@ -2,6 +2,7 @@
 #include <memory>
 #include <sstream>
 
+#include "smooth/binary_form_cluster.hpp"
 #include "smooth/plan_zoo.hpp"
 #include "smooth/representation_zoo.hpp"
 #include "smooth/smooth.hpp"
@@ -593,6 +594,30 @@ int main() {
     std::cout << "\nSparsePlan bit_operations for 15*15: " << plainSparseMetrics->get("bit_operations") << "\n";
     std::cout << "MergingSparsePlan bit_operations for 15*15: " << mergingMetrics->get("bit_operations")
               << " (after " << mergingMetrics->get("transformations_applied") << " merges)\n";
+
+    // --- BinaryFormCluster ------------------------------------------------
+    // The reverse idea: a TransformationAlgorithmCluster containing just
+    // SplitTransformation, run until every bit sits in column 0 -- i.e.
+    // until the number is a plain sum of distinct powers of 2, its
+    // ordinary binary representation. Unlike the merge cluster above,
+    // split alone has no natural floor (nothing about it knows column 0 is
+    // special -- left unbounded it would just keep splitting a column-0 bit
+    // into column -1, then -2, forever), so BinaryFormCluster bounds its
+    // TransformationAlgorithmCluster::run() with an `allowed` predicate
+    // that blocks every anchor below column 0.
+    std::cout << "\n--- BinaryFormCluster ---\n";
+    smooth::SmoothInteger toBinary;
+    toBinary.set(1, 2);  // 2^1 * 3^2 = 18
+    std::cout << "before: value = " << toBinary.value() << ", ";
+    toBinary.printSparse();
+    auto binaryRep = toBinary.representationAs(smooth::SmoothInteger::Representation::Sparse);
+    smooth::BinaryFormCluster binaryCluster;
+    auto binaryMetrics = std::make_shared<smooth::Metrics>();
+    binaryCluster.run(*binaryRep, binaryMetrics);
+    std::cout << "after: value = " << binaryRep->value() << ", ";
+    binaryRep->print(std::cout);
+    std::cout << "18 = 16 + 2 = 10010 in binary, reached after "
+              << binaryMetrics->get("transformations_applied") << " splits\n";
 
     return 0;
 }
