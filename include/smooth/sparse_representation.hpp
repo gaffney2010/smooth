@@ -75,6 +75,8 @@ public:
         return std::make_unique<SparseRepresentation>(*this);
     }
 
+    void setMetricsPtr(std::shared_ptr<Metrics> metrics) override { metrics_ = std::move(metrics); }
+
     // A set of coordinates has no more direct way to add a number than
     // walking its bits one at a time and carrying, so this defers to the
     // shared helper (passing metrics_ along, so its carries are counted).

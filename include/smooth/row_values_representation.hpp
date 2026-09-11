@@ -118,6 +118,8 @@ public:
         return std::make_unique<RowValuesRepresentation>(*this);
     }
 
+    void setMetricsPtr(std::shared_ptr<Metrics> metrics) override { metrics_ = std::move(metrics); }
+
     // Doesn't need explicit carry handling: each contribution just adds
     // onto its column's running total, and ordinary floating-point
     // addition already produces the correct combined value (e.g. two

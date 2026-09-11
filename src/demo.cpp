@@ -369,7 +369,7 @@ int main() {
     // to a plain scalar and evaluate with ordinary arithmetic) the first
     // time either is called.
     std::cout << "\n--- Plan ---\n";
-    smooth::Plan p1;
+    smooth::DefaultPlan p1;
     p1.scalar(3).times().left().scalar(4).plus().scalar(2).right();
     std::cout << "3 * (4 + 2):\n";
     p1.plan();
@@ -378,21 +378,29 @@ int main() {
     // Without left()/right(), chaining is left-associative, like a simple
     // calculator -- each operator wraps the *entire* accumulated result so
     // far, not just the value immediately before it.
-    smooth::Plan p2;
+    smooth::DefaultPlan p2;
     p2.scalar(3).times().scalar(4).plus().scalar(2);
     std::cout << "Unbracketed 3 * 4 + 2 (left-associative, i.e. (3*4)+2):\n";
     p2.plan();
 
     // number() accepts any existing SmoothNumber, using its value() at its
-    // own concrete type -- correctly capturing a signed number's sign,
-    // which value() (being intentionally non-virtual) wouldn't survive
-    // being read through a SmoothNumberBase&.
+    // own concrete type. Every Plan is magnitude-only (it genuinely encodes
+    // each leaf into a RepresentationBase now -- see plan.hpp), so a
+    // negative signed number throws rather than silently succeeding as its
+    // unsigned magnitude -- which is exactly what resolving T::value() at
+    // T's own static type (rather than through a SmoothNumberBase&, where
+    // value() intentionally hides, non-virtually) guarantees.
     smooth::SmoothInteger ten;
     ten.setValue(10LL);
     smooth::SmoothSignedInteger negFive;
     negFive.setValue(-5LL);
-    std::cout << "\nnumber(ten) + number(negFive):\n";
-    smooth::Plan().number(ten).plus().number(negFive).plan();
+    std::cout << "\nnumber(ten):\n";
+    smooth::DefaultPlan().number(ten).plan();
+    try {
+        smooth::DefaultPlan().number(negFive).calculate();
+    } catch (const std::exception& e) {
+        std::cout << "number(negFive) throws (every Plan is magnitude-only): " << e.what() << "\n";
+    }
 
     // Plan's constructor accepts and propagates an optional shared
     // Metrics, same as every concrete SmoothNumber type: compiling
@@ -405,18 +413,19 @@ int main() {
     tracked.set(1, 0);
     tracked.printSparse(discard);  // dynamic -> sparse
 
-    smooth::Plan(planMetrics).number(tracked).plus().scalar(1).calculate();
+    smooth::DefaultPlan(planMetrics).number(tracked).plus().scalar(1).calculate();
 
     std::cout << "\nMetrics shared between a Plan and a SmoothInteger it reads via number():\n";
     planMetrics->print();
 
     // --- plan_zoo ----------------------------------------------------------
-    // Plan subclasses that override name()/convertLeaf()/combine() to
-    // compute via a specific RepresentationBase instead of Plan's default
-    // plain double arithmetic. Same expression, same result, different
-    // representation actually doing the addInPlace()/multiplyInPlace()
-    // work underneath -- and each shows up under its own name() in both
-    // the printed plan and the Metrics counters.
+    // Plan subclasses whose buildBlueprint() wraps every leaf in
+    // Ensure(target), routing through a specific RepresentationBase instead
+    // of DefaultPlan's Scalar. Same expression, same result, different
+    // representation actually doing the addInPlace()/multiplyInPlace() work
+    // underneath -- and each shows up under its own name() in the printed
+    // plan (each leaf now explicitly showing the Ensure step forcing it
+    // there) and the Metrics counters.
     std::cout << "\n--- plan_zoo ---\n";
     smooth::SparsePlan sparsePlan;
     sparsePlan.scalar(3).times().left().scalar(4).plus().scalar(2).right();
@@ -432,6 +441,56 @@ int main() {
     rowValuesPlan.scalar(3).times().left().scalar(4).plus().scalar(2).right();
     std::cout << "\n" << rowValuesPlan.name() << ":\n";
     rowValuesPlan.plan();
+
+    // numberVia() keeps a live reference to an existing SmoothNumberBase
+    // instead of immediately snapshotting its value the way number() does,
+    // so at compile time, every Plan wraps it in an Ensure(target) blueprint
+    // step (see Plan::wrapLeavesWithEnsure() in plan.hpp) that forces it
+    // through its own real ensure()-driven conversion
+    // (SmoothNumberBase::representationAs()), rather than reading a plain
+    // value and rebuilding from scratch. Here, feeding the
+    // same three numbers into SparsePlan forces each one through Sparse
+    // (showing up as convert_dynamic_to_sparse); feeding them into
+    // RowValuesPlan instead forces RowValues (convert_dynamic_to_row_values)
+    // -- same numbers, same expression, different real conversion,
+    // depending entirely on which Plan is asking.
+    std::cout << "\nnumberVia(): the same numbers, forced through each Plan's own representation:\n";
+    smooth::SmoothInteger three, four, two;
+    three.setValue(3LL);
+    four.setValue(4LL);
+    two.setValue(2LL);
+
+    auto sparseMetrics = std::make_shared<smooth::Metrics>();
+    three.setMetricsPtr(sparseMetrics);
+    four.setMetricsPtr(sparseMetrics);
+    two.setMetricsPtr(sparseMetrics);
+    smooth::SparsePlan(sparseMetrics)
+        .numberVia(three)
+        .times()
+        .left()
+        .numberVia(four)
+        .plus()
+        .numberVia(two)
+        .right()
+        .calculate();
+    std::cout << "SparsePlan's Metrics:\n";
+    sparseMetrics->print();
+
+    auto rowValuesMetrics = std::make_shared<smooth::Metrics>();
+    three.setMetricsPtr(rowValuesMetrics);
+    four.setMetricsPtr(rowValuesMetrics);
+    two.setMetricsPtr(rowValuesMetrics);
+    smooth::RowValuesPlan(rowValuesMetrics)
+        .numberVia(three)
+        .times()
+        .left()
+        .numberVia(four)
+        .plus()
+        .numberVia(two)
+        .right()
+        .calculate();
+    std::cout << "\nRowValuesPlan's Metrics:\n";
+    rowValuesMetrics->print();
 
     // Used polymorphically through a Plan*: name() and calculate() still
     // dispatch to MatrixPlan's overrides, and the Plan* destructs safely

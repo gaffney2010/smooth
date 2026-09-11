@@ -8,14 +8,52 @@
 #include <utility>
 #include <vector>
 
+#include "smooth/dynamic_matrix_representation.hpp"
 #include "smooth/metrics.hpp"
+#include "smooth/representation_base.hpp"
+#include "smooth/row_values_representation.hpp"
+#include "smooth/scalar_representation.hpp"
+#include "smooth/smooth_number_base.hpp"
+#include "smooth/sparse_representation.hpp"
 
 namespace smooth {
 
-// A fluent builder for a scalar arithmetic expression over 3-smooth
-// numbers, e.g.:
+// A fluent builder for an arithmetic expression over 3-smooth numbers.
+// Building it produces a **declaration** -- a pure, representation-agnostic
+// record of exactly what was asked for (a tree of scalar/number leaves
+// combined by add/multiply), and nothing else; building never computes
+// anything, and never touches a RepresentationBase. Compiling (the first
+// call to plan()/calculate()) turns that declaration into a **blueprint**:
+// the same tree, but with explicit Ensure(target) steps spliced in
+// wherever a leaf needs to become a specific representation. The blueprint
+// is what's actually executed -- and printed by plan() -- so every
+// conversion this Plan performs shows up as a real, inspectable step, not
+// something hidden inside a virtual call:
 //
-//   double result = Plan()
+//   smooth::SparsePlan().scalar(1).plus().scalar(2).plan();
+//   // add
+//   // ├─ ensure(sparse)
+//   // │  └─ scalar: 1
+//   // └─ ensure(sparse)
+//   //    └─ scalar: 2
+//   // = 3
+//
+// A concrete Plan's *entire* strategy is one method: buildBlueprint(),
+// which maps a declaration node to a blueprint node. Every plan_zoo
+// strategy's override is one line, built on the shared
+// wrapLeavesWithEnsure() helper below (see DefaultPlan in this file, and
+// plan_zoo/ for the others) -- there is no convertLeaf()/convertNumberLeaf()/
+// targetRepresentation() split to keep in sync; a strategy either wraps
+// leaves in Ensure(some representation), or (for a future strategy that
+// wants to do something else -- pick a representation per-node, insert some
+// other kind of step, ...) writes its own buildBlueprint() from scratch.
+// Immediately after buildBlueprint() runs, validateBlueprint() (below)
+// confirms that stripping every Ensure node back out of the blueprint
+// yields the declaration's exact shape and leaf contents again -- so a
+// buildBlueprint() override can only ever *decorate* what's being
+// computed, never change it.
+//
+//   double result = smooth::DefaultPlan()
 //       .scalar(3)
 //       .times()
 //       .left()
@@ -25,18 +63,30 @@ namespace smooth {
 //       .right()
 //       .calculate();  // 3 * (4 + 2) = 18
 //
-// Building never computes anything -- it just records an expression tree.
-// Actually compiling that tree into a concrete sequence of steps (and, for
-// now, running the arithmetic) happens lazily, the first time plan() or
-// calculate() is called.
-//
-// - scalar(x) / number(n): a leaf. scalar() takes a plain int/float value;
-//   number() takes any existing SmoothNumberBase-derived object and uses
-//   its value(). number() is a template specifically so T::value() is
-//   resolved at compile time against T's *own* type -- required for signed
-//   types, whose value() intentionally hides (isn't a virtual override of)
-//   SmoothNumberBase::value() (see smooth_number_base.hpp); calling it
-//   through a SmoothNumberBase& would silently drop the sign.
+// - scalar(x): a leaf. Throws std::invalid_argument for a negative x:
+//   every RepresentationBase is magnitude-only, and a negative value would
+//   otherwise infinite-loop the first time something tries to decompose it
+//   into bits (see ScalarRepresentation::forEachSet()/
+//   representation_base.hpp's decomposeColumnValue()) -- so this is the
+//   one place a raw literal enters the system, and the one place that gets
+//   checked. Nothing is built yet -- just the raw value, recorded in the
+//   declaration.
+// - number(n): a leaf holding an existing SmoothNumberBase-derived
+//   object's value, snapshotted immediately (via scalar(n.value())) -- so
+//   it's subject to the same non-negative restriction. Templated
+//   specifically so T::value() is resolved at compile time against T's
+//   *own* type -- required for signed types, whose value() intentionally
+//   hides (isn't a virtual override of) SmoothNumberBase::value(); calling
+//   it through a SmoothNumberBase& would silently read the unsigned
+//   magnitude instead of throwing for a negative value.
+// - numberVia(n): keeps a live reference to n (which must outlive
+//   calculate()/plan()) instead. Compiling always wraps a numberVia() leaf
+//   in Ensure(target) too (see wrapLeavesWithEnsure()), and executing that
+//   Ensure step calls n's own SmoothNumberBase::representationAs(target)
+//   directly -- a genuine ensure()-driven conversion through n's own
+//   internal representation cache, not a value-then-rebuild round trip --
+//   so n's own Metrics (if it has any) sees the resulting
+//   convert_<canonical>_to_<target> counter.
 // - plus() / times(): wraps whatever's been built so far at the current
 //   nesting level into a new operator node (as its left side), and expects
 //   the next thing you build to become its right side.
@@ -47,27 +97,28 @@ namespace smooth {
 //   that is -- a pending operator's right side, or the top-level result --
 //   is whatever's actually open there; left()/right() name the bracket
 //   pair, not a side of the parent).
-// - calculate(): the computed result, as a double.
-// - plan(os): prints the compiled steps as a tree (see below).
+// - calculate(): the computed result, as a double -- the final blueprint
+//   step's representation's own value().
+// - plan(os): prints the compiled blueprint as a tree (see above).
 //
-// For now, this base class computes by converting every leaf to a plain
-// scalar and evaluating the whole thing with ordinary double arithmetic --
-// no attempt is made to pick a smarter representation for the actual
-// SmoothNumber machinery. That's what name()/convertLeaf()/combine() below
-// are for: a derived class overrides them to compute via a specific
-// RepresentationBase instead (see include/smooth/plan_zoo/ for a few --
-// SparsePlan, MatrixPlan, RowValuesPlan -- with more meant to follow as
-// this library explores which representation is actually fastest for
-// what). This base implementation is effectively "ScalarPlan" in that
-// family, just built directly into Plan itself rather than living in
-// plan_zoo/, since a plain double *is* how a scalar is represented.
+// name() identifies which strategy is in use ("scalar" for DefaultPlan;
+// "sparse"/"matrix"/"row_values" for the plan_zoo/ subclasses). It drives
+// the convert_to_<name> metrics counter (incremented once per Ensure step),
+// so overriding it alone already shows up distinctly in the metrics.
 //
 // Like every concrete SmoothNumberBase-derived type, a Plan optionally
-// takes a shared Metrics at construction (see metrics.hpp). Compiling
-// increments one counter per step -- convert_to_<name()>, add, or multiply
-// -- mirroring how SmoothNumberBase counts each representation conversion,
-// so a Metrics shared between a Plan and the numbers that feed it (via
-// number()) tallies both under the same counters.
+// takes a shared Metrics at construction (see metrics.hpp). A Metrics
+// shared between a Plan and the numbers that feed it (via number() or
+// numberVia() -- the latter via setMetricsPtr(), since a numberVia()
+// argument isn't constructed by the Plan) tallies both under the same
+// counters: convert_to_<name()>/add/multiply from the Plan itself,
+// carries/bit_operations/scalar_operations/bit_iterations from whatever
+// representation-level work executing the blueprint actually does (an
+// Ensure step re-points its result at the Plan's own Metrics via
+// RepresentationBase::setMetricsPtr(), so this is true even for a
+// numberVia() leaf's forced conversion, not just scalar()/number() ones),
+// and, for numberVia() specifically, the fed-in number's own
+// convert_<canonical>_to_<target> counter too.
 class Plan {
 public:
     explicit Plan(std::shared_ptr<Metrics> metrics = nullptr) : metrics_(std::move(metrics)) {
@@ -76,14 +127,7 @@ public:
 
     virtual ~Plan() = default;
 
-    // Identifies which strategy this Plan (or Plan subclass) uses to
-    // perform its arithmetic -- "scalar" here; "sparse"/"matrix"/
-    // "row_values" for the plan_zoo/ subclasses that override it. Also
-    // drives the "convert to <name>" step label (see printStep()) and the
-    // convert_to_<name> metrics counter, so a subclass overriding name()
-    // alone (with no other changes) would still show up distinctly in
-    // both the printed plan and the metrics.
-    virtual std::string name() const { return "scalar"; }
+    virtual std::string name() const = 0;
 
     bool hasMetrics() const { return static_cast<bool>(metrics_); }
     const std::shared_ptr<Metrics>& metricsPtr() const { return metrics_; }
@@ -94,23 +138,38 @@ public:
     // the risk of an ambiguous call for a plain int literal like
     // scalar(3) -- int converts to double as easily as to long long.
     Plan& scalar(double value) {
-        placeLeaf(value);
+        if (value < 0.0) {
+            throw std::invalid_argument(
+                "Plan::scalar(): value must be non-negative -- every RepresentationBase is magnitude-only");
+        }
+        auto node = std::make_unique<Node>();
+        node->kind = Node::Kind::ScalarLeaf;
+        node->scalarValue = value;
+        placeLeaf(std::move(node));
         return *this;
     }
 
     template <typename T>
     Plan& number(const T& n) {
-        placeLeaf(n.value());
+        return scalar(n.value());
+    }
+
+    // See the class comment above for how this differs from number().
+    Plan& numberVia(SmoothNumberBase& n) {
+        auto node = std::make_unique<Node>();
+        node->kind = Node::Kind::NumberLeaf;
+        node->numberSource = &n;
+        placeLeaf(std::move(node));
         return *this;
     }
 
     Plan& plus() {
-        applyOperator(Op::Add);
+        applyOperator(Node::Kind::Add);
         return *this;
     }
 
     Plan& times() {
-        applyOperator(Op::Multiply);
+        applyOperator(Node::Kind::Multiply);
         return *this;
     }
 
@@ -145,56 +204,74 @@ public:
     // or reuses the compilation from an earlier calculate()/plan() call.
     double calculate() {
         ensureCompiled();
-        return steps_.back().result;
+        return steps_.back().rep->value();
     }
 
-    // Prints the compiled steps as a tree, e.g.:
+    // Prints the compiled blueprint as a tree, e.g. (for SparsePlan,
+    // 3 * (4 + 2)):
     //
     //   multiply
-    //   ├─ convert to scalar: 3
+    //   ├─ ensure(sparse)
+    //   │  └─ scalar: 3
     //   └─ add
-    //      ├─ convert to scalar: 4
-    //      └─ convert to scalar: 2
+    //      ├─ ensure(sparse)
+    //      │  └─ scalar: 4
+    //      └─ ensure(sparse)
+    //         └─ scalar: 2
     //   = 18
     void plan(std::ostream& os = std::cout) {
         ensureCompiled();
         printStep(os, steps_.size() - 1, "", true, true);
-        os << "= " << steps_.back().result << "\n";
+        os << "= " << steps_.back().rep->value() << "\n";
     }
 
 protected:
-    // protected (not private) so an overridden combine() can be declared
-    // in terms of it -- see plan_zoo/ for examples.
-    enum class Op { Add, Multiply };
+    // Node serves as both the declaration (the pure, representation-
+    // agnostic expression tree scalar()/number()/numberVia()/plus()/
+    // times()/left()/right() build -- ScalarLeaf/NumberLeaf/Add/Multiply
+    // only, never Ensure) and, after buildBlueprint() runs, the blueprint
+    // itself (the same shape, but with Ensure nodes spliced in wherever a
+    // conversion is needed).
+    struct Node {
+        enum class Kind { ScalarLeaf, NumberLeaf, Ensure, Add, Multiply };
+        Kind kind;
+        double scalarValue = 0.0;                        // ScalarLeaf
+        SmoothNumberBase* numberSource = nullptr;          // NumberLeaf
+        SmoothNumberBase::Representation ensureTarget{};    // Ensure
+        std::unique_ptr<Node> child;                         // Ensure: the node being converted
+        std::unique_ptr<Node> left, right;                    // Add, Multiply
+    };
 
-    // Converts a leaf's raw value into whatever this Plan variant actually
-    // computes with, returning it back out as a double (the type
-    // steps_/printing/calculate() all deal in regardless of subclass). The
-    // default does nothing -- a plain double already *is* how this base
-    // class computes. A subclass that wants to genuinely round-trip
-    // through a RepresentationBase (e.g. to exercise its real encode/carry
-    // logic) does so here, converting back to double at the end since
-    // that's what the rest of Plan expects.
-    virtual double convertLeaf(double raw) const { return raw; }
+    // Maps the declaration into an executable blueprint by inserting
+    // Ensure(target) nodes wherever this Plan's strategy needs a
+    // conversion. The one hook every concrete Plan overrides to declare
+    // its strategy -- pure virtual, so there is no default "do nothing
+    // special" behavior hiding in Plan itself; even DefaultPlan (below)
+    // spells out that its target is Scalar.
+    virtual std::unique_ptr<Node> buildBlueprint(const Node& declaration) const = 0;
 
-    // Combines two already-converted values with the given operator,
-    // again returning a double. The default is ordinary double add/
-    // multiply; a subclass overriding this to route through a
-    // RepresentationBase's own addInPlace()/multiplyInPlace() is what
-    // "converts everything to <representation> and computes that way"
-    // actually means in practice -- see plan_zoo/.
-    virtual double combine(Op op, double left, double right) const {
-        return op == Op::Add ? (left + right) : (left * right);
+    // Shared by every strategy that just wants every leaf -- scalar() or
+    // numberVia() alike -- converted into one target representation: walks
+    // `declaration`, wrapping each leaf it finds in Ensure{target}. This is
+    // typically a buildBlueprint() override's entire body (see DefaultPlan
+    // below and plan_zoo/ for examples).
+    std::unique_ptr<Node> wrapLeavesWithEnsure(const Node& declaration,
+                                                SmoothNumberBase::Representation target) const {
+        auto node = std::make_unique<Node>();
+        if (declaration.kind == Node::Kind::ScalarLeaf || declaration.kind == Node::Kind::NumberLeaf) {
+            node->kind = Node::Kind::Ensure;
+            node->ensureTarget = target;
+            node->child = cloneNode(declaration);
+            return node;
+        }
+        node->kind = declaration.kind;
+        node->left = wrapLeavesWithEnsure(*declaration.left, target);
+        node->right = wrapLeavesWithEnsure(*declaration.right, target);
+        return node;
     }
 
 private:
-    // The expression tree as built so far, in its rawest form.
-    struct Node {
-        bool isLeaf = false;
-        double value = 0.0;                      // when isLeaf
-        Op op = Op::Add;                          // when !isLeaf
-        std::unique_ptr<Node> left, right;         // when !isLeaf
-    };
+    enum class Op { Add, Multiply };
 
     // One independent, in-progress sub-expression -- the stack of these is
     // what left()/right() push and pop.
@@ -202,16 +279,75 @@ private:
         std::unique_ptr<Node> root;  // null until something's been built here
     };
 
-    // The compiled plan: one entry per node of the tree, in post-order (a
-    // node's operands are always compiled -- and thus already present in
-    // this list -- before the node itself), each carrying its already-
-    // computed result. The last entry is always the overall root.
+    // The compiled blueprint, executed: one entry per blueprint node, in
+    // post-order (a node's operands/child are always compiled -- and thus
+    // already present in this list -- before the node itself), each
+    // carrying its already-computed representation. The last entry is
+    // always the overall root.
     struct Step {
-        enum class Kind { Convert, Add, Multiply } kind;
-        double leafValue = 0.0;                 // when kind == Convert
-        std::size_t leftStep = 0, rightStep = 0;  // when kind == Add/Multiply
-        double result = 0.0;
+        enum class Kind { Scalar, Ensure, EnsureNumber, Add, Multiply } kind;
+        std::unique_ptr<RepresentationBase> rep;
+        std::size_t childStep = 0;                 // Ensure
+        std::size_t leftStep = 0, rightStep = 0;    // Add, Multiply
+        SmoothNumberBase::Representation ensureTarget{};  // Ensure, EnsureNumber
     };
+
+    static bool isLeaf(const Node& n) { return n.kind == Node::Kind::ScalarLeaf || n.kind == Node::Kind::NumberLeaf; }
+    static bool isOperator(const Node& n) { return n.kind == Node::Kind::Add || n.kind == Node::Kind::Multiply; }
+
+    static std::unique_ptr<Node> cloneNode(const Node& n) {
+        auto copy = std::make_unique<Node>();
+        copy->kind = n.kind;
+        copy->scalarValue = n.scalarValue;
+        copy->numberSource = n.numberSource;
+        copy->ensureTarget = n.ensureTarget;
+        if (n.child) copy->child = cloneNode(*n.child);
+        if (n.left) copy->left = cloneNode(*n.left);
+        if (n.right) copy->right = cloneNode(*n.right);
+        return copy;
+    }
+
+    // Confirms that stripping every Ensure node out of `blueprint` yields
+    // back exactly `declaration`'s own shape and leaf contents -- i.e. a
+    // buildBlueprint() override may only ever *decorate* the declaration
+    // with conversions, never change what's actually being computed.
+    // Throws std::invalid_argument -- a bug in the Plan subclass, not a
+    // usage error -- if it doesn't match.
+    void validateBlueprint(const Node& declaration, const Node& blueprint) const {
+        const Node* b = &blueprint;
+        while (b->kind == Node::Kind::Ensure) {
+            if (!b->child) {
+                throw std::invalid_argument("Plan: " + name() +
+                                             "::buildBlueprint() produced an Ensure node with no child");
+            }
+            b = b->child.get();
+        }
+        if (b->kind != declaration.kind) {
+            throw std::invalid_argument("Plan: " + name() +
+                                         "::buildBlueprint() changed the shape of the declaration");
+        }
+        switch (declaration.kind) {
+            case Node::Kind::ScalarLeaf:
+                if (b->scalarValue != declaration.scalarValue) {
+                    throw std::invalid_argument("Plan: " + name() +
+                                                 "::buildBlueprint() changed a scalar() leaf's value");
+                }
+                return;
+            case Node::Kind::NumberLeaf:
+                if (b->numberSource != declaration.numberSource) {
+                    throw std::invalid_argument("Plan: " + name() +
+                                                 "::buildBlueprint() changed a numberVia() leaf's number");
+                }
+                return;
+            case Node::Kind::Add:
+            case Node::Kind::Multiply:
+                validateBlueprint(*declaration.left, *b->left);
+                validateBlueprint(*declaration.right, *b->right);
+                return;
+            case Node::Kind::Ensure:
+                return;  // unreachable: declaration never contains Ensure nodes
+        }
+    }
 
     // Returns the slot the next leaf/group-result should be written to: the
     // current frame's root, if nothing's there yet, or a still-empty right
@@ -221,59 +357,157 @@ private:
     std::unique_ptr<Node>* writableSlot() {
         Frame& top = stack_.back();
         if (!top.root) return &top.root;
-        if (!top.root->isLeaf && !top.root->right) return &top.root->right;
+        if (isOperator(*top.root) && !top.root->right) return &top.root->right;
         return nullptr;
     }
 
-    void placeLeaf(double value) {
+    void placeLeaf(std::unique_ptr<Node> node) {
         std::unique_ptr<Node>* slot = writableSlot();
         if (!slot) {
             throw std::invalid_argument(
                 "Plan: expected an operator (plus()/times()) before this value -- "
                 "the current expression is already complete");
         }
-        auto node = std::make_unique<Node>();
-        node->isLeaf = true;
-        node->value = value;
         *slot = std::move(node);
     }
 
-    void applyOperator(Op op) {
+    void applyOperator(Node::Kind op) {
         Frame& top = stack_.back();
         if (!top.root) {
             throw std::invalid_argument("Plan: need a value before plus()/times()");
         }
-        if (!top.root->isLeaf && !top.root->right) {
+        if (isOperator(*top.root) && !top.root->right) {
             throw std::invalid_argument("Plan: the pending operator is still missing its right-hand value");
         }
         auto node = std::make_unique<Node>();
-        node->isLeaf = false;
-        node->op = op;
+        node->kind = op;
         node->left = std::move(top.root);
         top.root = std::move(node);
     }
 
-    // Builds steps_ from the tree via a post-order walk, delegating the
-    // actual arithmetic to convertLeaf()/combine() (see above) -- so this
-    // one method is shared by every Plan variant; only those two hooks
-    // differ per subclass. Each step increments a matching counter on
-    // metrics_, if one was given.
-    std::size_t compileNode(const Node& node) {
-        if (node.isLeaf) {
-            if (metrics_) metrics_->increment("convert_to_" + name());
-            double converted = convertLeaf(node.value);
-            steps_.push_back(Step{Step::Kind::Convert, converted, 0, 0, converted});
-            return steps_.size() - 1;
+    // Builds a fresh, empty representation of `target`'s concrete type --
+    // the shared factory an Ensure step needs to know what to convert
+    // *into*, driven purely by the SmoothNumberBase::Representation value
+    // carried in the blueprint (data), rather than by a virtual call to
+    // some per-subclass method.
+    static std::unique_ptr<RepresentationBase> makeEmptyRepresentation(SmoothNumberBase::Representation target,
+                                                                         std::shared_ptr<Metrics> metrics) {
+        switch (target) {
+            case SmoothNumberBase::Representation::Sparse:
+                return std::make_unique<SparseRepresentation>(/*allow_fractional=*/true, std::move(metrics));
+            case SmoothNumberBase::Representation::RowValues:
+                return std::make_unique<RowValuesRepresentation>(/*allow_fractional=*/true, std::move(metrics));
+            case SmoothNumberBase::Representation::Dynamic:
+                return std::make_unique<DynamicMatrixRepresentation>(/*allow_fractional=*/true, std::move(metrics));
+            case SmoothNumberBase::Representation::Scalar:
+                return std::make_unique<ScalarRepresentation>(/*allow_fractional=*/true, std::move(metrics));
         }
-        std::size_t leftStep = compileNode(*node.left);
-        std::size_t rightStep = compileNode(*node.right);
-        double leftVal = steps_[leftStep].result;
-        double rightVal = steps_[rightStep].result;
-        Step::Kind kind = (node.op == Op::Add) ? Step::Kind::Add : Step::Kind::Multiply;
-        double result = combine(node.op, leftVal, rightVal);
-        if (metrics_) metrics_->increment(node.op == Op::Add ? "add" : "multiply");
-        steps_.push_back(Step{kind, 0.0, leftStep, rightStep, result});
-        return steps_.size() - 1;
+        throw std::invalid_argument("Plan: unknown Representation");
+    }
+
+    static const char* representationLabel(SmoothNumberBase::Representation r) {
+        switch (r) {
+            case SmoothNumberBase::Representation::Sparse:
+                return "sparse";
+            case SmoothNumberBase::Representation::RowValues:
+                return "row_values";
+            case SmoothNumberBase::Representation::Dynamic:
+                return "dynamic";
+            case SmoothNumberBase::Representation::Scalar:
+                return "scalar";
+        }
+        return "unknown";
+    }
+
+    // Clones `left` and combines `right` into the clone via
+    // RepresentationBase's own addInPlace()/multiplyInPlace() -- since
+    // those are already virtual and polymorphic over any RepresentationBase
+    // (regardless of its concrete type), this one implementation covers
+    // every strategy: no per-strategy override needed. `left` and `right`
+    // are always the same concrete type in practice, since a Add/Multiply
+    // node's operands were both produced by this same Plan's own blueprint.
+    std::unique_ptr<RepresentationBase> combine(Op op, const RepresentationBase& left,
+                                                 const RepresentationBase& right) const {
+        std::unique_ptr<RepresentationBase> result = left.clone();
+        if (op == Op::Add) {
+            result->addInPlace(right);
+        } else {
+            result->multiplyInPlace(right);
+        }
+        return result;
+    }
+
+    // Executes one blueprint node (and, recursively, everything it depends
+    // on), appending each result to steps_ in post-order and returning the
+    // index of the one just appended. Each Ensure/Add/Multiply step
+    // increments a matching counter on metrics_, if one was given.
+    std::size_t compileBlueprintNode(const Node& node) {
+        switch (node.kind) {
+            case Node::Kind::ScalarLeaf: {
+                auto rep = std::make_unique<ScalarRepresentation>(/*allow_fractional=*/true, metrics_);
+                rep->setColumnValue(0, node.scalarValue);
+                Step step;
+                step.kind = Step::Kind::Scalar;
+                step.rep = std::move(rep);
+                steps_.push_back(std::move(step));
+                return steps_.size() - 1;
+            }
+            case Node::Kind::NumberLeaf:
+                // Only ever valid as the direct child of an Ensure node --
+                // there's no meaningful "materialize, unconverted" form for
+                // an existing number the way a raw scalar naturally becomes
+                // Scalar, so a well-formed blueprint never compiles one on
+                // its own (see the Ensure case below, which special-cases
+                // this instead of recursing into it).
+                throw std::invalid_argument("Plan: " + name() +
+                                             "::buildBlueprint() left a numberVia() leaf unwrapped by Ensure()");
+            case Node::Kind::Ensure: {
+                if (metrics_) metrics_->increment("convert_to_" + name());
+                if (node.child->kind == Node::Kind::NumberLeaf) {
+                    // A genuine ensure()-driven conversion through the
+                    // number's own internal representation cache -- see
+                    // SmoothNumberBase::representationAs(). The clone comes
+                    // back carrying *that number's* Metrics (or none), so
+                    // it's re-pointed at this Plan's own Metrics before
+                    // anything downstream (e.g. combine()) touches it.
+                    std::unique_ptr<RepresentationBase> rep =
+                        node.child->numberSource->representationAs(node.ensureTarget);
+                    rep->setMetricsPtr(metrics_);
+                    Step step;
+                    step.kind = Step::Kind::EnsureNumber;
+                    step.rep = std::move(rep);
+                    step.ensureTarget = node.ensureTarget;
+                    steps_.push_back(std::move(step));
+                    return steps_.size() - 1;
+                }
+                std::size_t childStep = compileBlueprintNode(*node.child);
+                std::unique_ptr<RepresentationBase> rep = makeEmptyRepresentation(node.ensureTarget, metrics_);
+                steps_[childStep].rep->forEachSet([&rep](int i, int j) { rep->set(i, j, true); });
+                Step step;
+                step.kind = Step::Kind::Ensure;
+                step.rep = std::move(rep);
+                step.childStep = childStep;
+                step.ensureTarget = node.ensureTarget;
+                steps_.push_back(std::move(step));
+                return steps_.size() - 1;
+            }
+            case Node::Kind::Add:
+            case Node::Kind::Multiply: {
+                std::size_t leftStep = compileBlueprintNode(*node.left);
+                std::size_t rightStep = compileBlueprintNode(*node.right);
+                Op op = node.kind == Node::Kind::Add ? Op::Add : Op::Multiply;
+                std::unique_ptr<RepresentationBase> rep = combine(op, *steps_[leftStep].rep, *steps_[rightStep].rep);
+                if (metrics_) metrics_->increment(op == Op::Add ? "add" : "multiply");
+                Step step;
+                step.kind = node.kind == Node::Kind::Add ? Step::Kind::Add : Step::Kind::Multiply;
+                step.rep = std::move(rep);
+                step.leftStep = leftStep;
+                step.rightStep = rightStep;
+                steps_.push_back(std::move(step));
+                return steps_.size() - 1;
+            }
+        }
+        throw std::invalid_argument("Plan: unreachable node kind");
     }
 
     void ensureCompiled() {
@@ -284,10 +518,13 @@ private:
         if (!stack_.front().root) {
             throw std::invalid_argument("Plan: nothing has been built yet");
         }
-        if (!stack_.front().root->isLeaf && !stack_.front().root->right) {
+        const Node& declaration = *stack_.front().root;
+        if (isOperator(declaration) && !declaration.right) {
             throw std::invalid_argument("Plan: the last operator is missing its right-hand value");
         }
-        compileNode(*stack_.front().root);
+        std::unique_ptr<Node> blueprint = buildBlueprint(declaration);
+        validateBlueprint(declaration, *blueprint);
+        compileBlueprintNode(*blueprint);
         compiled_ = true;
     }
 
@@ -297,10 +534,9 @@ private:
                 return "add";
             case Step::Kind::Multiply:
                 return "multiply";
-            case Step::Kind::Convert:
+            default:
                 return "";
         }
-        return "";
     }
 
     void printStep(std::ostream& os, std::size_t index, const std::string& indent, bool isLast,
@@ -308,20 +544,54 @@ private:
         const Step& step = steps_[index];
         os << indent;
         if (!isRoot) os << (isLast ? "└─ " : "├─ ");
-        if (step.kind == Step::Kind::Convert) {
-            os << "convert to " << name() << ": " << step.leafValue << "\n";
-            return;
+        switch (step.kind) {
+            case Step::Kind::Scalar:
+                os << "scalar: " << step.rep->value() << "\n";
+                return;
+            case Step::Kind::EnsureNumber:
+                os << "ensure(" << representationLabel(step.ensureTarget) << "): " << step.rep->value() << "\n";
+                return;
+            case Step::Kind::Ensure: {
+                os << "ensure(" << representationLabel(step.ensureTarget) << ")\n";
+                std::string childIndent = indent + (isRoot ? "" : (isLast ? "   " : "│  "));
+                printStep(os, step.childStep, childIndent, true, false);
+                return;
+            }
+            case Step::Kind::Add:
+            case Step::Kind::Multiply: {
+                os << opLabel(step.kind) << "\n";
+                std::string childIndent = indent + (isRoot ? "" : (isLast ? "   " : "│  "));
+                printStep(os, step.leftStep, childIndent, false, false);
+                printStep(os, step.rightStep, childIndent, true, false);
+                return;
+            }
         }
-        os << opLabel(step.kind) << "\n";
-        std::string childIndent = indent + (isRoot ? "" : (isLast ? "   " : "│  "));
-        printStep(os, step.leftStep, childIndent, false, false);
-        printStep(os, step.rightStep, childIndent, true, false);
     }
 
     std::vector<Frame> stack_;
     std::vector<Step> steps_;
     bool compiled_ = false;
     std::shared_ptr<Metrics> metrics_;
+};
+
+// The default strategy: every leaf (scalar()/number() or numberVia()) is
+// ensured into a plain ScalarRepresentation, and every add/multiply runs
+// through ScalarRepresentation's own addInPlace()/multiplyInPlace() -- this
+// is "ScalarPlan" in the same sense SparsePlan/MatrixPlan/RowValuesPlan
+// (see plan_zoo/) are, just given the name most code reaches for by
+// default, and defined here alongside Plan itself rather than living in
+// plan_zoo/. buildBlueprint() is the entire strategy: wrap every leaf in
+// Ensure(Scalar), via the shared wrapLeavesWithEnsure() helper.
+class DefaultPlan : public Plan {
+public:
+    explicit DefaultPlan(std::shared_ptr<Metrics> metrics = nullptr) : Plan(std::move(metrics)) {}
+
+    std::string name() const override { return "scalar"; }
+
+protected:
+    std::unique_ptr<Node> buildBlueprint(const Node& declaration) const override {
+        return wrapLeavesWithEnsure(declaration, SmoothNumberBase::Representation::Scalar);
+    }
 };
 
 }  // namespace smooth

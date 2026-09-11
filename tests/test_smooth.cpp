@@ -911,35 +911,46 @@ void testInstrumentationCounters() {
 // ---------------------------------------------------------------------
 void testPlan() {
     // The confirmed example: 3 * (4 + 2) = 18.
-    checkNear(Plan().scalar(3).times().left().scalar(4).plus().scalar(2).right().calculate(), 18.0,
-              "Plan: 3 * (4 + 2) = 18");
+    checkNear(DefaultPlan().scalar(3).times().left().scalar(4).plus().scalar(2).right().calculate(), 18.0,
+              "DefaultPlan: 3 * (4 + 2) = 18");
 
     // Without brackets, chaining is left-associative, like a simple
     // calculator: each operator wraps the *entire* accumulated result so
     // far. left()/right() (used above) are how you override that default
     // with explicit grouping.
-    checkNear(Plan().scalar(3).times().scalar(4).plus().scalar(2).calculate(), (3.0 * 4.0) + 2.0,
-              "Plan: unbracketed 3 * 4 + 2 is left-associative: (3*4)+2 = 14");
+    checkNear(DefaultPlan().scalar(3).times().scalar(4).plus().scalar(2).calculate(), (3.0 * 4.0) + 2.0,
+              "DefaultPlan: unbracketed 3 * 4 + 2 is left-associative: (3*4)+2 = 14");
 
     // A single leaf, with no operator at all.
-    checkNear(Plan().scalar(5).calculate(), 5.0, "Plan: a single scalar leaf");
+    checkNear(DefaultPlan().scalar(5).calculate(), 5.0, "DefaultPlan: a single scalar leaf");
 
-    // number(): uses T::value() at its static type -- correct even for a
-    // negative signed number, whose value() is intentionally hidden, not
-    // virtual (see SmoothNumberBase's docs), so calling it through a base
-    // reference would silently drop the sign.
+    // number(): uses T::value() at its static type, not a virtual dispatch
+    // -- required for a signed number, whose value() intentionally hides
+    // (isn't a virtual override of) SmoothNumberBase::value() (see
+    // SmoothNumberBase's docs). Since every Plan is magnitude-only (it now
+    // genuinely encodes every leaf into a RepresentationBase -- see
+    // plan.hpp -- rather than doing raw double arithmetic), a negative
+    // signed number must throw, not silently succeed with the wrong
+    // (unsigned-magnitude) value: this is exactly what static resolution
+    // guarantees. If number() instead took a plain SmoothNumberBase& (and
+    // so read the hidden, magnitude-only value() through it), a negative
+    // signed number would silently be treated as its positive magnitude
+    // instead of throwing.
     {
         SmoothInteger pos;
         pos.setValue(10LL);
         SmoothSignedInteger neg;
         neg.setValue(-5LL);
-        checkNear(Plan().number(pos).plus().number(neg).calculate(), 5.0,
-                  "Plan.number(): 10 + (-5) = 5, sign correctly captured for a signed operand");
+        checkNear(DefaultPlan().number(pos).calculate(), 10.0,
+                  "DefaultPlan.number(): a non-negative operand computes correctly");
+        checkThrows([&] { DefaultPlan().number(neg).calculate(); },
+                    "DefaultPlan.number(): a negative signed operand throws (its true, signed value is "
+                    "correctly resolved via T::value(), not silently read as its unsigned magnitude)");
     }
 
     // Nested groups two levels deep: 2 * (3 + (4 * 5)) = 2 * 23 = 46.
     {
-        double result = Plan()
+        double result = DefaultPlan()
                              .scalar(2)
                              .times()
                              .left()
@@ -952,40 +963,49 @@ void testPlan() {
                              .right()
                              .right()
                              .calculate();
-        checkNear(result, 2.0 * (3.0 + 4.0 * 5.0), "Plan: two levels of nested left()/right() groups");
+        checkNear(result, 2.0 * (3.0 + 4.0 * 5.0), "DefaultPlan: two levels of nested left()/right() groups");
     }
 
     // plan() renders the compiled steps as a tree.
     {
-        Plan p;
+        DefaultPlan p;
         p.scalar(3).times().left().scalar(4).plus().scalar(2).right();
         std::ostringstream out;
         p.plan(out);
         check(out.str() ==
                   "multiply\n"
-                  "├─ convert to scalar: 3\n"
+                  "├─ ensure(scalar)\n"
+                  "│  └─ scalar: 3\n"
                   "└─ add\n"
-                  "   ├─ convert to scalar: 4\n"
-                  "   └─ convert to scalar: 2\n"
+                  "   ├─ ensure(scalar)\n"
+                  "   │  └─ scalar: 4\n"
+                  "   └─ ensure(scalar)\n"
+                  "      └─ scalar: 2\n"
                   "= 18\n",
-              "Plan.plan() renders the expected tree");
+              "DefaultPlan.plan() renders the expected tree, with the Ensure step it forces (Scalar) shown "
+              "explicitly above each leaf");
     }
     {
-        Plan p;
+        DefaultPlan p;
         p.scalar(5);
         std::ostringstream out;
         p.plan(out);
-        check(out.str() == "convert to scalar: 5\n= 5\n", "Plan.plan() for a single leaf has no tree branches");
+        check(out.str() == "ensure(scalar)\n└─ scalar: 5\n= 5\n",
+              "DefaultPlan.plan() for a single leaf has no add/multiply branches, but still shows its Ensure "
+              "step");
     }
 
     // Usage errors.
-    checkThrows([] { Plan().right(); }, "Plan.right() with no open left() group throws");
-    checkThrows([] { Plan().scalar(3).scalar(4); }, "Plan: two scalars in a row with no operator throws");
-    checkThrows([] { Plan().plus(); }, "Plan.plus() with nothing built yet throws");
-    checkThrows([] { Plan().scalar(3).times().left().scalar(4).calculate(); },
-                "Plan.calculate() with an unclosed left() group throws");
-    checkThrows([] { Plan().scalar(3).times().calculate(); },
-                "Plan.calculate() with a dangling operator (missing right-hand value) throws");
+    checkThrows([] { DefaultPlan().right(); }, "DefaultPlan.right() with no open left() group throws");
+    checkThrows([] { DefaultPlan().scalar(3).scalar(4); },
+                "DefaultPlan: two scalars in a row with no operator throws");
+    checkThrows([] { DefaultPlan().plus(); }, "DefaultPlan.plus() with nothing built yet throws");
+    checkThrows([] { DefaultPlan().scalar(3).times().left().scalar(4).calculate(); },
+                "DefaultPlan.calculate() with an unclosed left() group throws");
+    checkThrows([] { DefaultPlan().scalar(3).times().calculate(); },
+                "DefaultPlan.calculate() with a dangling operator (missing right-hand value) throws");
+    checkThrows([] { DefaultPlan().scalar(-1.0); },
+                "DefaultPlan.scalar(): a negative value throws (every RepresentationBase is magnitude-only)");
 
     // Metrics: the constructor accepts and propagates an optional shared
     // Metrics, the same as every concrete SmoothNumberBase-derived type.
@@ -993,30 +1013,34 @@ void testPlan() {
     // SmoothNumberBase counts each representation conversion), and a Plan
     // sharing a Metrics with a SmoothNumber tallies onto the same counters.
     {
-        Plan p;
-        check(!p.hasMetrics(), "Plan() has no metrics by default");
+        DefaultPlan p;
+        check(!p.hasMetrics(), "DefaultPlan() has no metrics by default");
     }
     {
         auto metrics = std::make_shared<Metrics>();
-        checkNear(Plan(metrics).scalar(3).times().left().scalar(4).plus().scalar(2).right().calculate(), 18.0,
-                  "Plan(metrics) still computes correctly");
+        checkNear(
+            DefaultPlan(metrics).scalar(3).times().left().scalar(4).plus().scalar(2).right().calculate(), 18.0,
+            "DefaultPlan(metrics) still computes correctly");
         std::ostringstream out;
         metrics->print(out);
-        check(out.str() == "add = 1\nconvert_to_scalar = 3\nmultiply = 1\n",
-              "Plan(metrics) increments one counter per compiled step");
+        check(out.str() == "add = 1\nconvert_to_scalar = 3\nmultiply = 1\nscalar_operations = 6\n",
+              "DefaultPlan(metrics) increments one counter per compiled step, plus ScalarRepresentation's own "
+              "scalar_operations: each Ensure(scalar) step walks its leaf's bits into a fresh Scalar rep (one "
+              "set() per bit -- 2 for 3's two bits, 1 each for 4 and 2's single bit) and combine()'s add/multiply "
+              "each contribute one more (2+1+1+1+1=6)");
     }
     {
         // Compiling is memoized: calculate() then plan() doesn't recount.
         auto metrics = std::make_shared<Metrics>();
-        Plan p(metrics);
+        DefaultPlan p(metrics);
         p.scalar(1).plus().scalar(2);
         p.calculate();
         std::ostringstream discard;
         p.plan(discard);
         std::ostringstream out;
         metrics->print(out);
-        check(out.str() == "add = 1\nconvert_to_scalar = 2\n",
-              "Plan compiling only happens once: calculate() then plan() doesn't recount");
+        check(out.str() == "add = 1\nconvert_to_scalar = 2\nscalar_operations = 3\n",
+              "DefaultPlan compiling only happens once: calculate() then plan() doesn't recount");
     }
     {
         // Propagation: a Plan and a SmoothNumber sharing one Metrics tally
@@ -1027,7 +1051,7 @@ void testPlan() {
         std::ostringstream discard;
         n.printSparse(discard);  // dynamic -> sparse
 
-        Plan(metrics).number(n).plus().scalar(1).calculate();
+        DefaultPlan(metrics).number(n).plus().scalar(1).calculate();
 
         std::ostringstream out;
         metrics->print(out);
@@ -1035,20 +1059,24 @@ void testPlan() {
                   "add = 1\n"
                   "bit_iterations = 5\n"
                   "convert_dynamic_to_sparse = 1\n"
-                  "convert_to_scalar = 2\n",
+                  "convert_to_scalar = 2\n"
+                  "scalar_operations = 3\n",
               "a Plan and a SmoothNumber sharing one Metrics tally onto the same counters");
     }
 }
 
 // ---------------------------------------------------------------------
-// plan_zoo/: Plan subclasses that override name()/convertLeaf()/combine()
-// to compute via a specific RepresentationBase instead of Plan's default
-// plain double arithmetic. Checked generically (template helper) against
-// all three, since they should all behave identically except for name()
-// and which representation actually does the work.
+// plan_zoo/: Plan subclasses whose buildBlueprint() wraps every leaf in
+// Ensure(target), routing through a specific RepresentationBase instead of
+// DefaultPlan's Scalar. Checked generically (template helper) against all
+// three, since they should all behave identically except for name(),
+// which representation actually does the work, and (for MatrixPlan only)
+// the Ensure label not matching name() -- "matrix" is this library's
+// display name for what SmoothNumberBase::Representation calls "dynamic".
 // ---------------------------------------------------------------------
 template <typename PlanType>
-void checkPlanZooVariant(const std::string& expectedName, const std::string& expectedMetrics) {
+void checkPlanZooVariant(const std::string& expectedName, const std::string& ensureLabel,
+                          const std::string& expectedMetrics) {
     PlanType p;
     check(p.name() == expectedName, expectedName + ": name() matches");
 
@@ -1059,14 +1087,19 @@ void checkPlanZooVariant(const std::string& expectedName, const std::string& exp
     printed.scalar(3).times().left().scalar(4).plus().scalar(2).right();
     std::ostringstream out;
     printed.plan(out);
-    std::string expected = "multiply\n├─ convert to " + expectedName +
-                            ": 3\n"
+    std::string expected = "multiply\n├─ ensure(" + ensureLabel +
+                            ")\n"
+                            "│  └─ scalar: 3\n"
                             "└─ add\n"
-                            "   ├─ convert to " +
-                            expectedName + ": 4\n   └─ convert to " + expectedName + ": 2\n= 18\n";
-    check(out.str() == expected, expectedName + ": plan() labels each leaf with the representation name");
+                            "   ├─ ensure(" +
+                            ensureLabel +
+                            ")\n"
+                            "   │  └─ scalar: 4\n"
+                            "   └─ ensure(" +
+                            ensureLabel + ")\n      └─ scalar: 2\n= 18\n";
+    check(out.str() == expected, expectedName + ": plan() shows the Ensure step it forces above each leaf");
 
-    checkThrows([] { PlanType().scalar(-1.0).calculate(); },
+    checkThrows([] { PlanType().scalar(-1.0); },
                 expectedName + ": a negative leaf throws (representation is magnitude-only)");
 
     auto metrics = std::make_shared<Metrics>();
@@ -1076,18 +1109,96 @@ void checkPlanZooVariant(const std::string& expectedName, const std::string& exp
     check(metricsOut.str() == expectedMetrics, expectedName + ": Metrics counter is convert_to_" + expectedName);
 }
 
+// ---------------------------------------------------------------------
+// Plan::validateBlueprint(): a misbehaving buildBlueprint() override
+// should never be able to silently change what's actually being computed
+// -- only decorate it with Ensure steps. These three deliberately broken
+// Plan subclasses each corrupt the blueprint one way; testBlueprintValidation()
+// (below) confirms each one is caught.
+// ---------------------------------------------------------------------
+class TamperedValuePlan : public Plan {
+public:
+    explicit TamperedValuePlan(std::shared_ptr<Metrics> metrics = nullptr) : Plan(std::move(metrics)) {}
+    std::string name() const override { return "tampered_value"; }
+
+protected:
+    // Wraps every leaf in Ensure(Scalar) like DefaultPlan, but then
+    // secretly changes a scalar() leaf's value -- exactly the kind of
+    // corruption validateBlueprint() exists to catch.
+    std::unique_ptr<Node> buildBlueprint(const Node& declaration) const override {
+        std::unique_ptr<Node> blueprint = wrapLeavesWithEnsure(declaration, SmoothNumberBase::Representation::Scalar);
+        Node* n = blueprint.get();
+        while (n->kind == Node::Kind::Ensure) n = n->child.get();
+        if (n->kind == Node::Kind::ScalarLeaf) n->scalarValue += 1000.0;
+        return blueprint;
+    }
+};
+
+class WrongShapePlan : public Plan {
+public:
+    explicit WrongShapePlan(std::shared_ptr<Metrics> metrics = nullptr) : Plan(std::move(metrics)) {}
+    std::string name() const override { return "wrong_shape"; }
+
+protected:
+    // Ignores the declaration's actual shape and always returns a single
+    // scalar leaf -- silently dropping an add()/times() the caller asked
+    // for.
+    std::unique_ptr<Node> buildBlueprint(const Node& /*declaration*/) const override {
+        auto leaf = std::make_unique<Node>();
+        leaf->kind = Node::Kind::ScalarLeaf;
+        leaf->scalarValue = 0.0;
+        auto ensure = std::make_unique<Node>();
+        ensure->kind = Node::Kind::Ensure;
+        ensure->ensureTarget = SmoothNumberBase::Representation::Scalar;
+        ensure->child = std::move(leaf);
+        return ensure;
+    }
+};
+
+class NullChildEnsurePlan : public Plan {
+public:
+    explicit NullChildEnsurePlan(std::shared_ptr<Metrics> metrics = nullptr) : Plan(std::move(metrics)) {}
+    std::string name() const override { return "null_child_ensure"; }
+
+protected:
+    // Produces a malformed Ensure node with no child at all.
+    std::unique_ptr<Node> buildBlueprint(const Node& /*declaration*/) const override {
+        auto ensure = std::make_unique<Node>();
+        ensure->kind = Node::Kind::Ensure;
+        ensure->ensureTarget = SmoothNumberBase::Representation::Scalar;
+        return ensure;
+    }
+};
+
+void testBlueprintValidation() {
+    checkThrows([] { TamperedValuePlan().scalar(5).calculate(); },
+                "validateBlueprint(): a buildBlueprint() that changes a scalar() leaf's value throws");
+    checkThrows([] { WrongShapePlan().scalar(3).plus().scalar(4).calculate(); },
+                "validateBlueprint(): a buildBlueprint() that changes the declaration's shape throws");
+    checkThrows([] { NullChildEnsurePlan().scalar(5).calculate(); },
+                "validateBlueprint(): a buildBlueprint() that produces a childless Ensure node throws");
+
+    // A well-behaved buildBlueprint() (the normal case) is completely
+    // unaffected by any of this -- validateBlueprint() runs on every
+    // compile, silently, whenever nothing is actually wrong.
+    checkNear(DefaultPlan().scalar(3).plus().scalar(4).calculate(), 7.0,
+              "validateBlueprint() doesn't interfere with a correct buildBlueprint()");
+}
+
 void testPlanZoo() {
     // Beyond "add"/"convert_to_X", each representation's own instrumentation
     // (bit_iterations, scalar_operations -- see representation_base.hpp,
-    // row_values_representation.hpp) also fires while combining two
-    // single-bit leaves (1 + 2), so the exact counters differ per variant.
-    checkPlanZooVariant<SparsePlan>("sparse", "add = 1\nbit_iterations = 5\nconvert_to_sparse = 2\n");
-    checkPlanZooVariant<MatrixPlan>("matrix", "add = 1\nbit_iterations = 8\nconvert_to_matrix = 2\n");
+    // row_values_representation.hpp) also fires while converting (via
+    // forEachSet()/set(), from convertLeaf() -- see plan.hpp) and combining
+    // two single-bit leaves (1 + 2), so the exact counters differ per
+    // variant.
+    checkPlanZooVariant<SparsePlan>("sparse", "sparse", "add = 1\nbit_iterations = 3\nconvert_to_sparse = 2\n");
+    checkPlanZooVariant<MatrixPlan>("matrix", "dynamic", "add = 1\nbit_iterations = 5\nconvert_to_matrix = 2\n");
     checkPlanZooVariant<RowValuesPlan>(
-        "row_values", "add = 1\nbit_iterations = 3\nconvert_to_row_values = 2\nscalar_operations = 1\n");
+        "row_values", "row_values", "add = 1\nbit_iterations = 1\nconvert_to_row_values = 2\nscalar_operations = 3\n");
 
-    // Base Plan itself is unaffected by any of this.
-    check(Plan().name() == "scalar", "the base Plan's name() is still \"scalar\"");
+    // DefaultPlan itself is unaffected by any of this.
+    check(DefaultPlan().name() == "scalar", "DefaultPlan's name() is still \"scalar\"");
 
     // Polymorphic usage: name() and calculate() dispatch virtually through
     // a Plan*, and the Plan* destructs safely (virtual destructor).
@@ -1096,6 +1207,135 @@ void testPlanZoo() {
         p->scalar(2).plus().scalar(3);
         check(p->name() == "matrix", "name() dispatches virtually through a Plan*");
         checkNear(p->calculate(), 5.0, "calculate() works the same through a Plan*");
+    }
+}
+
+// ---------------------------------------------------------------------
+// SmoothNumberBase::valueAs()/representationAs() and Plan::numberVia(): the
+// mechanism that lets a Plan-driven computation force an existing number
+// through its own real ensure()-driven conversion into that Plan's own
+// target representation (and thus its convert_<canonical>_to_<target>
+// Metrics counter), rather than reading a snapshot value and rebuilding
+// from a double. Every Plan does this for numberVia() leaves now -- it's
+// not a special case any one variant opts into.
+// ---------------------------------------------------------------------
+void testNumberViaForcesConversion() {
+    // valueAs(): converts to the requested representation only if it isn't
+    // already valid, same as printSparse()/etc. do internally -- a second
+    // call for the same target doesn't reconvert.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SmoothInteger n(metrics);
+        n.setValue(11LL);
+        checkNear(n.valueAs(SmoothNumberBase::Representation::Sparse), 11.0,
+                  "valueAs(Sparse) returns the correct value");
+        checkNear(n.valueAs(SmoothNumberBase::Representation::Sparse), 11.0,
+                  "valueAs(Sparse) again still returns the correct value");
+        check(metrics->get("convert_dynamic_to_sparse") == 1,
+              "valueAs(Sparse) converts exactly once, not once per call");
+    }
+
+    // numberVia() against SparsePlan forces each fed-in number through its
+    // own real conversion into Sparse -- computing correctly, and each of
+    // the 3 numbers showing up once under convert_dynamic_to_sparse.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SparsePlan p(metrics);
+        SmoothInteger a, b, c;
+        a.setMetricsPtr(metrics);
+        b.setMetricsPtr(metrics);
+        c.setMetricsPtr(metrics);
+        a.setValue(3LL);
+        b.setValue(4LL);
+        c.setValue(2LL);
+
+        checkNear(p.numberVia(a).times().left().numberVia(b).plus().numberVia(c).right().calculate(), 18.0,
+                  "SparsePlan via numberVia(): 3 * (4 + 2) = 18");
+        check(metrics->get("convert_dynamic_to_sparse") == 3,
+              "SparsePlan forces each of the 3 fed-in numbers through Sparse exactly once");
+        // The clone convertNumberLeaf() gets back from n.representationAs()
+        // is re-pointed at the Plan's own Metrics (setMetricsPtr()), so
+        // combine()'s own carry/bit-operation work on it is instrumented
+        // too -- not silently lost just because it came from an existing
+        // number rather than a scalar() leaf.
+        check(metrics->get("carries") == 2 && metrics->get("bit_operations") == 4,
+              "the forced clone's own carries/bit_operations land under the Plan's Metrics too");
+    }
+
+    // scalar() leaves are untouched by any of this -- convertNumberLeaf()
+    // only applies to numberVia() leaves.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        checkNear(SparsePlan(metrics).scalar(5).plus().scalar(7).calculate(), 12.0,
+                  "a scalar-only SparsePlan expression is unaffected");
+        check(metrics->get("convert_dynamic_to_sparse") == 0,
+              "a scalar-only SparsePlan expression never touches convert_dynamic_to_sparse");
+    }
+
+    // Mixing numberVia() and scalar() leaves in the same expression: only
+    // the numberVia() leaves force a conversion.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SparsePlan p(metrics);
+        SmoothInteger price, quantity;
+        price.setMetricsPtr(metrics);
+        quantity.setMetricsPtr(metrics);
+        price.setValue(18LL);
+        quantity.setValue(4LL);
+        checkNear(p.left().numberVia(price).times().numberVia(quantity).right().plus().scalar(6).calculate(),
+                  78.0, "mixing numberVia() and scalar() leaves: (18 * 4) + 6 = 78");
+        check(metrics->get("convert_dynamic_to_sparse") == 2,
+              "only the 2 numberVia() leaves force a conversion, not the scalar() leaf");
+    }
+
+    // Different Plans force different target representations for the exact
+    // same numbers: DefaultPlan forces Scalar, RowValuesPlan forces
+    // RowValues.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        DefaultPlan p(metrics);
+        SmoothInteger a, b;
+        a.setMetricsPtr(metrics);
+        b.setMetricsPtr(metrics);
+        a.setValue(4LL);
+        b.setValue(9LL);
+        checkNear(p.numberVia(a).plus().numberVia(b).calculate(), 13.0,
+                  "DefaultPlan via numberVia(): 4 + 9 = 13");
+        check(metrics->get("convert_dynamic_to_scalar") == 2,
+              "DefaultPlan forces numberVia() leaves through Scalar");
+    }
+    {
+        auto metrics = std::make_shared<Metrics>();
+        RowValuesPlan p(metrics);
+        SmoothInteger a, b;
+        a.setMetricsPtr(metrics);
+        b.setMetricsPtr(metrics);
+        a.setValue(4LL);
+        b.setValue(9LL);
+        checkNear(p.numberVia(a).plus().numberVia(b).calculate(), 13.0,
+                  "RowValuesPlan via numberVia(): 4 + 9 = 13");
+        check(metrics->get("convert_dynamic_to_row_values") == 2,
+              "RowValuesPlan forces numberVia() leaves through RowValues");
+    }
+    // MatrixPlan's target *is* Dynamic -- every fresh number's canonical
+    // representation already -- so numberVia() never needs to convert
+    // anything (and convert_dynamic_to_dynamic can't exist: ensure() never
+    // fires its counter when target == canonical).
+    {
+        auto metrics = std::make_shared<Metrics>();
+        MatrixPlan p(metrics);
+        SmoothInteger a, b;
+        a.setMetricsPtr(metrics);
+        b.setMetricsPtr(metrics);
+        a.setValue(4LL);
+        b.setValue(9LL);
+        checkNear(p.numberVia(a).plus().numberVia(b).calculate(), 13.0,
+                  "MatrixPlan via numberVia(): 4 + 9 = 13");
+        check(metrics->get("convert_dynamic_to_sparse") == 0 &&
+                  metrics->get("convert_dynamic_to_row_values") == 0 &&
+                  metrics->get("convert_dynamic_to_scalar") == 0,
+              "MatrixPlan's target representation is already every number's canonical one, so numberVia() "
+              "never triggers a conversion counter");
     }
 }
 
@@ -1123,6 +1363,8 @@ int main() {
     testInstrumentationCounters();
     testPlan();
     testPlanZoo();
+    testBlueprintValidation();
+    testNumberViaForcesConversion();
 
     std::cout << (g_checks - g_failures) << "/" << g_checks << " checks passed.\n";
     if (g_failures > 0) {

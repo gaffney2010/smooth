@@ -65,8 +65,24 @@ public:
     // std::make_unique<ThatClass>(*this), using its own (compiler-generated)
     // copy constructor -- this is what lets SmoothNumberBase itself be
     // copied (see its copy constructor) without needing to know which
-    // concrete representation types exist.
+    // concrete representation types exist. Note that the copy constructor
+    // also copies metrics_ (a shared_ptr) as-is, so a clone starts out
+    // instrumented under the *same* Metrics its source was -- see
+    // setMetricsPtr() below for re-pointing that.
     virtual std::unique_ptr<RepresentationBase> clone() const = 0;
+
+    // Re-points this representation's own Metrics (used to instrument
+    // carries/bit_operations/scalar_operations/bit_iterations -- see
+    // metrics.hpp and each concrete class) to a different one, or to none
+    // (nullptr). Exists for exactly one purpose: Plan::convertNumberLeaf()'s
+    // default (see plan.hpp) clones a numberVia() leaf's number's own
+    // representation via SmoothNumberBase::representationAs() -- that clone
+    // starts out carrying *that number's* Metrics (or none, if it has none),
+    // which is almost never what a Plan wants once the clone becomes one of
+    // its own Steps; this lets it re-point the clone at its own Metrics
+    // instead, so the representation-level counters this Plan's own
+    // combine() produces land in the same place as everything else it does.
+    virtual void setMetricsPtr(std::shared_ptr<Metrics> metrics) = 0;
 
     // Adds `other`'s bits into this representation in place. Adding a
     // second 1 into an (i, j) cell that already holds one is the same as

@@ -1,10 +1,14 @@
 #pragma once
 
 // Convenience header pulling in every Plan subclass in plan_zoo/: each
-// overrides Plan's computation strategy (name()/convertLeaf()/combine())
-// to route through a specific RepresentationBase instead of Plan's default
-// plain double arithmetic. More are meant to be added here over time as
-// this library explores which representation is fastest for what.
+// implements Plan's computation strategy (name()/convertLeaf()/
+// targetRepresentation()) to route through a specific RepresentationBase.
+// Plan itself is an interface -- see plan.hpp, which also defines
+// DefaultPlan, the ScalarRepresentation-based strategy most code reaches
+// for by default (kept alongside Plan rather than living here, since
+// Plan::scalar() already depends on ScalarRepresentation directly). More
+// plan_zoo/ subclasses are meant to be added here over time as this
+// library explores which representation is fastest for what.
 #include "smooth/plan_zoo/matrix_plan.hpp"
 #include "smooth/plan_zoo/row_values_plan.hpp"
 #include "smooth/plan_zoo/sparse_plan.hpp"

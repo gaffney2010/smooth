@@ -1,28 +1,23 @@
 #pragma once
 
 #include <memory>
-#include <stdexcept>
 #include <string>
 #include <utility>
 
 #include "smooth/metrics.hpp"
 #include "smooth/plan.hpp"
-#include "smooth/sparse_representation.hpp"
 
 namespace smooth {
 
-// A Plan that performs its arithmetic by converting every value to a
-// SparseRepresentation and combining them via its own
-// addInPlace()/multiplyInPlace() -- the pairwise-exponent-sum-with-carry
-// strategy (see sparse_representation.hpp) -- rather than Plan's default
-// plain double arithmetic. Building/printing/Metrics/error-handling are
-// all unchanged, inherited as-is from Plan; only name(), convertLeaf(),
-// and combine() differ.
-//
-// Every RepresentationBase implementation, SparseRepresentation included,
-// can only ever hold a non-negative magnitude, so a negative leaf throws
-// -- this is the same restriction SmoothNumberBase::setValue() has for the
-// two unsigned types, for the same underlying reason.
+// A Plan whose blueprint wraps every leaf in Ensure(Sparse) -- so every
+// scalar()/number()/numberVia() leaf ends up as a SparseRepresentation,
+// and combine() (inherited, unchanged, from Plan) runs its own
+// addInPlace()/multiplyInPlace() (the pairwise-exponent-sum-with-carry
+// strategy, see sparse_representation.hpp). buildBlueprint() is the entire
+// strategy -- see plan.hpp's wrapLeavesWithEnsure() for what it does and
+// Plan's class comment for how the resulting Ensure steps are executed and
+// printed. Everything else (building, plan(), calculate(), combine(),
+// Metrics, error-handling) is inherited as-is.
 class SparsePlan : public Plan {
 public:
     // Forwards to Plan's own (metrics) constructor explicitly, rather than
@@ -35,32 +30,8 @@ public:
     std::string name() const override { return "sparse"; }
 
 protected:
-    double convertLeaf(double raw) const override {
-        requireNonNegative(raw);
-        SparseRepresentation rep(/*allow_fractional=*/true, metricsPtr());
-        rep.setColumnValue(0, raw);
-        return rep.value();
-    }
-
-    double combine(Op op, double left, double right) const override {
-        SparseRepresentation a(/*allow_fractional=*/true, metricsPtr());
-        SparseRepresentation b(/*allow_fractional=*/true, metricsPtr());
-        a.setColumnValue(0, left);
-        b.setColumnValue(0, right);
-        if (op == Op::Add) {
-            a.addInPlace(b);
-        } else {
-            a.multiplyInPlace(b);
-        }
-        return a.value();
-    }
-
-private:
-    static void requireNonNegative(double value) {
-        if (value < 0.0) {
-            throw std::invalid_argument(
-                "SparsePlan: SparseRepresentation can only hold a non-negative magnitude");
-        }
+    std::unique_ptr<Node> buildBlueprint(const Node& declaration) const override {
+        return wrapLeavesWithEnsure(declaration, SmoothNumberBase::Representation::Sparse);
     }
 };
 

@@ -127,10 +127,12 @@ Exactly one representation is **canonical** — the trusted, up-to-date copy
 canonical representation. A `set` call that actually changes a bit
 invalidates the other representations (a `set` to the same value it already
 had does not); an already-canonical representation is never redundantly
-reconverted. Which representation is canonical, and when (if ever) that
+reconverted. Which representation is *canonical*, and when (if ever) that
 changes, is decided internally — there is no public method to force it, by
 design (every number currently starts out, and stays, canonical on
-`Dynamic`).
+`Dynamic`). There *is* a public way to force any individual representation
+to become valid (i.e. genuinely converted and up to date), without
+changing which one is canonical — see `valueAs()` below.
 
 - `canonical()` — which `Representation` (`Sparse`, `RowValues`, `Dynamic`,
   or `Scalar`) is currently canonical (read-only).
@@ -148,6 +150,17 @@ design (every number currently starts out, and stays, canonical on
   the number as a plain integer or float. Converting throws
   `std::invalid_argument` if the number's value isn't representable as a
   plain number (see Scalar, above).
+- `valueAs(Representation target)` — the same "convert if needed" logic
+  every `print*()` above already does internally, generalized to any
+  representation and handed back as a `double` instead of printed. Lets
+  external code request a specific representation's value without needing
+  to know or care which one happens to already be canonical.
+- `representationAs(Representation target)` — the same idea, but hands
+  back an independent `std::unique_ptr<RepresentationBase>` clone of the
+  representation itself, rather than just its value. This is what
+  `Plan::numberVia()` (see "Plan" below) uses to force a fed-in number
+  through a real conversion into whatever representation the `Plan` needs,
+  without ever reading a value out and re-encoding it from a `double`.
 
 `value()` calls straight through to the canonical representation's own
 `value()`, so each avoids doing more work than it needs to:
@@ -468,7 +481,7 @@ only the signed types need.
 ```cpp
 #include "smooth/smooth.hpp"
 
-double result = smooth::Plan()
+double result = smooth::DefaultPlan()
     .scalar(3)
     .times()
     .left()
@@ -479,19 +492,67 @@ double result = smooth::Plan()
     .calculate();  // 3 * (4 + 2) = 18
 ```
 
-`smooth::Plan` (`include/smooth/plan.hpp`) is a fluent builder for a scalar
-arithmetic expression over 3-smooth numbers. Building never computes
-anything — it just records an expression tree; compiling that tree into a
-concrete sequence of steps (and, for now, actually running the arithmetic)
-happens lazily, the first time `plan()` or `calculate()` is called.
+`smooth::Plan` (`include/smooth/plan.hpp`) is a fluent builder for an
+arithmetic expression over 3-smooth numbers. Building it produces a
+**declaration** — a pure, representation-agnostic record of exactly what
+was asked for (scalar/number leaves combined by add/multiply, nothing
+else); building never computes anything, and never touches a
+`RepresentationBase`. Compiling (the first call to `plan()`/`calculate()`)
+turns that declaration into a **blueprint**: the same tree, but with
+explicit `Ensure(target)` steps spliced in wherever a leaf needs to become
+a specific representation. The blueprint is what's actually executed —
+*and printed by `plan()`* — so every conversion a `Plan` performs shows up
+as a real, inspectable step, never hidden inside a virtual call:
 
-- `scalar(double)` — a leaf holding a plain value.
+```cpp
+smooth::SparsePlan().scalar(1).plus().scalar(2).plan();
+// add
+// ├─ ensure(sparse)
+// │  └─ scalar: 1
+// └─ ensure(sparse)
+//    └─ scalar: 2
+// = 3
+```
+
+**`Plan` is an interface** — it owns all the shared tree-building/
+compiling machinery, but has no representation of its own to compute with,
+so it can't be constructed directly. A concrete subclass's *entire*
+strategy is one method, `buildBlueprint()`, which maps a declaration node
+to a blueprint node; `smooth::DefaultPlan` (also in `plan.hpp`, alongside
+`Plan` itself) is the simplest one — see "plan_zoo" below for others.
+Immediately after `buildBlueprint()` runs, `validateBlueprint()` (private,
+always run, never overridden) confirms that stripping every `Ensure` node
+back out of the blueprint yields the declaration's exact shape and leaf
+contents again — so a `buildBlueprint()` override can only ever *decorate*
+what's being computed, never change it. (Three toy, deliberately-broken
+`Plan` subclasses in `tests/test_smooth.cpp` exercise this directly: one
+that tampers with a leaf's value, one that swaps in the wrong shape
+entirely, and one that produces a malformed `Ensure` node — all three are
+confirmed to throw.)
+
+- `scalar(double)` — a leaf. Throws `std::invalid_argument` for a negative
+  value: every `RepresentationBase` is magnitude-only, and a negative
+  value would otherwise infinite-loop the first time something tries to
+  decompose it into bits — so this is the one place a raw literal enters
+  the system, and the one place that gets checked. Nothing is built yet at
+  this point — just the raw value, recorded in the declaration.
 - `number(const T&)` — a leaf holding an existing `SmoothNumberBase`-derived
-  object's value. Templated specifically so `T::value()` resolves at `T`'s
-  own concrete type — required for a signed `T`, whose `value()`
-  intentionally hides (isn't a virtual override of)
+  object's value, snapshotted immediately (via `scalar(n.value())`, so it's
+  subject to the same non-negative restriction). Templated specifically so
+  `T::value()` resolves at `T`'s own concrete type — required for a signed
+  `T`, whose `value()` intentionally hides (isn't a virtual override of)
   `SmoothNumberBase::value()`; calling it through a `SmoothNumberBase&`
-  would silently drop the sign.
+  would silently read the unsigned magnitude instead of throwing for a
+  negative value.
+- `numberVia(SmoothNumberBase&)` — keeps a live reference to `n` (which
+  must outlive `calculate()`/`plan()`) instead. Compiling always wraps a
+  `numberVia()` leaf in `Ensure(target)` too (see `wrapLeavesWithEnsure()`
+  below), and executing that `Ensure` step calls `n`'s own
+  `SmoothNumberBase::representationAs(target)` directly — a genuine
+  `ensure()`-driven conversion through `n`'s own internal representation
+  cache, not a value-then-rebuild round trip — so `n`'s own `Metrics` (if
+  it has any) sees the resulting `convert_<canonical>_to_<target>`
+  counter.
 - `plus()` / `times()` — wraps whatever's been built so far at the current
   nesting level into a new operator node, as its left side, and expects the
   next thing built to become its right side. Without any `left()`/`right()`
@@ -510,43 +571,59 @@ happens lazily, the first time `plan()` or `calculate()` is called.
   right-hand operand). This is what makes `3 * (4 + 2)` possible at all —
   without it, the plain left-associative chain would give `(3 * 4) + 2`
   instead.
-- `calculate()` — the computed result, as a `double`.
-- `plan(os = std::cout)` — prints the compiled steps as a tree, e.g. (for
-  the example above):
+- `calculate()` — the computed result, as a `double` (the final blueprint
+  step's representation's own `value()`).
+- `plan(os = std::cout)` — prints the compiled blueprint as a tree, e.g.
+  (for `smooth::DefaultPlan()` and the example above, `3 * (4 + 2)`):
   ```
   multiply
-  ├─ convert to scalar: 3
+  ├─ ensure(scalar)
+  │  └─ scalar: 3
   └─ add
-     ├─ convert to scalar: 4
-     └─ convert to scalar: 2
+     ├─ ensure(scalar)
+     │  └─ scalar: 4
+     └─ ensure(scalar)
+        └─ scalar: 2
   = 18
   ```
+  (Every leaf gets an `Ensure` step, even `DefaultPlan`'s own `Ensure(Scalar)`
+  — there's no special-cased "no conversion needed" leaf kind; a strategy
+  that has nothing to convert just names its own representation as the
+  target, same as everyone else. A `numberVia()` leaf's `Ensure` step has
+  no separate child to show — there's no meaningful "unconverted" form of
+  an existing number the way a raw literal naturally becomes Scalar — so
+  it prints as one combined line, e.g. `ensure(sparse): 3`.)
 
-`Plan` itself computes by converting every leaf to a plain scalar and
-evaluating the whole thing with ordinary `double` arithmetic — it doesn't
-try to pick a smarter representation (Sparse, RowValues, Dynamic, Scalar)
-for the actual computation the way the rest of this library does. That's
-what three `protected virtual` methods are for, each with a sensible
-default in `Plan` itself:
+`buildBlueprint(const Node& declaration) const` (`protected`, pure virtual)
+is the one hook every concrete `Plan` overrides — see "plan_zoo" below;
+each override is one line, built on:
 
-- `name() const` — public; identifies which strategy is in use ("scalar"
-  in `Plan` itself). Drives the `"convert to <name>"` leaf label in
-  `plan()`'s tree and the `convert_to_<name>` metrics counter, so
-  overriding it alone already shows up in both places.
-- `convertLeaf(double raw) const` — converts a leaf's raw value into
-  whatever this variant actually computes with, returned back out as a
-  `double` (the type `plan()`/`calculate()` deal in regardless of
-  subclass). The default is a no-op — a plain `double` already *is* how
-  `Plan` computes.
-- `combine(Op op, double left, double right) const` — combines two
-  already-converted values with `Op::Add`/`Op::Multiply`, again returning
-  a `double`. The default is ordinary `double` arithmetic.
+- `wrapLeavesWithEnsure(const Node& declaration, Representation target) const`
+  (`protected`, shared, non-virtual) — walks `declaration`, wrapping every
+  leaf (`scalar()`/`number()` or `numberVia()` alike) in `Ensure{target}`.
+  This is typically a `buildBlueprint()` override's *entire* body; a
+  strategy that wants something more unusual (pick a representation
+  per-node, insert some other kind of step, ...) writes its own
+  `buildBlueprint()` from scratch instead — `Ensure` is not the only
+  `Node::Kind` a `buildBlueprint()` override could ever introduce, just
+  the only one anything currently does.
 
-A subclass overriding `convertLeaf()`/`combine()` to round-trip through a
-real `RepresentationBase` — using its own `setColumnValue()` to encode a
-leaf and its own `addInPlace()`/`multiplyInPlace()` to combine two — is
-what "converts everything to `<representation>` and computes that way"
-means in practice; see "plan_zoo" below for three such subclasses.
+Combining two already-converted representations (executing an `Add`/
+`Multiply` blueprint node — private, not overridden by anything) just
+clones the left operand and calls its own `addInPlace()`/
+`multiplyInPlace()` with the right one — since those are already virtual
+and polymorphic over any `RepresentationBase`, this one implementation,
+shared by every `Plan` variant, is all "combine two representations" ever
+needs; no per-strategy override exists for it, or could usefully need one.
+
+`name() const` (public, pure virtual) identifies which strategy is in use
+("scalar" for `DefaultPlan`; "sparse"/"matrix"/"row_values" for the
+`plan_zoo` subclasses) and drives the `convert_to_<name>` metrics counter
+(incremented once per `Ensure` step) — it's independent of the `Ensure`
+step's own printed label (`representationLabel()`, an internal, `Plan`-
+private mapping from `SmoothNumberBase::Representation` to a lowercase
+name), which is why `MatrixPlan`'s tree says `ensure(dynamic)` even though
+`name()` is `"matrix"` — see "plan_zoo" below for why those two differ.
 
 Calling something out of order (two values with no operator between them,
 an operator with nothing built yet, an unmatched `left()`/`right()`,
@@ -555,54 +632,104 @@ an operator with nothing built yet, an unmatched `left()`/`right()`,
 
 Like every concrete `SmoothNumberBase`-derived type, `Plan`'s constructor
 takes an optional shared `std::shared_ptr<Metrics>`
-(`Plan(metrics)`/`Plan()`, `hasMetrics()`, `metricsPtr()` — see "Metrics"
-above). Compiling increments one counter per step —
-`convert_to_<name()>`, `add`, or `multiply` — mirroring how
-`SmoothNumberBase` counts each representation conversion, so a `Metrics`
-shared between a `Plan` and the numbers that feed it (via `number()`)
-tallies both under the same counters.
+(`DefaultPlan(metrics)`/`DefaultPlan()`, `hasMetrics()`, `metricsPtr()` —
+see "Metrics" above). A `Metrics` shared between a `Plan` and the numbers
+that feed it (via `number()` or `numberVia()` — the latter via
+`setMetricsPtr()`, since a `numberVia()` argument isn't constructed by the
+`Plan`) tallies both under the same counters: `convert_to_<name()>`/`add`/
+`multiply` from compiling itself, whatever representation-level work
+executing the blueprint does (an `Ensure` step's result is always
+constructed with — or, for a `numberVia()` leaf's clone, re-pointed via
+`RepresentationBase::setMetricsPtr()` at — this `Plan`'s own `Metrics`, so
+this is true even for a forced conversion, not just a `scalar()`/`number()`
+one), and, for `numberVia()` specifically, the fed-in number's own
+`convert_<canonical>_to_<target>` counter too — a different one per plan
+kind (e.g. `convert_dynamic_to_sparse` for `SparsePlan`,
+`convert_dynamic_to_row_values` for `RowValuesPlan`, or
+`convert_dynamic_to_scalar` for `DefaultPlan`) — except `MatrixPlan`, whose
+target (`Dynamic`) is already every fresh number's canonical
+representation, so nothing there ever needs converting.
 
 ## plan_zoo
 
-`include/smooth/plan_zoo/` holds `Plan` subclasses, each overriding
-`name()`/`convertLeaf()`/`combine()` to compute via a specific
-`RepresentationBase` instead of `Plan`'s default plain `double`
-arithmetic — nothing else about `Plan` changes; building, `plan()`,
-`calculate()`, `Metrics`, and error-handling are all inherited as-is.
-`include/smooth/plan_zoo.hpp` is a convenience header pulling in all of
-them, mirroring `smooth.hpp`. For now there are three, with more meant to
-follow as this library explores which representation is actually fastest
-for what:
+`include/smooth/plan_zoo/` holds `Plan` subclasses, each implementing
+`name()`/`buildBlueprint()` to route through a specific `RepresentationBase`
+instead of `DefaultPlan`'s `ScalarRepresentation` — nothing else about
+`Plan` changes; building, `plan()`, `calculate()`, combining, `Metrics`, and
+error-handling are all inherited as-is. `include/smooth/plan_zoo.hpp` is a
+convenience header pulling in all of them, mirroring `smooth.hpp`. For now
+there are three, with more meant to follow as this library explores which
+representation is actually fastest for what — each one's `buildBlueprint()`
+is exactly `return wrapLeavesWithEnsure(declaration, Representation::X);`:
 
-- `SparsePlan` (`name()` → `"sparse"`) — `SparseRepresentation`.
-- `MatrixPlan` (`name()` → `"matrix"`) — `DynamicMatrixRepresentation`,
-  called "matrix" here since that's what this library calls its
-  grid-shaped representation now that the old fixed-size
-  `MatrixRepresentation` has been superseded by it.
-- `RowValuesPlan` (`name()` → `"row_values"`) — `RowValuesRepresentation`.
+- `SparsePlan` (`name()` → `"sparse"`) — `Representation::Sparse` →
+  `SparseRepresentation`.
+- `MatrixPlan` (`name()` → `"matrix"`) — `Representation::Dynamic` →
+  `DynamicMatrixRepresentation`, called "matrix" here since that's what
+  this library calls its grid-shaped representation now that the old
+  fixed-size `MatrixRepresentation` has been superseded by it (hence
+  `name()` and the `Ensure` step's printed label disagreeing — `"matrix"`
+  vs. `"dynamic"` — for this one variant only).
+- `RowValuesPlan` (`name()` → `"row_values"`) — `Representation::RowValues`
+  → `RowValuesRepresentation`.
+
+Because every `numberVia()` leaf's `Ensure` step genuinely calls
+`n.representationAs(target)` (see "Plan" above), each of these three
+genuinely converts a fed-in number into its own representation — no
+special-cased "always convert" variant is needed:
 
 ```cpp
 #include "smooth/plan_zoo.hpp"
 
+auto metrics = std::make_shared<smooth::Metrics>();
+smooth::SparsePlan p(metrics);
+smooth::SmoothInteger a, b;
+a.setMetricsPtr(metrics);
+b.setMetricsPtr(metrics);
+a.setValue(3LL);
+b.setValue(4LL);
+p.numberVia(a).plus().numberVia(b).calculate();  // 7
+metrics->print();
+// add = 1
+// bit_iterations = 4
+// convert_dynamic_to_sparse = 2   <- one per fed-in number
+// convert_to_sparse = 2
+```
+
+Feeding the exact same two numbers into a `RowValuesPlan` instead forces
+each through `RowValues` (`convert_dynamic_to_row_values`) rather than
+`Sparse` — same numbers, same expression, different real conversion,
+depending entirely on which `Plan` is asking. `MatrixPlan` is the one
+exception: its target (`Dynamic`) is already every fresh number's
+canonical representation, so `numberVia()` there never triggers a
+conversion counter at all — there's nothing to convert.
+
+```cpp
 smooth::SparsePlan p;
 p.scalar(3).times().left().scalar(4).plus().scalar(2).right();
 p.plan();
 // multiply
-// ├─ convert to sparse: 3
+// ├─ ensure(sparse)
+// │  └─ scalar: 3
 // └─ add
-//    ├─ convert to sparse: 4
-//    └─ convert to sparse: 2
+//    ├─ ensure(sparse)
+//    │  └─ scalar: 4
+//    └─ ensure(sparse)
+//       └─ scalar: 2
 // = 18
 ```
 
-Each representation is magnitude-only (`RepresentationBase` can never hold
+Every representation is magnitude-only (`RepresentationBase` can never hold
 a negative value — the same reason `SmoothNumberBase::setValue()` rejects
-a negative value for the two unsigned types), so a negative leaf on any of
-these three throws `std::invalid_argument`; `Plan` itself has no such
-restriction, since it never touches a representation at all. All three —
-and `Plan` itself — share a common base pointer: `std::unique_ptr<Plan>`
-holding any of them dispatches `name()`/`calculate()`/etc. virtually and
-destructs safely, since `Plan` has a virtual destructor.
+a negative value for the two unsigned types), so a negative `scalar()` leaf
+throws `std::invalid_argument` — this restriction now lives once, centrally,
+in `Plan::scalar()` itself (see "Plan" above), so it applies uniformly to
+`DefaultPlan` and to all three of these. `DefaultPlan` and all three of
+these — and `Plan` itself — share a common base pointer:
+`std::unique_ptr<Plan>` holding any of them dispatches
+`name()`/`calculate()`/etc. virtually and destructs safely, since `Plan`
+has a virtual destructor (and, being an interface, can't be instantiated
+directly).
 
 ## Building the demo and tests
 
@@ -631,14 +758,19 @@ attaching a `Metrics` to a number to show its conversion counters and the
 `a + b` metrics-inheritance rule, comparing the `carries`/`bit_operations`/
 `scalar_operations`/`bit_iterations` counters a single add-then-multiply
 produces on Sparse, DynamicMatrix, and RowValues directly, and building a
-`Plan` (the confirmed
+`DefaultPlan` (the confirmed
 `3 * (4 + 2)` example, an unbracketed left-associative chain, and
-`number()` correctly capturing a signed operand's sign) and printing it,
-including a `Metrics` shared between a `Plan` and a `SmoothInteger` it
-reads via `number()`, tallying both under the same counters; and, from
+`number()` correctly throwing for a negative signed operand rather than
+silently reading its unsigned magnitude) and printing it, including a
+`Metrics` shared between a `Plan` and a `SmoothInteger` it reads via
+`number()`, tallying both under the same counters; and, from
 `plan_zoo`, `SparsePlan`/`MatrixPlan`/`RowValuesPlan` all computing the
 same expression (each `plan()`-printed under its own `name()`), plus one
-used polymorphically through a `Plan*`.
+used polymorphically through a `Plan*`; and `numberVia()` against the same
+three real `SmoothInteger`s fed into `SparsePlan` and then `RowValuesPlan`,
+showing each one forcing a different real conversion
+(`convert_dynamic_to_sparse` vs. `convert_dynamic_to_row_values`) for the
+exact same numbers, alongside the rest of each run's `Metrics`.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
 suite (no test framework linked in — see `CMakeLists.txt`) covering all of
@@ -661,17 +793,36 @@ still keeps a's metrics), the `carries`/`bit_operations`/
 against each representation directly (a single and a multi-step carry
 chain, an *n*-by-*m* bit-operation count, each representation's own
 notion of a "cell" for `bit_iterations`, and both `scalar_operations`
-sources for RowValues and Scalar), copy/move semantics, and `Plan` (the confirmed
-example, unbracketed left-associative chaining, `number()`'s sign
-correctness, nested `left()`/`right()` groups two levels deep, `plan()`'s
-tree rendering, every usage-error case, and its own `Metrics` support —
-one counter per compiled step, memoized compilation, and propagation to a
-`SmoothNumber` sharing the same `Metrics`), and `plan_zoo` (checked
-generically against all three subclasses: `name()`, that each computes
-`3 * (4 + 2) = 18` via its own representation, that `plan()` labels every
-leaf with that representation's name, that a negative leaf throws, its
-`Metrics` counter name, that the base `Plan`'s `name()` is unaffected, and
-polymorphic dispatch/destruction through a `Plan*`). It builds as a second
+sources for RowValues and Scalar), copy/move semantics, and `DefaultPlan`
+(the confirmed example, unbracketed left-associative chaining, that
+`number()` throws for a negative signed operand instead of silently
+reading its unsigned magnitude — proving `T::value()` really is resolved
+at `T`'s own static type — nested `left()`/`right()` groups two levels
+deep, `plan()`'s tree rendering, every usage-error case including a
+negative `scalar()` leaf, and its own `Metrics` support — one counter per
+compiled step plus `ScalarRepresentation`'s own `scalar_operations`,
+memoized compilation, and propagation to a `SmoothNumber` sharing the same
+`Metrics`), and `plan_zoo` (checked generically against
+`SparsePlan`/`MatrixPlan`/`RowValuesPlan`: `name()`, that each computes
+`3 * (4 + 2) = 18` via its own representation, that `plan()` shows the
+`Ensure` step it forces above each leaf, that a negative leaf throws
+immediately at `scalar()`, its `Metrics` counter name, that `DefaultPlan`'s
+`name()` is unaffected, and polymorphic dispatch/destruction through a
+`Plan*`), `validateBlueprint()` (three deliberately broken `Plan`
+subclasses — one that tampers with a leaf's value, one that swaps in the
+wrong declaration shape, one that produces a malformed `Ensure` node — each
+confirmed to throw, plus a normal, correct `buildBlueprint()` confirmed
+unaffected), and `valueAs()`/`representationAs()`/`numberVia()` (that
+`valueAs()` converts exactly once, not once per call; that `SparsePlan`
+forces each of 3 fed-in numbers through Sparse exactly once via
+`numberVia()`, computing correctly, with the forced clone's own
+`carries`/`bit_operations` correctly landing under the `Plan`'s `Metrics`
+too — not silently lost; that a `scalar()`-only expression, or the
+non-`numberVia()` leaves in one that mixes both kinds, never touch
+`convert_dynamic_to_sparse`; and that
+`DefaultPlan`/`RowValuesPlan`/`MatrixPlan` each force `numberVia()` leaves
+through their own distinct target representation — or, for `MatrixPlan`
+specifically, need no conversion at all). It builds as a second
 executable, `smooth_tests`, runnable directly or via `ctest`.
 
 ## Profiles: measuring the counters
@@ -684,12 +835,17 @@ cmake --build build
 ```
 
 `include/smooth/profiles.hpp` defines a fixed set of named `Profile`s —
-each just a `name` and a `build(Plan&)` function written directly in terms
-of `Plan`'s own builder methods (`scalar()`/`plus()`/`times()`/`left()`/
-`right()`). Because every `Plan` subclass shares that exact interface,
-the same `build()` works unchanged against a `Plan&`, `SparsePlan&`,
-`MatrixPlan&`, or `RowValuesPlan&` — it's the same expression, measured
-identically across every representation.
+each just a `name` and a `run(Plan&) -> double` function written directly
+in terms of `Plan`'s own builder methods
+(`scalar()`/`number()`/`numberVia()`/`plus()`/`times()`/`left()`/
+`right()`/`calculate()`). Because every concrete `Plan` shares that exact
+interface, the same `run()` works unchanged whether the `Plan&` it's given
+is bound to a `DefaultPlan`, `SparsePlan`, `MatrixPlan`, or
+`RowValuesPlan` — it's the same expression, measured identically across
+every representation. `run()` calls `calculate()` itself (rather than
+leaving that to the caller) so a profile that constructs its own
+`SmoothInteger`s for `numberVia()` can keep them alive for exactly as long
+as they're needed, entirely within its own local scope.
 
 The profiles are meant to look like ordinary, everyday arithmetic — sums
 and (price × quantity)-style products, not edge cases (no zeros,
@@ -698,20 +854,32 @@ and `two_number_product` (2 numbers) up through `weighted_basket` and
 `nested_score_totals` (6-8 numbers, mixing both operators and, for
 `nested_score_totals`, two levels of nested `left()`/`right()` groups) to
 `ten_day_totals` (10 numbers, the upper end of "typical" this project is
-using to see how the counters scale).
+using to see how the counters scale). Two more —
+`converted_number_sum` and `converted_price_quantity_plus_shipping` — use
+`numberVia()` against real `SmoothInteger` objects instead of `scalar()`,
+sharing each `Plan`'s `Metrics` (via `setMetricsPtr()`) so that, since
+every `Plan` forces a `numberVia()` leaf through its own real conversion
+(see "Plan" above), each number's own `convert_dynamic_to_<target>`
+counter lands in the same row too — a different one per plan kind.
 
 `src/profile_runner.cpp` (the `smooth_profiles` executable) runs every
 (plan kind, profile) combination — `scalar`/`sparse`/`matrix`/
 `row_values` × every `Profile` — against a SQLite database, skipping any
 combination already present so re-running only does work for newly added
 plan kinds or profiles. Each row records the plan kind, the profile name,
-the computed result, and one column per counter `Plan`-driven work can
+the computed result, and one column per counter a `Plan`-driven run can
 currently produce: `convert_to_scalar`/`convert_to_sparse`/
-`convert_to_matrix`/`convert_to_row_values`, `add`, `multiply`, `carries`,
-`bit_operations`, `scalar_operations`, and `bit_iterations` (the
-per-representation `convert_<X>_to_<Y>` counters — see "Metrics" — can't
-appear here, since `Plan`/`plan_zoo` build a fresh representation per leaf
-directly rather than routing through `SmoothNumberBase::ensure()`).
+`convert_to_matrix`/`convert_to_row_values` (one of these per `Ensure`
+step, incremented while compiling the blueprint), `add`, `multiply`,
+`carries`, `bit_operations`, `scalar_operations`, `bit_iterations` (the
+representation-level counters — see "Metrics"), and
+`convert_dynamic_to_sparse`/`convert_dynamic_to_row_values`/
+`convert_dynamic_to_scalar` (the `SmoothNumberBase`-level
+`convert_<X>_to_<Y>` counters reachable this way: every `numberVia()`
+leaf's `Ensure` step forces its number through `SmoothNumberBase::ensure()`,
+via `representationAs()`, always starting from `Dynamic`, since there's no
+public way to make anything else canonical; `MatrixPlan`'s own target *is*
+`Dynamic`, so `convert_dynamic_to_dynamic` can't exist and isn't a column).
 
 The set of columns is fixed on purpose: **when a counter is added, removed,
 or renamed, delete the database file and let it be recreated from

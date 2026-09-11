@@ -28,15 +28,32 @@ using namespace smooth;
 namespace {
 
 // Every counter a Plan (or plan_zoo Plan) run can currently produce.
-// Plan/plan_zoo never route through SmoothNumberBase::ensure(), so the
-// convert_<representation>_to_<representation> counters (which only fire on
-// a genuine representation conversion) can never appear here -- only
-// convert_to_<name()>, which Plan::compileNode() increments once per leaf.
+// convert_to_<name()> is Plan::compileNode()'s own counter, incremented
+// once per leaf regardless of its source. The
+// convert_<representation>_to_<representation> counters instead belong to
+// a fed-in SmoothNumberBase itself (SmoothNumberBase::ensure()): every Plan
+// now forces a numberVia() leaf through its own target representation (see
+// Plan::convertNumberLeaf()/targetRepresentation() in plan.hpp), and every
+// number's canonical representation always starts out (and, for now,
+// stays) Dynamic -- so convert_dynamic_to_<X> is reachable for every X
+// except Dynamic itself (MatrixPlan's target *is* Dynamic, so ensure()
+// short-circuits with nothing to convert, and convert_dynamic_to_dynamic
+// can never fire).
 const std::vector<std::string>& counterColumns() {
     static const std::vector<std::string> columns = {
-        "convert_to_scalar", "convert_to_sparse", "convert_to_matrix", "convert_to_row_values",
-        "add",               "multiply",          "carries",          "bit_operations",
-        "scalar_operations", "bit_iterations",
+        "convert_to_scalar",
+        "convert_to_sparse",
+        "convert_to_matrix",
+        "convert_to_row_values",
+        "convert_dynamic_to_sparse",
+        "convert_dynamic_to_row_values",
+        "convert_dynamic_to_scalar",
+        "add",
+        "multiply",
+        "carries",
+        "bit_operations",
+        "scalar_operations",
+        "bit_iterations",
     };
     return columns;
 }
@@ -48,7 +65,7 @@ struct PlanKind {
 
 const std::vector<PlanKind>& planKinds() {
     static const std::vector<PlanKind> kinds = {
-        {"scalar", [](std::shared_ptr<Metrics> m) { return std::make_unique<Plan>(std::move(m)); }},
+        {"scalar", [](std::shared_ptr<Metrics> m) { return std::make_unique<DefaultPlan>(std::move(m)); }},
         {"sparse", [](std::shared_ptr<Metrics> m) { return std::make_unique<SparsePlan>(std::move(m)); }},
         {"matrix", [](std::shared_ptr<Metrics> m) { return std::make_unique<MatrixPlan>(std::move(m)); }},
         {"row_values",
@@ -172,8 +189,7 @@ int main(int argc, char** argv) {
             }
             auto metrics = std::make_shared<Metrics>();
             std::unique_ptr<Plan> plan = kind.make(metrics);
-            profile.build(*plan);
-            double result = plan->calculate();
+            double result = profile.run(*plan);
             insertResult(db, kind.name, profile.name, result, *metrics);
             std::cout << "computed " << kind.name << " / " << profile.name << " = " << result << "\n";
             ++computed;

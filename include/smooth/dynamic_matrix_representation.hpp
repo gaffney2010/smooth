@@ -111,6 +111,8 @@ public:
         return std::make_unique<DynamicMatrixRepresentation>(*this);
     }
 
+    void setMetricsPtr(std::shared_ptr<Metrics> metrics) override { metrics_ = std::move(metrics); }
+
     // A bit grid has no more direct way to add a number than walking its
     // bits one at a time and carrying (each set() call growing the array
     // as needed), so this defers to the shared helper (passing metrics_

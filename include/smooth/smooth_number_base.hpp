@@ -158,6 +158,32 @@ public:
         repFor(Representation::Scalar).print(os);
     }
 
+    // Converts to `target` if needed (the same ensure() every print*()
+    // above already does internally, generalized to any representation and
+    // handed back as a value instead of printed), then returns that
+    // representation's value. Lets external code -- e.g. a Plan variant
+    // that wants to force a specific representation and observe the real
+    // conversion, rather than just reading whatever's currently canonical
+    // (see Plan::numberVia()/convertNumberLeaf()) -- request a
+    // representation without needing to know or care which one happens to
+    // already be canonical.
+    double valueAs(Representation target) {
+        ensure(target);
+        return repFor(target).value();
+    }
+
+    // Same idea as valueAs(), but hands back an independent clone of the
+    // representation itself instead of just its value -- so external code
+    // (e.g. Plan::convertNumberLeaf()'s default -- see plan.hpp) can obtain
+    // a specific representation of this number directly, genuinely
+    // converted via ensure(), without ever reading a value out and
+    // re-encoding it from scratch. The clone is independent: mutating it
+    // (e.g. via addInPlace()) never touches this number's own state.
+    std::unique_ptr<RepresentationBase> representationAs(Representation target) {
+        ensure(target);
+        return repFor(target).clone();
+    }
+
     // Sum of 2^i * 3^j over all set bits, computed by whichever
     // representation is canonical (see each representation's value() for
     // its strategy). Uses double, so precision degrades for large

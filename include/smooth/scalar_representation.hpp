@@ -95,6 +95,8 @@ public:
         return std::make_unique<ScalarRepresentation>(*this);
     }
 
+    void setMetricsPtr(std::shared_ptr<Metrics> metrics) override { metrics_ = std::move(metrics); }
+
     // When `other` is also a ScalarRepresentation, this is a direct scalar
     // addition -- no bit decomposition needed on either side. Otherwise,
     // falls back to reading other's bits via forEachSet(); each one must
