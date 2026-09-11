@@ -118,9 +118,10 @@ public:
     // Not part of RepresentationBase -- no other representation stores a
     // whole column's magnitude as a single number to read back -- so this
     // is RowValuesRepresentation-specific, same as columnValue()'s write
-    // counterpart below. TernaryFormCluster (ternary_form_cluster.hpp) is
-    // the one caller: it works directly with each column's magnitude
-    // rather than decomposing it into individual bits.
+    // counterpart below. TernaryFormCluster
+    // (algorithm_cluster_zoo/ternary_form_cluster.hpp) is the one caller:
+    // it works directly with each column's magnitude rather than
+    // decomposing it into individual bits.
     double columnValue(int j) const {
         auto it = values_.find(j);
         return it == values_.end() ? 0.0 : it->second;

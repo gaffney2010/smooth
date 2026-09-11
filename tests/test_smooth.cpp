@@ -12,12 +12,10 @@
 #include <utility>
 #include <vector>
 
-#include "smooth/binary_form_cluster.hpp"
+#include "smooth/algorithm_cluster_zoo.hpp"
 #include "smooth/plan_zoo.hpp"
 #include "smooth/representation_zoo.hpp"
 #include "smooth/smooth.hpp"
-#include "smooth/ternary_form_cluster.hpp"
-#include "smooth/transformation_algorithm_cluster.hpp"
 #include "smooth/transformation_zoo.hpp"
 
 using namespace smooth;
@@ -1808,6 +1806,53 @@ void testMergingSparsePlan() {
 }
 
 // ---------------------------------------------------------------------
+// AlgorithmCluster polymorphism: Plan's Cluster blueprint node
+// (wrapWithCluster()) holds a plain AlgorithmCluster*, not a
+// TransformationAlgorithmCluster* -- so a buildBlueprint() override can
+// splice in *any* concrete cluster, not just MergeCluster. This Plan
+// subclass wraps every leaf in a BinaryFormCluster instead, purely to
+// prove the mechanism doesn't hardcode which cluster kind it expects.
+// ---------------------------------------------------------------------
+class BinaryWrappingPlan : public SparsePlan {
+public:
+    explicit BinaryWrappingPlan(std::shared_ptr<Metrics> metrics = nullptr) : SparsePlan(std::move(metrics)) {}
+    std::string name() const override { return "binary_wrapping"; }
+
+protected:
+    std::unique_ptr<Node> buildBlueprint(const Node& declaration) const override {
+        return wrapEveryLeafWithCluster(SparsePlan::buildBlueprint(declaration));
+    }
+
+private:
+    std::unique_ptr<Node> wrapEveryLeafWithCluster(std::unique_ptr<Node> node) const {
+        if (node->kind == Node::Kind::Ensure) {
+            return wrapWithCluster(std::move(node), cluster_);
+        }
+        if (node->kind == Node::Kind::Add || node->kind == Node::Kind::Multiply) {
+            node->left = wrapEveryLeafWithCluster(std::move(node->left));
+            node->right = wrapEveryLeafWithCluster(std::move(node->right));
+        }
+        return node;
+    }
+
+    BinaryFormCluster cluster_;
+};
+
+void testAlgorithmClusterPolymorphism() {
+    checkNear(BinaryWrappingPlan().scalar(3).times().left().scalar(4).plus().scalar(2).right().calculate(), 18.0,
+              "BinaryWrappingPlan (Cluster wraps every leaf in BinaryFormCluster instead of MergeCluster): "
+              "3 * (4 + 2) = 18");
+
+    BinaryWrappingPlan p;
+    p.scalar(3).times().scalar(4);
+    std::ostringstream out;
+    p.plan(out);
+    check(out.str().find("cluster(binary_form)") != std::string::npos,
+          "Plan's Cluster mechanism accepts any AlgorithmCluster, not just MergeCluster -- the printed tree shows "
+          "cluster(binary_form)");
+}
+
+// ---------------------------------------------------------------------
 // SmoothNumberBase::valueAs()/representationAs() and Plan::numberVia(): the
 // mechanism that lets a Plan-driven computation force an existing number
 // through its own real ensure()-driven conversion into that Plan's own
@@ -1965,6 +2010,7 @@ int main() {
     testPlan();
     testPlanZoo();
     testMergingSparsePlan();
+    testAlgorithmClusterPolymorphism();
     testBlueprintValidation();
     testNumberViaForcesConversion();
 

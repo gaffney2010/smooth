@@ -8,11 +8,11 @@
 #include <utility>
 #include <vector>
 
+#include "smooth/algorithm_cluster.hpp"
 #include "smooth/metrics.hpp"
 #include "smooth/representation_base.hpp"
 #include "smooth/representation_zoo.hpp"
 #include "smooth/smooth_number_base.hpp"
-#include "smooth/transformation_algorithm_cluster.hpp"
 
 namespace smooth {
 
@@ -237,7 +237,7 @@ protected:
         double scalarValue = 0.0;                        // ScalarLeaf
         SmoothNumberBase* numberSource = nullptr;          // NumberLeaf
         SmoothNumberBase::Representation ensureTarget{};    // Ensure
-        const TransformationAlgorithmCluster* cluster = nullptr;  // Cluster
+        const AlgorithmCluster* cluster = nullptr;  // Cluster
         std::unique_ptr<Node> child;                         // Ensure, Cluster: the node being wrapped
         std::unique_ptr<Node> left, right;                    // Add, Multiply
     };
@@ -279,10 +279,13 @@ protected:
     // wrapping this particular operand -- is still decided statically by
     // buildBlueprint(), same as always; only *which cells it actually
     // touches* is inherently data-dependent, discovered at execution time
-    // from the real bits. See plan_zoo/merging_sparse_plan.hpp for the one
-    // strategy that currently uses this.
-    std::unique_ptr<Node> wrapWithCluster(std::unique_ptr<Node> node,
-                                           const TransformationAlgorithmCluster& cluster) const {
+    // from the real bits. `cluster` is any AlgorithmCluster
+    // (algorithm_cluster.hpp) -- a named algorithm_cluster_zoo/ preset, or
+    // a bespoke TransformationAlgorithmCluster -- so a buildBlueprint()
+    // override never has to name which concrete kind it's using; Plan
+    // itself never does either. See plan_zoo/merging_sparse_plan.hpp for
+    // the one strategy that currently uses this.
+    std::unique_ptr<Node> wrapWithCluster(std::unique_ptr<Node> node, const AlgorithmCluster& cluster) const {
         auto wrapped = std::make_unique<Node>();
         wrapped->kind = Node::Kind::Cluster;
         wrapped->cluster = &cluster;
@@ -310,7 +313,7 @@ private:
         std::size_t childStep = 0;                 // Ensure, Cluster
         std::size_t leftStep = 0, rightStep = 0;    // Add, Multiply
         SmoothNumberBase::Representation ensureTarget{};  // Ensure, EnsureNumber
-        const TransformationAlgorithmCluster* cluster = nullptr;  // Cluster
+        const AlgorithmCluster* cluster = nullptr;  // Cluster
     };
 
     static bool isLeaf(const Node& n) { return n.kind == Node::Kind::ScalarLeaf || n.kind == Node::Kind::NumberLeaf; }

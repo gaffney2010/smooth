@@ -4,22 +4,20 @@
 #include <string>
 #include <utility>
 
+#include "smooth/algorithm_cluster_zoo/merge_cluster.hpp"
 #include "smooth/metrics.hpp"
 #include "smooth/plan.hpp"
 #include "smooth/plan_zoo/sparse_plan.hpp"
-#include "smooth/transformation_algorithm_cluster.hpp"
-#include "smooth/transformation_zoo/merge_transformation.hpp"
 
 namespace smooth {
 
 // Same strategy as SparsePlan (every leaf ends up as a SparseRepresentation
 // -- see plan.hpp's wrapLeavesWithEnsure()), but with one addition: before
-// every multiply, both operands are first run through a
-// TransformationAlgorithmCluster containing just MergeTransformation --
-// greedily combining every (i, j)/(i+1, j) pair of set bits it can find
-// into (i, j+1), and repeating (since a merge's own carry can create new
-// merge opportunities -- see TransformationAlgorithmCluster's own class
-// comment), until neither operand has any left.
+// every multiply, both operands are first run through MergeCluster
+// (algorithm_cluster_zoo/merge_cluster.hpp) -- greedily combining every
+// (i, j)/(i+1, j) pair of set bits it can find into (i, j+1), and
+// repeating (since a merge's own carry can create new merge opportunities)
+// until neither operand has any left.
 //
 // Multiplying two SparseRepresentations costs one bit_operation per
 // (termA, termB) pair -- n*m for an n-bit by m-bit multiply (see
@@ -36,8 +34,7 @@ namespace smooth {
 // it actually does, once running, is inherently data-dependent.
 class MergingSparsePlan : public SparsePlan {
 public:
-    explicit MergingSparsePlan(std::shared_ptr<Metrics> metrics = nullptr)
-        : SparsePlan(std::move(metrics)), cluster_({&merge_}, "merge") {}
+    explicit MergingSparsePlan(std::shared_ptr<Metrics> metrics = nullptr) : SparsePlan(std::move(metrics)) {}
 
     std::string name() const override { return "merging_sparse"; }
 
@@ -64,8 +61,7 @@ private:
         return node;
     }
 
-    MergeTransformation merge_;
-    TransformationAlgorithmCluster cluster_;
+    MergeCluster cluster_;
 };
 
 }  // namespace smooth

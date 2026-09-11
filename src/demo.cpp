@@ -2,11 +2,10 @@
 #include <memory>
 #include <sstream>
 
-#include "smooth/binary_form_cluster.hpp"
+#include "smooth/algorithm_cluster_zoo.hpp"
 #include "smooth/plan_zoo.hpp"
 #include "smooth/representation_zoo.hpp"
 #include "smooth/smooth.hpp"
-#include "smooth/ternary_form_cluster.hpp"
 #include "smooth/transformation_zoo.hpp"
 
 int main() {

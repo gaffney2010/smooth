@@ -25,9 +25,10 @@ namespace smooth {
 // on a SmoothNumberBase (get()/set() there correctly invalidate every
 // representation but the canonical one, same as any other set() call) or
 // directly on a bare RepresentationBase (which is what
-// TransformationAlgorithmCluster -- transformation_algorithm_cluster.hpp
-// -- and Plan (plan.hpp) need, since a Plan's blueprint execution works
-// with representations directly, never a SmoothNumberBase).
+// TransformationAlgorithmCluster --
+// algorithm_cluster_zoo/transformation_algorithm_cluster.hpp -- and Plan
+// (plan.hpp) need, since a Plan's blueprint execution works with
+// representations directly, never a SmoothNumberBase).
 //
 // This is deliberately concrete, not an interface: every transformation
 // this library has fits this one shape (clear a fixed set of 1s, carry-set
@@ -67,9 +68,10 @@ public:
     // can only ever remove an opportunity for some other transformation
     // (never create one), so these landings are the *only* cells worth
     // re-examining for new opportunities after this call -- exactly what
-    // TransformationAlgorithmCluster (transformation_algorithm_cluster.hpp)
-    // uses this for, to avoid rescanning an entire representation after
-    // every single application.
+    // TransformationAlgorithmCluster
+    // (algorithm_cluster_zoo/transformation_algorithm_cluster.hpp) uses
+    // this for, to avoid rescanning an entire representation after every
+    // single application.
     template <typename Bits>
     std::vector<std::pair<int, int>> applyAndReportLandings(Bits& n, int i, int j) const {
         for (const auto& offset : inputs_) {

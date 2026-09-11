@@ -3,8 +3,10 @@
 #include <cmath>
 #include <memory>
 #include <stdexcept>
+#include <string>
 
-#include "smooth/binary_form_cluster.hpp"
+#include "smooth/algorithm_cluster.hpp"
+#include "smooth/algorithm_cluster_zoo/binary_form_cluster.hpp"
 #include "smooth/metrics.hpp"
 #include "smooth/representation_base.hpp"
 #include "smooth/representation_zoo/row_values_representation.hpp"
@@ -44,14 +46,23 @@ namespace smooth {
 // express "however many bits borrowing this particular subtraction
 // touches"). RowValuesRepresentation sidesteps the problem entirely by
 // already storing n_j as a single number rather than exploded bits, so
-// run() requires one and throws std::invalid_argument otherwise.
-class TernaryFormCluster {
+// run() requires one and throws std::invalid_argument otherwise. This is
+// also why TernaryFormCluster can't be built on top of
+// TransformationAlgorithmCluster at all (unlike MergeCluster/
+// BinaryFormCluster): its second phase isn't a Transformation, or any
+// family of them, so it holds a BinaryFormCluster for its first phase and
+// implements the second directly.
+class TernaryFormCluster : public AlgorithmCluster {
 public:
+    const std::string& name() const override {
+        static const std::string kName = "ternary_form";
+        return kName;
+    }
+
     // If `metrics` is given, increments "transformations_applied" once per
     // successful subtract-3/add-1 step, same counter name
-    // BinaryFormCluster/MergingSparsePlan's merge cluster use for their own
-    // per-step counts.
-    void run(RepresentationBase& rep, const std::shared_ptr<Metrics>& metrics = nullptr) const {
+    // BinaryFormCluster/MergeCluster use for their own per-step counts.
+    void run(RepresentationBase& rep, const std::shared_ptr<Metrics>& metrics = nullptr) const override {
         auto* rowValues = dynamic_cast<RowValuesRepresentation*>(&rep);
         if (!rowValues) {
             throw std::invalid_argument("TernaryFormCluster::run() requires a RowValuesRepresentation");
