@@ -42,7 +42,7 @@ public:
     // SpreadTransformation's own output shape. Pure Family A (Merge/
     // Split) -- no CornerSplitTransformation needed here, unlike
     // RowSpreadTransformation's atomize() (row_spread_transformation.hpp).
-    std::vector<AtomApplication> atomize(int i, int j) const {
+    std::vector<AtomApplication> atomize(int i, int j) const override {
         std::vector<AtomApplication> atoms;
         atoms.reserve(n_);
         for (int col = j + n_ - 1; col >= j; --col) {

@@ -749,5 +749,49 @@ int main() {
         atomsRep->print(std::cout);
     }
 
+    // --- Atom representation dispatch --------------------------------------
+    // Merge/Split/CornerSplit's own applyAndReportLandings() (called through
+    // a RepresentationBase&, not a SmoothNumberBase) is specialized per
+    // representation (atomic_transformation.hpp): ordinary column
+    // arithmetic against RowValuesRepresentation, an explicit throw against
+    // ScalarRepresentation (which has no independent per-(i, j) structure
+    // to rewrite a handful of cells within), and the same get()/set() logic
+    // as always against anything else.
+    std::cout << "\n--- Atom representation dispatch ---\n";
+    {
+        smooth::RowValuesRepresentation rowValues(/*allow_fractional=*/false);
+        rowValues.setColumnValue(0, 3.0);  // bits 0, 1 -- 3 = 1 + 2
+        smooth::RepresentationBase& rowValuesRef = rowValues;  // the dispatch below needs this exact static type
+        std::cout << "before: n[0] = " << rowValues.columnValue(0) << "\n";
+        smooth::MergeTransformation().applyAndReportLandings(rowValuesRef, 0, 0);
+        std::cout << "after Merge (column arithmetic, not bit-by-bit): n[0] = " << rowValues.columnValue(0)
+                  << ", n[1] = " << rowValues.columnValue(1) << "\n";
+
+        smooth::ScalarRepresentation scalar(/*allow_fractional=*/false);
+        scalar.setColumnValue(0, 3.0);
+        smooth::RepresentationBase& scalarRef = scalar;
+        try {
+            smooth::MergeTransformation().applyAndReportLandings(scalarRef, 0, 0);
+        } catch (const std::invalid_argument& e) {
+            std::cout << "Merge on ScalarRepresentation throws: " << e.what() << "\n";
+        }
+    }
+
+    // --- applyTransformation(..., atomize=true) -----------------------------
+    // The same viaAtoms path from the atomize() demo above, reached through
+    // the ordinary SmoothNumberBase API: applies t via its own atomize()
+    // decomposition instead of directly, so each individual step gets
+    // whichever atom's representation-specific dispatch actually fits.
+    std::cout << "\n--- applyTransformation(..., atomize=true) ---\n";
+    {
+        smooth::SmoothInteger n;
+        n.set(0, 0);
+        n.set(6, 0);
+        std::cout << "before: value = " << n.value() << "\n";
+        n.applyTransformation(smooth::RowSpreadTransformation(6), 0, 0, /*atomize=*/true);
+        std::cout << "after: value = " << n.value() << ", ";
+        n.printSparse();
+    }
+
     return 0;
 }

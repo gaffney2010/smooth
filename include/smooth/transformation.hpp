@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -8,6 +9,21 @@
 #include "smooth/smooth_number_base.hpp"
 
 namespace smooth {
+
+// Forward-declared, not included: AtomicTransformation
+// (atomic_transformation.hpp) is itself an OffsetTransformation, so the
+// dependency can't run the other way too. AtomApplication only ever needs
+// a pointer to one, never its full definition.
+class AtomicTransformation;
+
+// One atom, anchored at a specific (i, j) -- what OffsetTransformation::
+// atomize() (below) returns a sequence of. See atomic_transformation.hpp
+// for what makes something an atom in the first place.
+struct AtomApplication {
+    std::shared_ptr<const AtomicTransformation> atom;
+    int i;
+    int j;
+};
 
 // A Transformation is any distinct unit of work that doesn't change a
 // 3-smooth number's value: check whether it can fire at a given anchor
@@ -84,14 +100,21 @@ public:
 // call, through a `const Transformation&`/`const Transformation*` -- a
 // plain RepresentationBase is all either of them ever has, and all either
 // of them ever needs, since a Plan's blueprint execution works with
-// representations directly, never a SmoothNumberBase. The two
-// non-template overrides just instantiate the template versions with
-// Bits = RepresentationBase -- overload resolution always prefers a
-// non-template exact match over a template instantiation when both are
-// viable, so calling these methods through a concrete OffsetTransformation
-// object directly (as SmoothNumberBase::applyTransformation() does, with
-// Bits = SmoothNumberBase) is completely unaffected; the two versions
-// simply serve two different call sites.
+// representations directly, never a SmoothNumberBase.
+// SmoothNumberBase::applyTransformation() (below) also goes through this
+// same RepresentationBase path now, working directly against whichever
+// representation is currently canonical, rather than through
+// SmoothNumberBase's own get()/set() -- this is what lets a
+// per-representation-specialized atom (AtomicTransformation,
+// atomic_transformation.hpp) actually get its specialized behavior for
+// ordinary n.applyTransformation(t, i, j) calls, not just when called
+// directly against a bare representation. Calling
+// canApply()/applyAndReportLandings() directly on some other duck-typed
+// Bits (including a bare SmoothNumberBase, which isn't a
+// RepresentationBase) still goes through the template instead -- overload
+// resolution always prefers a non-template exact match over a template
+// instantiation when both are viable, so the two versions simply serve
+// different call sites depending on what's actually being passed.
 //
 // This is deliberately concrete, not itself an interface: every
 // fixed-offset transformation this library has fits this one shape
@@ -174,6 +197,45 @@ public:
     const std::vector<std::pair<int, int>>& inputs() const { return inputs_; }
     const std::vector<std::pair<int, int>>& outputs() const { return outputs_; }
 
+    // Decomposes this transformation, anchored at (i, j), into a sequence
+    // of AtomApplications (above) whose combined effect reproduces this
+    // transformation's own -- see atomic_transformation.hpp for what an
+    // atom is, and each transformation_zoo/ preset's own override for its
+    // specific decomposition (an atom's own atomize() is trivial: itself,
+    // one step). Not every OffsetTransformation has one -- the base
+    // implementation here throws -- since a one-off custom
+    // OffsetTransformation built directly from its own offset lists has no
+    // way to know its own decomposition, if any exists at all.
+    virtual std::vector<AtomApplication> atomize(int i, int j) const {
+        throw std::invalid_argument("OffsetTransformation::atomize(): no decomposition defined for this transformation");
+    }
+
+    // Same as apply()/applyAndReportLandings() above, but when `viaAtoms`
+    // is true, first decomposes via atomize() and applies the resulting
+    // atoms in sequence instead of this transformation's own input-clear/
+    // output-carry-set logic directly. Since every atom is an
+    // AtomicTransformation -- whose own canApply()/applyAndReportLandings()
+    // are specialized per representation (atomic_transformation.hpp) --
+    // this is the hook for hyper-optimizing a composite transformation
+    // later: swap in a faster atomize() or faster atoms, and every caller
+    // that opts in via viaAtoms=true gets it for free, with no change to
+    // canApply() or this transformation's own direct (non-atomized) path.
+    // Only meaningful against a RepresentationBase (each atom's own
+    // per-representation dispatch needs a concrete one to inspect), unlike
+    // the templated Bits-based apply()/applyAndReportLandings() above.
+    //
+    // Declared here but defined in atomic_transformation.hpp, once
+    // AtomicTransformation is fully known -- same reasoning as
+    // AtomApplication's forward declaration above, and
+    // SmoothNumberBase::applyTransformation()'s own declared-here/
+    // defined-later split (smooth_number_base.hpp / below).
+    std::vector<std::pair<int, int>> applyAndReportLandings(RepresentationBase& rep, int i, int j,
+                                                             bool viaAtoms) const;
+
+    void apply(RepresentationBase& rep, int i, int j, bool viaAtoms) const {
+        applyAndReportLandings(rep, i, j, viaAtoms);
+    }
+
 private:
     // Sets (i, j) to 1, ripple-carrying up the row axis within column j
     // whenever a cell is already occupied -- moving a second 1 into an
@@ -196,12 +258,14 @@ private:
     std::vector<std::pair<int, int>> outputs_;
 };
 
-inline void SmoothNumberBase::applyTransformation(const OffsetTransformation& t, int i, int j) {
-    if (!t.canApply(*this, i, j)) {
+inline void SmoothNumberBase::applyTransformation(const OffsetTransformation& t, int i, int j, bool atomize) {
+    RepresentationBase& rep = repFor(canonical_);
+    if (!t.canApply(rep, i, j)) {
         throw std::invalid_argument(
             "SmoothNumberBase::applyTransformation: the transformation cannot be applied at that (i, j)");
     }
-    t.apply(*this, i, j);
+    t.apply(rep, i, j, atomize);
+    invalidateAllExcept(canonical_);
 }
 
 }  // namespace smooth

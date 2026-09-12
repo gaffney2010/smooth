@@ -141,10 +141,18 @@ public:
 
     // Checks that `t` can be applied at (i, j) (see OffsetTransformation, in
     // transformation.hpp) and, if so, applies it; throws
-    // std::invalid_argument otherwise. Defined out-of-line in
-    // transformation.hpp, once OffsetTransformation itself is fully defined
-    // -- see the forward-declaration comment above.
-    void applyTransformation(const OffsetTransformation& t, int i, int j);
+    // std::invalid_argument otherwise. Works directly against whichever
+    // representation is currently canonical (rather than through this
+    // class's own get()/set()), so a per-representation-specialized
+    // Transformation -- an atom, see atomic_transformation.hpp -- actually
+    // gets its specialized behavior, not the generic bit-by-bit one; the
+    // other representations are invalidated once afterward instead of per
+    // bit. When `atomize` is true, applies `t` via its own atomize()
+    // decomposition instead of directly (see OffsetTransformation::
+    // applyAndReportLandings()'s own `viaAtoms` overload). Defined
+    // out-of-line in transformation.hpp, once OffsetTransformation itself
+    // is fully defined -- see the forward-declaration comment above.
+    void applyTransformation(const OffsetTransformation& t, int i, int j, bool atomize = false);
 
     // Converts to Sparse if needed, then prints it.
     void printSparse(std::ostream& os = std::cout) {

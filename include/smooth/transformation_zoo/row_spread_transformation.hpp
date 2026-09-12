@@ -57,7 +57,7 @@ public:
     // (Python simulation, n up to 25, random anchors) before writing this
     // -- see the loop below, which is this recursion unrolled: it costs
     // 4n - 5 atoms for n >= 2 (1 for n = 1), linear in n.
-    std::vector<AtomApplication> atomize(int i, int j) const {
+    std::vector<AtomApplication> atomize(int i, int j) const override {
         auto cornerSplit = [] { return std::make_shared<CornerSplitTransformation>(); };
         auto merge = [] { return std::make_shared<MergeTransformation>(); };
 

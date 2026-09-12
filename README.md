@@ -428,10 +428,17 @@ just a `RepresentationBase`:
   offset, then carry-sets every output offset, in order. Precondition:
   `canApply(n, i, j)`.
 
-`SmoothNumberBase::applyTransformation(const OffsetTransformation& t, int i, int j)`
+`SmoothNumberBase::applyTransformation(const OffsetTransformation& t, int i, int j, bool atomize = false)`
 is the usual way to use one directly on a number: it calls `canApply()`
-first, throwing `std::invalid_argument` if it doesn't hold, then
-`apply()`.
+first, throwing `std::invalid_argument` if it doesn't hold, then `apply()`
+— against whichever representation is currently canonical directly (not
+through this class's own templated `get()`/`set()` above), invalidating
+the others once afterward instead of per bit. This is what lets a
+per-representation-specialized atom (see "Per-representation atom
+dispatch" below) actually reach its specialized behavior through this
+ordinary, everyday call. `atomize` (default `false`) is threaded straight
+through to `apply()`'s own `viaAtoms` parameter — see "Applying a
+transformation via its atoms" below.
 
 `OffsetTransformation` is deliberately **concrete, not itself an
 interface** — every fixed-offset transformation this library has fits
@@ -595,6 +602,102 @@ transformation directly, and applying its `atomize()`d sequence instead —
 to two copies of the same starting representation — must land on *exactly*
 the same set bits, carries and all. `tests/test_smooth.cpp`'s
 `checkAtomizeMatches()` verifies exactly this for every preset above.
+
+### Per-representation atom dispatch
+
+```cpp
+smooth::RowValuesRepresentation rep(/*allow_fractional=*/false);
+rep.setColumnValue(0, 3.0);  // bits 0, 1 -- 3 = 1 + 2
+smooth::RepresentationBase& base = rep;  // the dispatch below needs this exact static type
+
+smooth::MergeTransformation().applyAndReportLandings(base, 0, 0);
+rep.columnValue(0);  // 0.0
+rep.columnValue(1);  // 1.0
+
+smooth::ScalarRepresentation scalar(/*allow_fractional=*/false);
+scalar.setColumnValue(0, 3.0);
+smooth::RepresentationBase& scalarBase = scalar;
+smooth::MergeTransformation().applyAndReportLandings(scalarBase, 0, 0);  // throws std::invalid_argument
+```
+
+An atom's `canApply()`/`applyAndReportLandings()` (`AtomicTransformation`,
+`include/smooth/atomic_transformation.hpp`) are specialized per
+representation, rather than going through the generic get()/set() bit-grid
+logic every other `OffsetTransformation` uses for everything:
+
+- Against a `RowValuesRepresentation`, applying an atom is ordinary
+  arithmetic on the affected column(s)' own magnitude — add or subtract
+  the net delta directly via `addToColumnValue()`, the same way
+  `TernaryCarryTransformation` already works — rather than clearing and
+  carry-setting bit by bit through `get()`/`set()`, which for RowValues
+  would mean repeatedly decoding and re-encoding the very same column's
+  number. Each atom has its own deltas: `MergeTransformation` subtracts
+  `3 * 2^i` from column `j` and adds `2^i` to column `j+1`;
+  `SplitTransformation` is the reverse; `CornerSplitTransformation` (which
+  touches two columns at once) subtracts `2^(i-1)` from column `j` and adds
+  `3 * 2^(i-1)` to column `j-1`.
+- Against a `ScalarRepresentation`, atoms don't apply at all — it holds the
+  whole number as one plain value with no independent per-`(i, j)`
+  structure to rewrite a handful of cells within — so both `canApply()` and
+  `applyAndReportLandings()` throw `std::invalid_argument` unconditionally.
+- Against anything else (Sparse, Dynamic, or some future representation),
+  the ordinary get()/set() bit-grid logic is exactly right, so both fall
+  back to it, unchanged from before this dispatch existed.
+
+`canApply()` itself isn't specialized per representation beyond the
+`ScalarRepresentation` check — `get()` is already exactly as cheap for
+RowValues as for any other representation (a single decode), so there's
+nothing to gain by special-casing it; only `applyAndReportLandings()`
+benefits from skipping the bit-by-bit dance.
+
+This dispatch only fires when an atom is called through an actual
+`RepresentationBase&` — a plain reference or pointer to that base class,
+the way `TransformationReduction`/`StaircaseReduction`/
+`TernaryFormReduction` and `SmoothNumberBase::applyTransformation()` (below)
+all already call things. Calling an atom's `canApply()`/
+`applyAndReportLandings()` directly on a *concrete* representation
+variable, or on a `SmoothNumberBase` (as ordinary `applyTransformation()`
+calls elsewhere in this library do), instead resolves to the inherited,
+generic `Bits`-templated overload (see `OffsetTransformation` above) —
+unaffected by any of this, and exactly why every existing atom usage
+throughout this library still behaves exactly as it did before this
+dispatch was added.
+
+### Applying a transformation via its atoms
+
+```cpp
+smooth::RowSpreadTransformation rowSpread(6);
+
+smooth::SmoothInteger n;
+n.set(0, 0);
+n.set(6, 0);
+n.applyTransformation(rowSpread, 0, 0, /*atomize=*/true);
+```
+
+`OffsetTransformation::applyAndReportLandings(RepresentationBase& rep, int i, int j, bool viaAtoms)`
+(and the matching `apply()` overload) is the same as the three-argument
+version above, except that when `viaAtoms` is `true`, it first decomposes
+`*this` via `atomize()` and applies each resulting atom in sequence,
+instead of running this transformation's own input-clear/output-carry-set
+logic directly. Since every atom's own `applyAndReportLandings()` is
+specialized per representation (above), this is the hook for
+hyper-optimizing a composite transformation later: swap in a faster
+`atomize()`, or faster atoms, and every caller that opts in via
+`viaAtoms=true` gets it for free, with no change to `canApply()` or to
+this transformation's own direct (non-atomized) path. It's only meaningful
+against a `RepresentationBase` — each atom's own per-representation
+dispatch needs a concrete one to inspect — unlike the templated
+`Bits`-based `apply()`/`applyAndReportLandings()` this library has always
+had.
+
+`SmoothNumberBase::applyTransformation()` takes the same `atomize` flag
+(defaulting to `false`), and — as part of this same rework — now applies
+`t` directly against whichever representation is currently canonical
+(rather than through this class's own `get()`/`set()`), invalidating the
+others once afterward instead of per bit. This is what lets a
+per-representation-specialized atom actually reach its specialized
+behavior through the ordinary, everyday `n.applyTransformation(t, i, j)`
+call — not just when called directly against a bare representation.
 
 ## Reduction
 
@@ -1483,10 +1586,15 @@ gets for 9, via column magnitudes directly instead of
 `RowSpreadTransformation`; and `StaircaseReduction` combining two bits — `(1, 1)` and
 `(4, 5)`, a genuine diagonal pair — into the five-bit antichain
 `{(1,6), (2,5), (3,4), (4,3), (7,1)}` over 13 steps, with a `Metrics`
-attached to show the count; and `RowSpreadTransformation(6).atomize(0, 0)`
+attached to show the count; `RowSpreadTransformation(6).atomize(0, 0)`
 printed out atom-by-atom (`CornerSplit`/`Merge`, each with its own anchor),
 then applied both directly and via that atomized sequence to confirm they
-land on exactly the same representation.
+land on exactly the same representation; `MergeTransformation` applied to a
+`RowValuesRepresentation` through an explicit `RepresentationBase&` to show
+its column-arithmetic dispatch (`n[0]`/`n[1]` before and after), and the
+same call against a `ScalarRepresentation` throwing; and
+`n.applyTransformation(rowSpread, 0, 0, /*atomize=*/true)` reaching the
+same result as applying `rowSpread` directly.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
 suite (no test framework linked in — see `CMakeLists.txt`) covering all of
@@ -1589,8 +1697,19 @@ copies of the same starting representation and confirming they land on
 exactly the same set bits, not just the same value — checked across every
 preset above plus a case with unrelated background bits present, to rule
 out `atomize()` implicitly assuming an otherwise-empty grid; and that every
-atomized step is actually `canApply()`-valid when its turn comes), and
-`DefaultPlan`
+atomized step is actually `canApply()`-valid when its turn comes), atom
+representation dispatch (each of `MergeTransformation`/`SplitTransformation`/
+`CornerSplitTransformation`'s `canApply()`/`applyAndReportLandings()`
+checked directly against a `RowValuesRepresentation` — via an explicit
+`RepresentationBase&`, the only way the dispatch actually fires — including
+a carry case confirming RowValues just adds the delta with no explicit
+carry chase; all three throwing `std::invalid_argument` against a
+`ScalarRepresentation`; that Sparse is unaffected; `RowSpreadTransformation`
+applied directly vs. via `applyAndReportLandings(..., viaAtoms=true)`
+matching exactly on both Sparse and RowValues; `SmoothNumberBase::
+applyTransformation(..., atomize=true)` end to end, including that it still
+throws when `canApply()` is false; and that a plain `OffsetTransformation`
+with no `atomize()` override throws), and `DefaultPlan`
 (the confirmed example, unbracketed left-associative chaining, that
 `number()` throws for a negative signed operand instead of silently
 reading its unsigned magnitude — proving `T::value()` really is resolved

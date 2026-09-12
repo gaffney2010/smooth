@@ -1115,6 +1115,187 @@ void testAtomize() {
 }
 
 // ---------------------------------------------------------------------
+// Atoms' per-representation dispatch (atomic_transformation.hpp): against
+// RowValuesRepresentation, ordinary column-magnitude arithmetic instead of
+// bit-by-bit get()/set(); against ScalarRepresentation, an explicit throw;
+// against anything else, the same generic get()/set() logic as before.
+// Plus OffsetTransformation's own `viaAtoms` apply path (transformation.hpp),
+// which routes a composite transformation's application through its own
+// atomize() instead of its direct input-clear/output-carry-set logic.
+//
+// Every check below goes through an explicit RepresentationBase& (rather
+// than calling straight through a concrete representation's own type) --
+// that's what actually triggers the specialized dispatch. Calling an
+// atom's canApply()/applyAndReportLandings() directly on a concrete
+// representation variable (or a SmoothNumberBase, as ordinary
+// applyTransformation() calls throughout this file do) instead resolves to
+// the inherited, generic Bits-templated overload -- unaffected by any of
+// this, which is exactly why every existing atom test above still passes
+// unchanged.
+// ---------------------------------------------------------------------
+void testAtomRepresentationDispatch() {
+    // MergeTransformation against RowValuesRepresentation: ordinary
+    // arithmetic (subtract 3*2^i from column j, add 2^i to column j+1),
+    // not bit-by-bit carry-chasing.
+    {
+        RowValuesRepresentation concrete(/*allow_fractional=*/true);
+        concrete.setColumnValue(0, 3.0);  // bits 0, 1
+        RepresentationBase& rep = concrete;
+        MergeTransformation merge;
+        check(merge.canApply(rep, 0, 0), "MergeTransformation::canApply() on RowValues: bits 0,1 both set");
+        auto landings = merge.applyAndReportLandings(rep, 0, 0);
+        checkNear(rep.value(), 3.0, "MergeTransformation on RowValues preserves value(): still 3");
+        check(concrete.columnValue(0) == 0.0 && concrete.columnValue(1) == 1.0,
+              "MergeTransformation on RowValues: column 0 drains to 0, column 1 gets 1");
+        check(landings.size() == 1 && landings[0] == std::make_pair(0, 1),
+              "MergeTransformation on RowValues reports landing (0, 1)");
+    }
+    // Same, but column 1 already has something in it -- RowValues just
+    // adds the delta directly; no explicit carry loop is needed the way
+    // the generic bit-grid path's carrySet() requires.
+    {
+        RowValuesRepresentation concrete(/*allow_fractional=*/true);
+        concrete.setColumnValue(0, 3.0);  // bits 0, 1
+        concrete.setColumnValue(1, 1.0);  // bit 0
+        RepresentationBase& rep = concrete;
+        MergeTransformation().applyAndReportLandings(rep, 0, 0);
+        checkNear(rep.value(), 6.0, "MergeTransformation on RowValues with an occupied target preserves value(): 6");
+        check(concrete.columnValue(0) == 0.0 && concrete.columnValue(1) == 2.0,
+              "MergeTransformation on RowValues: column 1's existing 1 plus the new 1 is just 2, no carry chase");
+    }
+
+    // SplitTransformation against RowValuesRepresentation: the reverse
+    // arithmetic.
+    {
+        RowValuesRepresentation concrete(/*allow_fractional=*/true);
+        concrete.setColumnValue(1, 1.0);  // bit 0 of column 1 -- represents 3
+        RepresentationBase& rep = concrete;
+        SplitTransformation split;
+        check(split.canApply(rep, 0, 0), "SplitTransformation::canApply() on RowValues: bit 0 of column 1 set");
+        auto landings = split.applyAndReportLandings(rep, 0, 0);
+        checkNear(rep.value(), 3.0, "SplitTransformation on RowValues preserves value(): still 3");
+        check(concrete.columnValue(0) == 3.0 && concrete.columnValue(1) == 0.0,
+              "SplitTransformation on RowValues: column 1 drains, column 0 gets 3");
+        check(landings.size() == 2, "SplitTransformation on RowValues reports 2 landings");
+    }
+
+    // CornerSplitTransformation against RowValuesRepresentation: touches
+    // two columns at once (j and j-1).
+    {
+        RowValuesRepresentation concrete(/*allow_fractional=*/true);
+        concrete.setColumnValue(1, 2.0);  // bit 1 of column 1 -- represents 6
+        RepresentationBase& rep = concrete;
+        CornerSplitTransformation corner;
+        check(corner.canApply(rep, 1, 1), "CornerSplitTransformation::canApply() on RowValues");
+        auto landings = corner.applyAndReportLandings(rep, 1, 1);
+        checkNear(rep.value(), 6.0, "CornerSplitTransformation on RowValues preserves value(): still 6");
+        check(concrete.columnValue(1) == 1.0 && concrete.columnValue(0) == 3.0,
+              "CornerSplitTransformation on RowValues: column 1 left with 1, column 0 gets 3");
+        check(landings.size() == 3, "CornerSplitTransformation on RowValues reports 3 landings");
+    }
+
+    // All three atoms fail explicitly against ScalarRepresentation -- it
+    // has no independent per-(i, j) structure to rewrite a handful of
+    // cells within.
+    {
+        ScalarRepresentation concrete(/*allow_fractional=*/true);
+        concrete.setColumnValue(0, 3.0);
+        RepresentationBase& rep = concrete;
+        checkThrows([&] { MergeTransformation().canApply(rep, 0, 0); },
+                    "MergeTransformation::canApply() throws for ScalarRepresentation");
+        checkThrows([&] { MergeTransformation().applyAndReportLandings(rep, 0, 0); },
+                    "MergeTransformation::applyAndReportLandings() throws for ScalarRepresentation");
+        checkThrows([&] { SplitTransformation().canApply(rep, 1, 0); },
+                    "SplitTransformation::canApply() throws for ScalarRepresentation");
+        checkThrows([&] { CornerSplitTransformation().canApply(rep, 0, 0); },
+                    "CornerSplitTransformation::canApply() throws for ScalarRepresentation");
+    }
+
+    // Sparse (and, by the same generic fallback, Dynamic) is unaffected --
+    // still the same get()/set() logic as before the rework.
+    {
+        SparseRepresentation concrete(/*allow_fractional=*/true);
+        concrete.set(2, 0, true);
+        concrete.set(3, 0, true);
+        RepresentationBase& rep = concrete;
+        MergeTransformation merge;
+        check(merge.canApply(rep, 2, 0), "MergeTransformation::canApply() on Sparse is unaffected");
+        merge.applyAndReportLandings(rep, 2, 0);
+        check(rep.get(2, 1) && !rep.get(2, 0) && !rep.get(3, 0), "MergeTransformation on Sparse still works as before");
+    }
+
+    // OffsetTransformation's `viaAtoms` apply path: RowSpreadTransformation
+    // applied directly vs. applied via atomize() land on exactly the same
+    // representation, both on Sparse and on RowValues (where every step
+    // along the way goes through the RowValues arithmetic path above).
+    {
+        SmoothFloat direct;
+        direct.set(0, 0);
+        direct.set(6, 0);
+        auto directRep = direct.representationAs(SmoothFloat::Representation::Sparse);
+        RowSpreadTransformation rowSpread(6);
+        rowSpread.applyAndReportLandings(*directRep, 0, 0);
+
+        SmoothFloat viaAtoms;
+        viaAtoms.set(0, 0);
+        viaAtoms.set(6, 0);
+        auto atomsRep = viaAtoms.representationAs(SmoothFloat::Representation::Sparse);
+        rowSpread.applyAndReportLandings(*atomsRep, 0, 0, /*viaAtoms=*/true);
+
+        bool same = true;
+        directRep->forEachSet([&](int a, int b) { same = same && atomsRep->get(a, b); });
+        atomsRep->forEachSet([&](int a, int b) { same = same && directRep->get(a, b); });
+        check(same, "RowSpreadTransformation applied directly vs. viaAtoms=true match on Sparse");
+    }
+    {
+        RowValuesRepresentation directConcrete(/*allow_fractional=*/false);
+        directConcrete.set(0, 0, true);
+        directConcrete.set(6, 0, true);
+        RowSpreadTransformation rowSpread(6);
+        rowSpread.applyAndReportLandings(static_cast<RepresentationBase&>(directConcrete), 0, 0);
+
+        RowValuesRepresentation atomsConcrete(/*allow_fractional=*/false);
+        atomsConcrete.set(0, 0, true);
+        atomsConcrete.set(6, 0, true);
+        rowSpread.applyAndReportLandings(static_cast<RepresentationBase&>(atomsConcrete), 0, 0, /*viaAtoms=*/true);
+
+        checkNear(directConcrete.value(), 65.0, "sanity: 2^0 + 2^6 = 65");
+        checkNear(atomsConcrete.value(), 65.0, "RowSpreadTransformation viaAtoms=true on RowValues preserves value");
+        bool same = true;
+        for (int col = -1; col <= 7; ++col) {
+            if (directConcrete.columnValue(col) != atomsConcrete.columnValue(col)) same = false;
+        }
+        check(same, "RowSpreadTransformation direct vs. viaAtoms=true match column-by-column on RowValues");
+    }
+
+    // SmoothNumberBase::applyTransformation(t, i, j, atomize) end to end:
+    // works via the atomized path, still preserves value, still throws
+    // when canApply() is false regardless of the atomize flag.
+    {
+        SmoothInteger n;
+        n.set(0, 0);
+        n.set(6, 0);
+        RowSpreadTransformation rowSpread(6);
+        n.applyTransformation(rowSpread, 0, 0, /*atomize=*/true);
+        checkNear(n.value(), 65.0, "applyTransformation(..., atomize=true) preserves value(): still 65");
+        check(n.get(0, 1) && n.get(1, 0) && n.get(2, 0) && n.get(3, 0) && n.get(4, 0) && n.get(5, 0),
+              "applyTransformation(..., atomize=true) produces the same bit layout as applying directly");
+
+        SmoothInteger m;
+        checkThrows([&] { m.applyTransformation(MergeTransformation(), 0, 0, /*atomize=*/true); },
+                    "applyTransformation(..., atomize=true) still throws when canApply() is false");
+    }
+
+    // A plain OffsetTransformation with no atomize() override has no
+    // decomposition to fall back on.
+    {
+        OffsetTransformation custom({{0, 0}, {1, 0}, {0, 1}}, {{1, 1}});
+        checkThrows([&] { custom.atomize(0, 0); },
+                    "a plain OffsetTransformation's default atomize() throws std::invalid_argument");
+    }
+}
+
+// ---------------------------------------------------------------------
 // TransformationReduction: greedily applies a family of
 // Transformations across an entire representation until none of them can
 // fire anywhere anymore, using a worklist seeded from the representation's
@@ -2492,6 +2673,7 @@ int main() {
     testCopyAndMoveSemantics();
     testTransformation();
     testAtomize();
+    testAtomRepresentationDispatch();
     testTransformationReduction();
     testBinaryFormReduction();
     testTernaryCarryTransformation();
