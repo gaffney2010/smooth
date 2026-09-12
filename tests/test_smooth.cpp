@@ -68,6 +68,35 @@ void checkTransformationPreservesValue(const OffsetTransformation& t, const std:
               name + ": summing 2^i*3^j over its inputs and outputs gives the same value at (i, j) = (0, 0)");
 }
 
+// Applies `t` directly (anchored at (i, j)) to one copy of `start`, and
+// applies t.atomize(i, j) -- each atom in sequence, checking canApply()
+// along the way -- to a second copy, then checks the two end up with
+// exactly the same set bits. This is atomize()'s own correctness
+// criterion: not just "preserves value" (every atom already guarantees
+// that on its own) but "reproduces the very same representation",
+// carries and all.
+template <typename Transform>
+void checkAtomizeMatches(const Transform& t, int i, int j, const SmoothFloat& start, const std::string& name) {
+    SmoothFloat direct = start;
+    SmoothFloat viaAtoms = start;
+
+    auto directRep = direct.representationAs(SmoothFloat::Representation::Sparse);
+    t.applyAndReportLandings(*directRep, i, j);
+
+    auto atoms = t.atomize(i, j);
+    auto atomsRep = viaAtoms.representationAs(SmoothFloat::Representation::Sparse);
+    for (const auto& app : atoms) {
+        check(app.atom->canApply(*atomsRep, app.i, app.j),
+              name + ": each atomized step is applicable when its turn comes");
+        app.atom->applyAndReportLandings(*atomsRep, app.i, app.j);
+    }
+
+    bool sameBits = true;
+    directRep->forEachSet([&](int a, int b) { sameBits = sameBits && atomsRep->get(a, b); });
+    atomsRep->forEachSet([&](int a, int b) { sameBits = sameBits && directRep->get(a, b); });
+    check(sameBits, name + ": atomize() reproduces the exact same representation as applying it directly");
+}
+
 // Reads a single named counter's current value out of a Metrics, without
 // depending on where it falls among the other counters' lines. Missing
 // counters (nothing incremented it yet) read as 0, same as Metrics itself
@@ -987,6 +1016,101 @@ void testTransformation() {
         checkTransformationPreservesValue(RowSpreadTransformation(1), "RowSpreadTransformation(1)");
         checkTransformationPreservesValue(RowSpreadTransformation(2), "RowSpreadTransformation(2)");
         checkTransformationPreservesValue(RowSpreadTransformation(5), "RowSpreadTransformation(5)");
+    }
+}
+
+// ---------------------------------------------------------------------
+// atomize(): every OffsetTransformation in transformation_zoo/ expressed
+// as a sequence of AtomApplications (atomic_transformation.hpp) -- each
+// one a MergeTransformation, SplitTransformation, or
+// CornerSplitTransformation anchored somewhere. Merge/Split/CornerSplit
+// are themselves atoms, so their own atomize() is trivial (a single
+// AtomApplication, themselves); SpreadTransformation(n) and
+// RowSpreadTransformation(n) are the genuine compositions.
+// ---------------------------------------------------------------------
+void testAtomize() {
+    // The three atoms: atomize() is just themselves, one step.
+    {
+        MergeTransformation merge;
+        auto atoms = merge.atomize(3, 2);
+        check(atoms.size() == 1, "MergeTransformation::atomize() returns exactly one atom");
+        check(atoms[0].i == 3 && atoms[0].j == 2, "MergeTransformation::atomize() keeps the same anchor");
+        SmoothFloat n;
+        n.set(3, 2);
+        n.set(4, 2);
+        checkAtomizeMatches(merge, 3, 2, n, "MergeTransformation");
+    }
+    {
+        SplitTransformation split;
+        auto atoms = split.atomize(3, 2);
+        check(atoms.size() == 1, "SplitTransformation::atomize() returns exactly one atom");
+        SmoothFloat n;
+        n.set(3, 3);
+        checkAtomizeMatches(split, 3, 2, n, "SplitTransformation");
+    }
+    {
+        CornerSplitTransformation corner;
+        auto atoms = corner.atomize(5, 5);
+        check(atoms.size() == 1, "CornerSplitTransformation::atomize() returns exactly one atom");
+        SmoothFloat n;
+        n.set(5, 5);
+        checkAtomizeMatches(corner, 5, 5, n, "CornerSplitTransformation");
+    }
+
+    // SpreadTransformation(n): n sequential Splits, pure Family A -- no
+    // CornerSplitTransformation needed.
+    for (int n = 1; n <= 8; ++n) {
+        SpreadTransformation spread(n);
+        auto atoms = spread.atomize(2, 1);
+        check(static_cast<int>(atoms.size()) == n,
+              "SpreadTransformation(" + std::to_string(n) + ")::atomize() returns exactly n atoms");
+        bool allSplits = true;
+        for (const auto& app : atoms) {
+            if (!std::dynamic_pointer_cast<const SplitTransformation>(app.atom)) allSplits = false;
+        }
+        check(allSplits, "SpreadTransformation(" + std::to_string(n) + ")::atomize() uses only SplitTransformation");
+
+        SmoothFloat rep;
+        rep.set(2, 1);
+        rep.set(2, 1 + n);
+        checkAtomizeMatches(spread, 2, 1, rep, "SpreadTransformation(" + std::to_string(n) + ")");
+    }
+
+    // RowSpreadTransformation(n): the hard case -- requires
+    // CornerSplitTransformation, since it isn't reachable via Merge/Split
+    // alone (see the class comment). Costs 4n - 5 atoms for n >= 2 (1 for
+    // n = 1), a closed form verified computationally before writing it.
+    {
+        RowSpreadTransformation rowSpread1(1);
+        auto atoms = rowSpread1.atomize(0, 0);
+        check(atoms.size() == 1, "RowSpreadTransformation(1)::atomize() returns exactly one atom");
+        check(std::dynamic_pointer_cast<const MergeTransformation>(atoms[0].atom) != nullptr,
+              "RowSpreadTransformation(1)::atomize() is exactly a MergeTransformation");
+    }
+    for (int n = 1; n <= 20; ++n) {
+        RowSpreadTransformation rowSpread(n);
+        auto atoms = rowSpread.atomize(-2, 3);
+        int expectedCount = (n == 1) ? 1 : 4 * n - 5;
+        check(static_cast<int>(atoms.size()) == expectedCount,
+              "RowSpreadTransformation(" + std::to_string(n) + ")::atomize() returns exactly " +
+                  std::to_string(expectedCount) + " atoms");
+
+        SmoothFloat rep;
+        rep.set(-2, 3);
+        rep.set(-2 + n, 3);
+        checkAtomizeMatches(rowSpread, -2, 3, rep, "RowSpreadTransformation(" + std::to_string(n) + ")");
+    }
+
+    // Same check with an unrelated background present, so atomize() isn't
+    // implicitly assuming an otherwise-empty grid.
+    {
+        RowSpreadTransformation rowSpread(7);
+        SmoothFloat rep;
+        rep.set(0, 0);
+        rep.set(7, 0);
+        rep.set(20, 20);
+        rep.set(-20, -20);
+        checkAtomizeMatches(rowSpread, 0, 0, rep, "RowSpreadTransformation(7) with unrelated background bits");
     }
 }
 
@@ -2349,6 +2473,7 @@ int main() {
     testMultiplication();
     testCopyAndMoveSemantics();
     testTransformation();
+    testAtomize();
     testTransformationReduction();
     testBinaryFormReduction();
     testTernaryCarryTransformation();

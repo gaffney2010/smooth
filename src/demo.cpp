@@ -712,5 +712,42 @@ int main() {
     staircaseRep->print(std::cout);
     std::cout << "reached in " << staircaseMetrics->get("transformations_applied") << " steps\n";
 
+    // --- atomize() --------------------------------------------------------
+    // Every OffsetTransformation in transformation_zoo/ expressed as a
+    // sequence of AtomApplications -- MergeTransformation, SplitTransformation,
+    // and CornerSplitTransformation are this library's two independent
+    // generating families ("atoms"; atomic_transformation.hpp), so every
+    // other named transformation can be written as some composition of them.
+    std::cout << "\n--- atomize() ---\n";
+    {
+        smooth::RowSpreadTransformation rowSpread6(6);
+        auto atoms = rowSpread6.atomize(0, 0);
+        std::cout << "RowSpreadTransformation(6).atomize(0, 0) -> " << atoms.size() << " atoms:\n";
+        for (const auto& app : atoms) {
+            const char* kind = std::dynamic_pointer_cast<const smooth::CornerSplitTransformation>(app.atom)
+                                   ? "CornerSplit"
+                                   : "Merge";
+            std::cout << "  " << kind << "(" << app.i << ", " << app.j << ")\n";
+        }
+
+        smooth::SmoothFloat direct;
+        direct.set(0, 0);
+        direct.set(6, 0);
+        auto directRep = direct.representationAs(smooth::SmoothFloat::Representation::Sparse);
+        rowSpread6.applyAndReportLandings(*directRep, 0, 0);
+
+        smooth::SmoothFloat viaAtoms;
+        viaAtoms.set(0, 0);
+        viaAtoms.set(6, 0);
+        auto atomsRep = viaAtoms.representationAs(smooth::SmoothFloat::Representation::Sparse);
+        for (const auto& app : atoms) {
+            app.atom->applyAndReportLandings(*atomsRep, app.i, app.j);
+        }
+        std::cout << "applied directly:      ";
+        directRep->print(std::cout);
+        std::cout << "applied via atomize():  ";
+        atomsRep->print(std::cout);
+    }
+
     return 0;
 }

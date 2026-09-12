@@ -1,6 +1,9 @@
 #pragma once
 
-#include "smooth/transformation.hpp"
+#include <memory>
+#include <vector>
+
+#include "smooth/atomic_transformation.hpp"
 
 namespace smooth {
 
@@ -8,9 +11,16 @@ namespace smooth {
 // the bit at (i, j+1) into the two bits at (i, j) and (i+1, j) -- each
 // carrying independently (in that order) if its destination is already
 // occupied.
-class SplitTransformation : public OffsetTransformation {
+//
+// The other half of MergeTransformation's atom (atomic_transformation.hpp)
+// -- its own atomize() is just itself.
+class SplitTransformation : public AtomicTransformation {
 public:
-    SplitTransformation() : OffsetTransformation({{0, 1}}, {{0, 0}, {1, 0}}) {}
+    SplitTransformation() : AtomicTransformation({{0, 1}}, {{0, 0}, {1, 0}}) {}
+
+    std::vector<AtomApplication> atomize(int i, int j) const {
+        return {AtomApplication{std::make_shared<SplitTransformation>(), i, j}};
+    }
 };
 
 }  // namespace smooth

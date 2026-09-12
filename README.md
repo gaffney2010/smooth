@@ -525,6 +525,77 @@ negative `i`/`j` on a fractional type (`SmoothFloat`/`SmoothSignedFloat`)
 as for non-negative ones — the underlying identities don't care about the
 sign of either exponent.
 
+### AtomicTransformation and atomize()
+
+```cpp
+#include "smooth/smooth.hpp"          // AtomicTransformation, AtomApplication
+#include "smooth/transformation_zoo.hpp"
+
+smooth::RowSpreadTransformation rowSpread(6);
+std::vector<smooth::AtomApplication> atoms = rowSpread.atomize(0, 0);
+for (const auto& app : atoms) {
+    app.atom->applyAndReportLandings(rep, app.i, app.j);  // rep: a RepresentationBase
+}
+```
+
+Every `OffsetTransformation` this library has reduces to exactly two
+independent generating families, found by treating each transformation as
+the integer identity its inputs/outputs encode (`sum 2^i*3^j` over inputs
+equals the same sum over outputs) and searching for which ones are — and
+aren't — reachable from which others by composition:
+
+- **Merge/Split**, encoding `2^i + 2^(i+1) = 2^i*3` ("1 + 2 = 3").
+- **CornerSplit** (and its unbuilt reverse, "corner-merge"), encoding
+  `2^(i-1)*3^j + 2^i*3^(j-1) + 2^(i-1)*3^(j-1) = 2^i*3^j` ("1 + 2 + 3 = 6").
+
+Neither is reachable from the other (verified by BFS over reachable
+bit-configurations, both directions, tens of thousands of states with no
+path found — backed by a structural argument for why: a single `Split`
+fully vacates its source column, and getting back into it requires a
+fully-consuming `Merge`, so `CornerSplit`'s simultaneous two-column,
+three-bit output can never arise from `Merge`/`Split` alone). `MergeTransformation`,
+`SplitTransformation`, and `CornerSplitTransformation`
+(`transformation_zoo/`) are tagged as these two families' **atoms** by
+inheriting from `AtomicTransformation` (`include/smooth/atomic_transformation.hpp`)
+instead of `OffsetTransformation` directly — purely a label, with no
+behavior beyond `OffsetTransformation` itself.
+
+Every named `OffsetTransformation` — atom or not — has an `atomize(int i, int j) const`
+method returning `std::vector<AtomApplication>`, each one an atom
+(`std::shared_ptr<const AtomicTransformation>`) paired with the `(i, j)`
+anchor to apply it at, in order. For an atom itself, this is trivial: one
+`AtomApplication` holding a fresh instance of itself, at the same anchor.
+For the composites:
+
+- `SpreadTransformation(n)::atomize()` — exactly `n` `SplitTransformation`
+  applications, walking the far input at `(i, j+n)` down one column at a
+  time: the *k*-th split turns whatever landed at `(i, j+k)` into
+  `(i, j+k-1)` and `(i+1, j+k-1)`, so after `n` of them the near copy has
+  carried twice into `(i+2, j)` and each intermediate step left exactly
+  the right bit behind at `(i+1, j+k)`. Pure Family A — no `CornerSplitTransformation`
+  needed.
+- `RowSpreadTransformation(n)::atomize()` — the hard case, since (per
+  above) it genuinely needs `CornerSplitTransformation`. `n = 1` is just
+  `MergeTransformation` itself; `n = 2` is `CornerSplit(i+2, j)` (which
+  leaves a near pair at `(i, j)`/`(i+1, j)` and a leftover pair at
+  `(i+1, j-1)`/`(i+2, j-1)`) followed by `Merge(i, j)` then
+  `Merge(i+1, j-1)`. For `n >= 3`, merging that leftover pair right away
+  would carry straight into `(i+1, j)` and undo the corner split — so
+  instead, each level corner-splits the leftover's own far cell first,
+  pushing the same problem one column further down, and only merges once
+  the level below has resolved its own collision. This costs `4n - 5`
+  atoms for `n >= 2` (`1` for `n = 1`) — linear in `n`, not the naive
+  exponential-looking recursion it started from — verified computationally
+  (a from-scratch Python simulation of the actual carry semantics, for
+  `n` up to 25 at random anchors) before being written into C++.
+
+`atomize()`'s correctness criterion is stronger than "preserves value"
+(every individual atom already guarantees that): applying a
+transformation directly, and applying its `atomize()`d sequence instead —
+to two copies of the same starting representation — must land on *exactly*
+the same set bits, carries and all. `tests/test_smooth.cpp`'s
+`checkAtomizeMatches()` verifies exactly this for every preset above.
+
 ## Reduction
 
 ```cpp
@@ -1390,7 +1461,10 @@ the same result `TernaryFormReduction` gets for 9 via its full two-phase
 pipeline; and `StaircaseReduction` combining two bits — `(1, 1)` and
 `(4, 5)`, a genuine diagonal pair — into the five-bit antichain
 `{(1,6), (2,5), (3,4), (4,3), (7,1)}` over 13 steps, with a `Metrics`
-attached to show the count.
+attached to show the count; and `RowSpreadTransformation(6).atomize(0, 0)`
+printed out atom-by-atom (`CornerSplit`/`Merge`, each with its own anchor),
+then applied both directly and via that atomized sequence to confirm they
+land on exactly the same representation.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
 suite (no test framework linked in — see `CMakeLists.txt`) covering all of
@@ -1479,7 +1553,20 @@ representation, the longer 13-step cascade landing on its exact expected
 antichain, value preservation and the antichain property checked across a
 range of representative numbers, and that it never needs a
 fractional-capable representation starting from all-non-negative bits),
-and `DefaultPlan`
+`atomize()` (`MergeTransformation`/`SplitTransformation`/
+`CornerSplitTransformation` each atomizing to exactly one atom, themselves;
+`SpreadTransformation(n)` atomizing to exactly `n` `SplitTransformation`
+applications for `n` from 1 to 8, checked to use no other atom type;
+`RowSpreadTransformation(n)` atomizing to exactly `1` atom for `n = 1` and
+`4n - 5` for `n` from 1 to 20, with `n = 1`'s single atom confirmed to be a
+`MergeTransformation` specifically; `checkAtomizeMatches()` — applying a
+transformation directly and applying its `atomize()`d sequence to two
+copies of the same starting representation and confirming they land on
+exactly the same set bits, not just the same value — checked across every
+preset above plus a case with unrelated background bits present, to rule
+out `atomize()` implicitly assuming an otherwise-empty grid; and that every
+atomized step is actually `canApply()`-valid when its turn comes), and
+`DefaultPlan`
 (the confirmed example, unbracketed left-associative chaining, that
 `number()` throws for a negative signed operand instead of silently
 reading its unsigned magnitude — proving `T::value()` really is resolved

@@ -1,10 +1,13 @@
 #pragma once
 
+#include <memory>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
+#include "smooth/atomic_transformation.hpp"
 #include "smooth/transformation.hpp"
+#include "smooth/transformation_zoo/split_transformation.hpp"
 
 namespace smooth {
 
@@ -28,9 +31,28 @@ namespace smooth {
 // breaking the staircase's ascending order.
 class SpreadTransformation : public OffsetTransformation {
 public:
-    explicit SpreadTransformation(int n) : OffsetTransformation(inputOffsets(n), outputOffsets(n)) {}
+    explicit SpreadTransformation(int n) : OffsetTransformation(inputOffsets(n), outputOffsets(n)), n_(n) {}
+
+    // n sequential SplitTransformation applications, walking the far
+    // input at (i, j+n) down one column at a time -- the k-th split turns
+    // whatever landed at (i, j+k) into (i, j+k-1) and (i+1, j+k-1), so
+    // after n of them the near copy has reached (i+2, j) [two Splits'
+    // worth of carrying at column j] and each intermediate step left
+    // behind exactly one bit at (i+1, j+k), 1 <= k <= n-1: precisely
+    // SpreadTransformation's own output shape. Pure Family A (Merge/
+    // Split) -- no CornerSplitTransformation needed here, unlike
+    // RowSpreadTransformation's atomize() (row_spread_transformation.hpp).
+    std::vector<AtomApplication> atomize(int i, int j) const {
+        std::vector<AtomApplication> atoms;
+        atoms.reserve(n_);
+        for (int col = j + n_ - 1; col >= j; --col) {
+            atoms.push_back(AtomApplication{std::make_shared<SplitTransformation>(), i, col});
+        }
+        return atoms;
+    }
 
 private:
+    int n_;
     static std::vector<std::pair<int, int>> inputOffsets(int n) {
         requirePositive(n);
         return {{0, 0}, {0, n}};

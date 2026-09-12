@@ -1,6 +1,9 @@
 #pragma once
 
-#include "smooth/transformation.hpp"
+#include <memory>
+#include <vector>
+
+#include "smooth/atomic_transformation.hpp"
 
 namespace smooth {
 
@@ -9,9 +12,17 @@ namespace smooth {
 // set, the merge still succeeds -- it carries into (i+1, j+1),
 // (i+2, j+1), ... until it lands on a clear cell, exactly like ordinary
 // addition would.
-class MergeTransformation : public OffsetTransformation {
+//
+// One of this library's two atoms (atomic_transformation.hpp) -- it
+// isn't a composition of anything smaller, so its own atomize() is just
+// itself.
+class MergeTransformation : public AtomicTransformation {
 public:
-    MergeTransformation() : OffsetTransformation({{0, 0}, {1, 0}}, {{0, 1}}) {}
+    MergeTransformation() : AtomicTransformation({{0, 0}, {1, 0}}, {{0, 1}}) {}
+
+    std::vector<AtomApplication> atomize(int i, int j) const {
+        return {AtomApplication{std::make_shared<MergeTransformation>(), i, j}};
+    }
 };
 
 }  // namespace smooth
