@@ -28,6 +28,7 @@ from openevolve.api import run_evolution  # noqa: E402
 from openevolve.config import Config, LLMModelConfig  # noqa: E402
 
 import pareto  # noqa: E402
+from llm_compat import init_anthropic_compat_client  # noqa: E402
 
 
 def load_secrets(path: Path) -> dict:
@@ -60,6 +61,16 @@ def build_config(secrets: dict) -> Config:
     config.llm.update_model_params(
         {"api_key": config.llm.api_key, "api_base": config.llm.api_base}, overwrite=True
     )
+
+    # Claude 4.7+ (Sonnet 5, Haiku 4.5, ...) 400 on a request that so much as
+    # mentions temperature/top_p, which openevolve's stock OpenAI client
+    # always includes -- see llm_compat.py. Only patched in for models
+    # actually pointed at Anthropic, so switching back to a plain OpenAI (or
+    # other) endpoint later doesn't silently lose temperature control there.
+    for model in config.llm.models + config.llm.evaluator_models:
+        if model.api_base and "anthropic.com" in model.api_base:
+            model.init_client = init_anthropic_compat_client
+
     return config
 
 

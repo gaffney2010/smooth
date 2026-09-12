@@ -89,6 +89,10 @@ recompute the report without a fresh evolution run (e.g. after a manual
 - `secrets.yaml` (gitignored, not checked in) -- just the API key (a Claude
   API key by default; `run.py` merges it into the config loaded from
   `config.yaml`).
+- `llm_compat.py` -- a thin patch over openevolve's OpenAI LLM client that
+  strips `temperature`/`top_p` before the request reaches Anthropic --
+  Claude 4.7+ models 400 on those keys being present at all. `run.py`
+  wires it in automatically for any model pointed at `anthropic.com`.
 - `pareto.py` -- the Pareto-front extraction, usable standalone.
 - `run.py` -- ties it all together.
 

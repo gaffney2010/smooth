@@ -24,11 +24,20 @@ llm:
   # api_base/the model names below if you set them in secrets.yaml, so you
   # don't have to edit this file just to switch providers.
   #
-  # Known compatibility gaps going through this endpoint rather than
-  # Anthropic's native Messages API: no prompt caching (every iteration's
-  # system prompt gets re-charged in full -- the system prompt here is long,
-  # so this isn't free), and temperature is capped to [0, 1] (already true
-  # of the 0.8 below). Neither affects correctness, just cost/behavior.
+  # Known compatibility gap going through this endpoint rather than
+  # Anthropic's native Messages API: no prompt caching, so every iteration's
+  # (long) system prompt gets re-charged in full. Doesn't affect
+  # correctness, just cost.
+  #
+  # temperature below is NOT actually sent to Claude 4.7+ models (Sonnet
+  # 5, Haiku 4.5, ...): those reject any request that so much as mentions
+  # temperature/top_p with a 400 ("temperature is deprecated for this
+  # model"), even at the default value -- Anthropic's stance is that
+  # sampling params are incompatible with adaptive thinking. run.py works
+  # around this by swapping in a custom LLM client (llm_compat.py) for any
+  # model whose api_base points at anthropic.com, which strips those keys
+  # before the request goes out. The 0.8 below only takes effect if you
+  # point this at a non-Anthropic, non-Claude-4.7+ endpoint instead.
   api_base: "https://api.anthropic.com/v1/"
   models:
     - name: "claude-sonnet-5"
