@@ -896,6 +896,98 @@ void testTransformation() {
         check(!n.get(-2, 0) && !n.get(-1, 0) && n.get(-2, 1),
               "MergeTransformation moves bits correctly for negative i");
     }
+
+    // CornerSplitTransformation: splits the bit at (i, j) into its three
+    // corner neighbors (i-1, j), (i, j-1), (i-1, j-1):
+    // 2^(i-1)*3^j + 2^i*3^(j-1) + 2^(i-1)*3^(j-1) = 2^(i-1)*3^(j-1)*6 = 2^i*3^j.
+    // Its outputs are always at i-1/j-1, so a fractional type is needed
+    // even anchored at (0, 0).
+    {
+        SmoothFloat n;
+        n.set(1, 1);  // 2*3 = 6
+        checkNear(n.value(), 6.0, "before CornerSplitTransformation: 2*3 = 6");
+        CornerSplitTransformation corner;
+        check(corner.canApply(n, 1, 1), "CornerSplitTransformation: applicable when the input bit is set");
+        n.applyTransformation(corner, 1, 1);
+        checkNear(n.value(), 6.0, "CornerSplitTransformation preserves value(): still 6");
+        check(!n.get(1, 1) && n.get(0, 1) && n.get(1, 0) && n.get(0, 0),
+              "CornerSplitTransformation clears the input and sets all three corner neighbors");
+    }
+    {
+        // canApply() is false when the single input bit isn't set.
+        SmoothFloat n;
+        CornerSplitTransformation corner;
+        check(!corner.canApply(n, 1, 1), "CornerSplitTransformation: not applicable with no input bit set");
+        checkThrows([&] { n.applyTransformation(corner, 1, 1); },
+                    "applyTransformation() throws when canApply() is false (missing input bit)");
+    }
+    {
+        // At (i, j) = (0, 0) directly -- all three outputs land at negative
+        // indices, so this only works on a fractional type.
+        SmoothFloat n;
+        n.set(0, 0);  // 1
+        checkNear(n.value(), 1.0, "before CornerSplitTransformation at (0, 0): 1");
+        n.applyTransformation(CornerSplitTransformation(), 0, 0);
+        checkNear(n.value(), 1.0, "CornerSplitTransformation preserves value() at (0, 0): still 1");
+        check(n.get(-1, 0) && n.get(0, -1) && n.get(-1, -1),
+              "CornerSplitTransformation at (0, 0) lands on (-1, 0), (0, -1), (-1, -1)");
+    }
+
+    // RowSpreadTransformation(n): the row-axis counterpart to
+    // SpreadTransformation -- bridges (i, j) and (i+n, j) into (i, j+1)
+    // plus a staircase of bits at (i+1, j), ..., (i+n-1, j):
+    // 2^i*3^j + 2^(i+n)*3^j = 2^i*3^j*(1+2^n) = 2^i*3^(j+1) +
+    // sum_{k=1}^{n-1} 2^(i+k)*3^j.
+    {
+        // n = 1: the staircase is empty, so this is exactly
+        // MergeTransformation's own input/output offsets -- 1 + 2 = 3.
+        SmoothInteger n;
+        n.set(0, 0);
+        n.set(1, 0);
+        checkNear(n.value(), 3.0, "before RowSpreadTransformation(1): 1 + 2 = 3");
+        RowSpreadTransformation rowSpread1(1);
+        check(rowSpread1.canApply(n, 0, 0), "RowSpreadTransformation(1): applicable when both input bits are set");
+        n.applyTransformation(rowSpread1, 0, 0);
+        checkNear(n.value(), 3.0, "RowSpreadTransformation(1) preserves value(): still 3");
+        check(n.get(0, 1) && !n.get(0, 0) && !n.get(1, 0),
+              "RowSpreadTransformation(1) has an empty staircase -- both inputs land directly on (i, j+1)");
+    }
+    {
+        // n = 4: a real staircase of 3 bits between the two inputs.
+        SmoothInteger n;
+        n.set(0, 0);  // 1
+        n.set(4, 0);  // 2^4 = 16
+        checkNear(n.value(), 17.0, "before RowSpreadTransformation(4): 1 + 16 = 17");
+        RowSpreadTransformation rowSpread4(4);
+        n.applyTransformation(rowSpread4, 0, 0);
+        checkNear(n.value(), 17.0, "RowSpreadTransformation(4) preserves value(): still 17");
+        check(n.get(0, 1) && n.get(1, 0) && n.get(2, 0) && n.get(3, 0) && !n.get(0, 0) && !n.get(4, 0),
+              "RowSpreadTransformation(4) produces (i, j+1) plus the 3-bit staircase (i+1..i+3, j)");
+    }
+    {
+        // canApply() is false when only one input bit is set.
+        SmoothInteger n;
+        n.set(0, 0);
+        RowSpreadTransformation rowSpread(3);
+        check(!rowSpread.canApply(n, 0, 0), "RowSpreadTransformation: not applicable with only one input bit set");
+        checkThrows([&] { n.applyTransformation(rowSpread, 0, 0); },
+                    "applyTransformation() throws when canApply() is false (missing input bit)");
+    }
+    {
+        // n must be at least 1 -- the constructor itself throws for a
+        // degenerate or backwards n.
+        checkThrows([] { RowSpreadTransformation(0); }, "RowSpreadTransformation(0) throws: n must be at least 1");
+        checkThrows([] { RowSpreadTransformation(-1); }, "RowSpreadTransformation(-1) throws: n must be at least 1");
+    }
+
+    // Both new transformations join the same value-preservation sanity
+    // check every other transformation in this library goes through.
+    {
+        checkTransformationPreservesValue(CornerSplitTransformation(), "CornerSplitTransformation");
+        checkTransformationPreservesValue(RowSpreadTransformation(1), "RowSpreadTransformation(1)");
+        checkTransformationPreservesValue(RowSpreadTransformation(2), "RowSpreadTransformation(2)");
+        checkTransformationPreservesValue(RowSpreadTransformation(5), "RowSpreadTransformation(5)");
+    }
 }
 
 // ---------------------------------------------------------------------

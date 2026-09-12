@@ -572,6 +572,33 @@ int main() {
     std::cout << "after: value = " << spread.value() << ", ";
     spread.printSparse();
 
+    // CornerSplitTransformation: splits the bit at (i, j) into its three
+    // corner neighbors (i-1, j), (i, j-1), (i-1, j-1) -- all three outputs
+    // land at negative indices even anchored at (0, 0), so this needs a
+    // fractional type.
+    smooth::SmoothFloat corner;
+    corner.set(0, 0);  // 1
+    std::cout << "\nbefore CornerSplitTransformation at (0, 0): value = " << corner.value() << ", ";
+    corner.printSparse();
+    smooth::CornerSplitTransformation cornerSplit;
+    corner.applyTransformation(cornerSplit, 0, 0);
+    std::cout << "after: value = " << corner.value() << ", ";
+    corner.printSparse();
+
+    // RowSpreadTransformation(n): the row-axis counterpart to
+    // SpreadTransformation -- bridges (i, j) and (i+n, j) -- n rows apart
+    // -- into (i, j+1) plus a staircase of bits at (i+1, j) .. (i+n-1, j).
+    // For n = 1 this has exactly MergeTransformation's own offsets.
+    smooth::SmoothInteger rowSpread;
+    rowSpread.set(0, 0);  // 1
+    rowSpread.set(4, 0);  // 2^4 = 16
+    std::cout << "\nbefore RowSpreadTransformation(4): value = " << rowSpread.value() << ", ";
+    rowSpread.printSparse();
+    smooth::RowSpreadTransformation rowSpread4(4);
+    rowSpread.applyTransformation(rowSpread4, 0, 0);
+    std::cout << "after: value = " << rowSpread.value() << ", ";
+    rowSpread.printSparse();
+
     // --- MergingSparsePlan ----------------------------------------------------
     // A TransformationReduction greedily applies a family of
     // Transformations across an entire representation until none of them

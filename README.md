@@ -456,13 +456,12 @@ this way — it has no fixed offset lists to sum — its value-preservation
 is a one-line algebraic identity instead; see its own section under
 "reduction_zoo" below.)
 
-Three presets are provided in `include/smooth/transformation_zoo/`, each
-just an `OffsetTransformation` constructed with a fixed pair of offset
-lists (`include/smooth/transformation_zoo.hpp` is a convenience header
-pulling in all of transformation_zoo/, mirroring
-`plan_zoo.hpp`/`representation_zoo.hpp`; `transformation.hpp` itself, and
-`smooth.hpp`, only give you `Transformation`/`OffsetTransformation`
-themselves, not these presets):
+Presets are provided in `include/smooth/transformation_zoo/`, each just an
+`OffsetTransformation` constructed with a fixed pair of offset lists
+(`include/smooth/transformation_zoo.hpp` is a convenience header pulling in
+all of transformation_zoo/, mirroring `plan_zoo.hpp`/`representation_zoo.hpp`;
+`transformation.hpp` itself, and `smooth.hpp`, only give you
+`Transformation`/`OffsetTransformation` themselves, not these presets):
 
 - `MergeTransformation` (`transformation_zoo/merge_transformation.hpp`) —
   inputs `{(0, 0), (1, 0)}`, output `{(0, 1)}`: merges the two bits at
@@ -488,6 +487,31 @@ themselves, not these presets):
   `(i, j)` to independently hold two `1`s at once, which a bit grid can't
   represent, and a negative `n` would put the second input at a column
   *before* `j`, breaking the staircase's ascending order.
+- `CornerSplitTransformation` (`transformation_zoo/corner_split_transformation.hpp`)
+  — input `{(0, 0)}`, outputs `{(-1, 0), (0, -1), (-1, -1)}`: splits the
+  bit at `(i, j)` into its three corner neighbors:
+  ```
+  2^(i-1)*3^j + 2^i*3^(j-1) + 2^(i-1)*3^(j-1)
+    = 2^(i-1)*3^(j-1) * (3 + 2 + 1)
+    = 2^(i-1)*3^(j-1) * 6
+    = 2^i * 3^j
+  ```
+  All three outputs land at negative offsets from the anchor, so applying
+  it at `(i, j) = (0, 0)` requires a fractional type.
+- `RowSpreadTransformation(int n)` (`transformation_zoo/row_spread_transformation.hpp`)
+  — inputs `{(0, 0), (n, 0)}`, outputs `{(0, 1)} ∪ {(k, 0) : 1 <= k <= n-1}`:
+  the row-axis counterpart to `SpreadTransformation` — bridges the two bits
+  at `(i, j)` and `(i+n, j)` — `n` rows apart — into `(i, j+1)` plus a
+  staircase of bits at `(i+1, j), (i+2, j), ..., (i+n-1, j)`:
+  ```
+  2^i*3^j + 2^(i+n)*3^j
+    = 2^i*3^j * (1 + 2^n)
+    = 2^i*3^j * (3 + (2^n - 2))
+    = 2^i*3^(j+1) + sum_{k=1}^{n-1} 2^(i+k)*3^j
+  ```
+  For `n = 1` the staircase is empty, so this has exactly
+  `MergeTransformation`'s own input/output offsets. Throws
+  `std::invalid_argument` for `n < 1`, same reasoning as `SpreadTransformation`.
 - `TernaryCarryTransformation` (`transformation_zoo/ternary_carry_transformation.hpp`)
   — the one preset here that implements `Transformation` directly, not
   through `OffsetTransformation`; see "reduction_zoo" below for
@@ -496,7 +520,7 @@ themselves, not these presets):
 Applying `MergeTransformation` and then `SplitTransformation` is always a
 round trip back to the original bit layout (even when one of them had to
 carry along the way — carrying is itself value-preserving, so a sequence
-of carries is too). All three offset-based presets work the same way for
+of carries is too). Every offset-based preset works the same way for
 negative `i`/`j` on a fractional type (`SmoothFloat`/`SmoothSignedFloat`)
 as for non-negative ones — the underlying identities don't care about the
 sign of either exponent.
@@ -1281,8 +1305,11 @@ exact same numbers, alongside the rest of each run's `Metrics`;
 same number; a merge that has to carry because its output bit is already
 occupied (12 + 12 carrying to 24); a custom `OffsetTransformation` built
 directly from its own offset lists, combining bits across both axes at
-once; and `SpreadTransformation(4)` bridging two bits 4 columns apart
-into `(i+2, j)` plus a 3-bit staircase; a `TransformationReduction`
+once; `SpreadTransformation(4)` bridging two bits 4 columns apart into
+`(i+2, j)` plus a 3-bit staircase; `CornerSplitTransformation` splitting a
+bit into its three corner neighbors (on a fractional type, anchored at
+`(0, 0)`); `RowSpreadTransformation(4)` bridging two bits 4 rows apart
+into `(i, j+1)` plus a 3-bit row staircase; a `TransformationReduction`
 running just `MergeTransformation` to fixed point over a number with
 several independent merge opportunities and one collision-triggered
 cascade, with a `Metrics` attached to show `transformations_applied`; and,
@@ -1324,8 +1351,9 @@ against each representation directly (a single and a multi-step carry
 chain, an *n*-by-*m* bit-operation count, each representation's own
 notion of a "cell" for `bit_iterations`, and both `scalar_operations`
 sources for RowValues and Scalar), copy/move semantics,
-`MergeTransformation`/`SplitTransformation`/`SpreadTransformation` (each
-direction's `canApply()` correctly rejecting a missing input bit,
+`MergeTransformation`/`SplitTransformation`/`SpreadTransformation`/
+`CornerSplitTransformation`/`RowSpreadTransformation` (each direction's
+`canApply()` correctly rejecting a missing input bit,
 `applyTransformation()` throwing in that case, that an already-occupied
 output bit doesn't block `canApply()` at all — it carries instead,
 including a case where *both* of `SplitTransformation`'s outputs are
@@ -1335,8 +1363,13 @@ reflects the new layout after a merge, a custom `OffsetTransformation`
 built directly from its own input/output offset lists,
 `SpreadTransformation(1)`'s empty-staircase special case and
 `SpreadTransformation(4)`'s full 3-bit staircase, `SpreadTransformation`'s
-constructor throwing for `n < 1`, that both `Merge`/`SplitTransformation`
-work the same way for negative indices on a fractional type, and
+constructor throwing for `n < 1`, `CornerSplitTransformation` applied at
+`(0, 0)` on a fractional type (all three outputs landing at negative
+indices), `RowSpreadTransformation(1)`'s offsets matching
+`MergeTransformation`'s own exactly, `RowSpreadTransformation(4)`'s full
+3-bit row staircase, `RowSpreadTransformation`'s constructor throwing for
+`n < 1`, that both `Merge`/`SplitTransformation` work the same way for
+negative indices on a fractional type, and
 `checkTransformationPreservesValue()` — confirming, directly from each
 `OffsetTransformation`'s own `inputs()`/`outputs()` and independent of
 ever calling `apply()`, that every offset-based transformation this
