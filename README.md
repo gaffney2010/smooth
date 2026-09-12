@@ -364,7 +364,7 @@ A `Transformation` (`include/smooth/transformation.hpp`) is any distinct
 unit of work that doesn't change a 3-smooth number's value: check whether
 it can fire at a given anchor `(i, j)`, apply it, and report which cells
 changed — its "landings," the only cells worth re-examining afterward for
-newly created opportunities. `AlgorithmCluster` (see "AlgorithmCluster"
+newly created opportunities. `Reduction` (see "Reduction"
 below) is the other half of the same idea: repeated application of one or
 more `Transformation`s until some condition is met.
 
@@ -376,7 +376,7 @@ that must all be `1` (cleared by applying), and a fixed list of output
 offsets that get carry-set to `1`. `OffsetTransformation` (below) is
 exactly that shape, kept as its own concrete class once it became clear
 it was a special case, not the general one — `TernaryCarryTransformation`
-(`algorithm_cluster_zoo` below) is the case that forced the split:
+(`reduction_zoo` below) is the case that forced the split:
 "subtract 3 from column `j`, add 1 to column `j+1`" has no fixed set of
 bit offsets at all, since its own precondition ("column `j` has more than
 one bit set") depends on an entire column's aggregate magnitude, not a
@@ -454,7 +454,7 @@ calling `apply()` at all; `tests/test_smooth.cpp`'s
 `OffsetTransformation` below. (`TernaryCarryTransformation` isn't checked
 this way — it has no fixed offset lists to sum — its value-preservation
 is a one-line algebraic identity instead; see its own section under
-"algorithm_cluster_zoo" below.)
+"reduction_zoo" below.)
 
 Three presets are provided in `include/smooth/transformation_zoo/`, each
 just an `OffsetTransformation` constructed with a fixed pair of offset
@@ -490,7 +490,7 @@ themselves, not these presets):
   *before* `j`, breaking the staircase's ascending order.
 - `TernaryCarryTransformation` (`transformation_zoo/ternary_carry_transformation.hpp`)
   — the one preset here that implements `Transformation` directly, not
-  through `OffsetTransformation`; see "algorithm_cluster_zoo" below for
+  through `OffsetTransformation`; see "reduction_zoo" below for
   what it does and why it doesn't fit the offset-list shape.
 
 Applying `MergeTransformation` and then `SplitTransformation` is always a
@@ -501,92 +501,92 @@ negative `i`/`j` on a fractional type (`SmoothFloat`/`SmoothSignedFloat`)
 as for non-negative ones — the underlying identities don't care about the
 sign of either exponent.
 
-## AlgorithmCluster
+## Reduction
 
 ```cpp
-#include "smooth/algorithm_cluster.hpp"
+#include "smooth/reduction.hpp"
 
-// The shared interface every cluster in this library implements:
-class AlgorithmCluster {
+// The shared interface every reduction in this library implements:
+class Reduction {
 public:
     virtual const std::string& name() const = 0;
     virtual void run(RepresentationBase& rep, const std::shared_ptr<Metrics>& metrics = nullptr) const = 0;
 };
 ```
 
-Every cluster this library has lives in `algorithm_cluster_zoo/` (below)
+Every reduction this library has lives in `reduction_zoo/` (below)
 and implements this interface one of two ways:
-`TransformationAlgorithmCluster`, the generic engine (greedily apply a
+`TransformationReduction`, the generic engine (greedily apply a
 family of `Transformation`s until none can fire anymore), directly; or,
-for `MergeCluster`/`BinaryFormCluster`/`TernaryCarryCluster`, by being a
+for `MergeReduction`/`BinaryFormReduction`/`TernaryCarryReduction`, by being a
 subclass of *that* — each just fixes its own `Transformation`(s), name,
 and bound as constructor arguments, adding no behavior of its own.
-`TernaryFormCluster` is the exception: it doesn't run a single search at
+`TernaryFormReduction` is the exception: it doesn't run a single search at
 all, but two in sequence (see its own section below), so it implements
-`AlgorithmCluster` directly instead, composing `BinaryFormCluster` and
-`TernaryCarryCluster`.
+`Reduction` directly instead, composing `BinaryFormReduction` and
+`TernaryCarryReduction`.
 
-This is what lets `Plan`'s `Cluster` blueprint node (see "Plan" below)
-hold a single `const AlgorithmCluster*`, rather than being hardwired to
-one specific cluster implementation: a strategy's `buildBlueprint()` can
-splice in *any* cluster this library has — a named `algorithm_cluster_zoo/`
-preset, or a bespoke `TransformationAlgorithmCluster` built on the spot —
-through the exact same `wrapWithCluster()` call, and `Plan` itself never
+This is what lets `Plan`'s `Reduce` blueprint node (see "Plan" below)
+hold a single `const Reduction*`, rather than being hardwired to
+one specific reduction implementation: a strategy's `buildBlueprint()` can
+splice in *any* reduction this library has — a named `reduction_zoo/`
+preset, or a bespoke `TransformationReduction` built on the spot —
+through the exact same `wrapWithReduction()` call, and `Plan` itself never
 has to know, or care, which one it got. `plan.hpp` doesn't even include
-`algorithm_cluster_zoo/` at all — just `algorithm_cluster.hpp`, the
-interface — since it never touches any concrete cluster directly.
+`reduction_zoo/` at all — just `reduction.hpp`, the
+interface — since it never touches any concrete reduction directly.
 
-Every named cluster hardcodes its own `name()` — no constructor parameter
+Every named reduction hardcodes its own `name()` — no constructor parameter
 for it, the same way `MergeTransformation`/`SplitTransformation` hardcode
 their own offsets, or `SparsePlan`/`MatrixPlan` hardcode their own
-`name()`. Only `TransformationAlgorithmCluster` itself takes one
+`name()`. Only `TransformationReduction` itself takes one
 explicitly, since — like `OffsetTransformation`, whose raw offset-list
 constructor it's built from — it has no fixed identity of its own; it's
 the generic mechanism, not a preset.
 
-## algorithm_cluster_zoo
+## reduction_zoo
 
-`include/smooth/algorithm_cluster_zoo/` holds every concrete
-`AlgorithmCluster` this library has: `TransformationAlgorithmCluster`, the
+`include/smooth/reduction_zoo/` holds every concrete
+`Reduction` this library has: `TransformationReduction`, the
 generic engine, alongside the named presets built from it
-(`MergeCluster`, `BinaryFormCluster`, `TernaryCarryCluster`) or composing
-more than one (`TernaryFormCluster`). `TransformationAlgorithmCluster`
-lives here, rather than at the top level alongside `AlgorithmCluster`,
+(`MergeReduction`, `BinaryFormReduction`, `TernaryCarryReduction`) or composing
+more than one (`TernaryFormReduction`). `TransformationReduction`
+lives here, rather than at the top level alongside `Reduction`,
 precisely because nothing outside this folder ever needs to name it
-directly — `Plan` only ever holds the `AlgorithmCluster` a strategy
-produces (see "AlgorithmCluster" above). `include/smooth/algorithm_cluster_zoo.hpp`
+directly — `Plan` only ever holds the `Reduction` a strategy
+produces (see "Reduction" above). `include/smooth/reduction_zoo.hpp`
 is a convenience header pulling in all five, mirroring `plan_zoo.hpp`/
 `transformation_zoo.hpp`/`representation_zoo.hpp`.
 
-### TransformationAlgorithmCluster
+### TransformationReduction
 
 ```cpp
-#include "smooth/algorithm_cluster_zoo/transformation_algorithm_cluster.hpp"
+#include "smooth/reduction_zoo/transformation_reduction.hpp"
 #include "smooth/representation_zoo.hpp"
 #include "smooth/transformation_zoo.hpp"
 
 smooth::MergeTransformation merge;
-smooth::TransformationAlgorithmCluster cluster({&merge}, "merge");
+smooth::TransformationReduction reduction({&merge}, "merge");
 
 smooth::SparseRepresentation rep(/*allow_fractional=*/true);
 rep.setColumnValue(0, 15);  // 15 = 1111 binary -> 4 set bits
-cluster.run(rep);
+reduction.run(rep);
 rep.print();  // {(0, 1), (2, 1)}  -- down to 2 bits, still worth 15
 ```
 
-`TransformationAlgorithmCluster`
-(`include/smooth/algorithm_cluster_zoo/transformation_algorithm_cluster.hpp`)
-implements `AlgorithmCluster` by greedily applying a small family of
+`TransformationReduction`
+(`include/smooth/reduction_zoo/transformation_reduction.hpp`)
+implements `Reduction` by greedily applying a small family of
 `Transformation`s across an entire `RepresentationBase` —
 `run(RepresentationBase& rep, metrics = nullptr)` — until none of them
 can fire anywhere anymore: a fixed point. It's the base class
-`MergeCluster`/`BinaryFormCluster`/`TernaryCarryCluster` (below) each
+`MergeReduction`/`BinaryFormReduction`/`TernaryCarryReduction` (below) each
 subclass, configuring it with their own fixed `Transformation`(s). Nothing
 about this engine cares what *kind* of `Transformation` it's holding, or
 whether every transformation in the family is even the same kind — its
 list is a `vector<const Transformation*>`, so an `OffsetTransformation`
 and something built an entirely different way (like
-`TernaryCarryTransformation`) could even be mixed into the same cluster.
+`TernaryCarryTransformation`) could even be mixed into the same reduction.
 
 Whether that fixed point is ever actually reached depends on the family.
 `{MergeTransformation}` always terminates on its own: every successful
@@ -602,12 +602,12 @@ own: nothing about `SplitTransformation` knows column 0 is special, so
 splitting a bit that's already reached column 0 just produces column -1,
 then -2, forever. The optional trailing constructor parameter
 `allowed(int i, int j)` is for exactly this: it bounds the region a
-search is allowed to explore, fixed for that cluster's whole lifetime, so
+search is allowed to explore, fixed for that reduction's whole lifetime, so
 a family with no natural floor can still be made to terminate at a
 boundary the caller chooses. It's a constructor parameter rather than a
 `run()` parameter specifically so `run()`'s signature matches
-`AlgorithmCluster`'s exactly, with nothing extra to pass at the call
-site. See `BinaryFormCluster` below for a real example.
+`Reduction`'s exactly, with nothing extra to pass at the call
+site. See `BinaryFormReduction` below for a real example.
 
 The interesting part is doing this *without* rescanning the whole
 representation after every single application. A new opportunity for some
@@ -627,22 +627,22 @@ increments `transformations_applied` once per successful application
 (`Transformation` itself never touches `Metrics` at all, so this is the
 only place that count is available).
 
-### MergeCluster
+### MergeReduction
 
 ```cpp
-#include "smooth/algorithm_cluster_zoo/merge_cluster.hpp"
+#include "smooth/reduction_zoo/merge_reduction.hpp"
 #include "smooth/representation_zoo.hpp"
 
 smooth::SparseRepresentation rep(/*allow_fractional=*/true);
 rep.setColumnValue(0, 15);  // 15 = 1111 binary -> 4 set bits
 
-smooth::MergeCluster merge;
+smooth::MergeReduction merge;
 merge.run(rep);
 rep.print();  // {(0, 1), (2, 1)}  -- down to 2 bits, still worth 15
 ```
 
-`MergeCluster` (`include/smooth/algorithm_cluster_zoo/merge_cluster.hpp`)
-is a `TransformationAlgorithmCluster` subclass, configured with just
+`MergeReduction` (`include/smooth/reduction_zoo/merge_reduction.hpp`)
+is a `TransformationReduction` subclass, configured with just
 `MergeTransformation` and the name `"merge"` — greedily combining every
 `(i, j)`/`(i+1, j)` pair of set bits it can find into `(i, j+1)`,
 repeating (since a merge's own carry can create new merge opportunities)
@@ -655,30 +655,30 @@ is the constructor call, and what it passes the base class:
 its address is safe to hand to the base class constructor — a plain
 instance member wouldn't be, since base classes are always fully
 constructed *before* any of a derived class's own members even begin, so
-`TransformationAlgorithmCluster({&merge_}, ...)` would be capturing the
-address of a `MergeCluster` member that doesn't exist yet. A
+`TransformationReduction({&merge_}, ...)` would be capturing the
+address of a `MergeReduction` member that doesn't exist yet. A
 function-local static sidesteps the ordering question entirely: it's
 guaranteed constructed (once, thread-safely) the first time
 `mergeTransformation()` is ever called, and since `MergeTransformation` is
-stateless once built, every `MergeCluster` sharing the one instance is no
+stateless once built, every `MergeReduction` sharing the one instance is no
 different from each having its own.
 
-### BinaryFormCluster
+### BinaryFormReduction
 
 ```cpp
-#include "smooth/algorithm_cluster_zoo/binary_form_cluster.hpp"
+#include "smooth/reduction_zoo/binary_form_reduction.hpp"
 #include "smooth/smooth.hpp"
 
 smooth::SmoothInteger n;
 n.set(1, 2);  // 2^1 * 3^2 = 18
 auto rep = n.representationAs(smooth::SmoothInteger::Representation::Sparse);
 
-smooth::BinaryFormCluster toBinary;
+smooth::BinaryFormReduction toBinary;
 toBinary.run(*rep);
 rep->print();  // {(1, 0), (4, 0)}  -- 18 = 16 + 2, its ordinary binary form
 ```
 
-`BinaryFormCluster` (`include/smooth/algorithm_cluster_zoo/binary_form_cluster.hpp`)
+`BinaryFormReduction` (`include/smooth/reduction_zoo/binary_form_reduction.hpp`)
 repeatedly applies `SplitTransformation` — the reverse of
 `MergeTransformation`, splitting the bit at `(i, j+1)` into `(i, j)` and
 `(i+1, j)` — until every set bit lands in column 0, i.e. until the number
@@ -686,15 +686,15 @@ is a plain sum of distinct powers of 2: its ordinary binary
 representation, just laid out one grid row per set bit instead of packed
 into a machine integer.
 
-This is exactly the family `TransformationAlgorithmCluster`'s own doc
+This is exactly the family `TransformationReduction`'s own doc
 comment above warns about: `SplitTransformation` alone has no natural
 floor, so left to run unbounded it doesn't stop at column 0 — it keeps
-going, into column -1, -2, and so on, forever. `BinaryFormCluster` is a
-`TransformationAlgorithmCluster` subclass too, passing its base class
+going, into column -1, -2, and so on, forever. `BinaryFormReduction` is a
+`TransformationReduction` subclass too, passing its base class
 constructor `allowed = [](int, int j){ return j >= 0; }`: every bit that
 starts above column 0 still gets split all the way down to it, and a bit
 already at column 0 is left alone, since producing it would require an
-anchor at column -1, which is disallowed. Like `MergeCluster` above, its
+anchor at column -1, which is disallowed. Like `MergeReduction` above, its
 `SplitTransformation` is a function-local static for the same reason —
 a plain instance member's address wouldn't be safe to pass to the base
 class constructor.
@@ -749,65 +749,65 @@ confined to one residue class mod 3, and that class's smallest
 nonnegative member — 0, 1, or 2 — always has at most one bit set. So it's
 guaranteed to stop at or before reaching it, never below.
 
-### TernaryCarryCluster
+### TernaryCarryReduction
 
 ```cpp
-#include "smooth/algorithm_cluster_zoo/ternary_carry_cluster.hpp"
+#include "smooth/reduction_zoo/ternary_carry_reduction.hpp"
 #include "smooth/representation_zoo/row_values_representation.hpp"
 
 smooth::RowValuesRepresentation rep(/*allow_fractional=*/false);
 rep.setColumnValue(0, 9.0);  // 9 = 1001 binary, at column 0
 
-smooth::TernaryCarryCluster cluster;
-cluster.run(rep);
+smooth::TernaryCarryReduction reduction;
+reduction.run(rep);
 rep.print();  // n[2] = 1  -- 9 = 1*3^2
 ```
 
-`TernaryCarryCluster` (`include/smooth/algorithm_cluster_zoo/ternary_carry_cluster.hpp`)
-is a `TransformationAlgorithmCluster` subclass, configured with just
+`TernaryCarryReduction` (`include/smooth/reduction_zoo/ternary_carry_reduction.hpp`)
+is a `TransformationReduction` subclass, configured with just
 `TernaryCarryTransformation` and the name `"ternary_carry"` — run to a
-fixed point, same as `MergeCluster`/`BinaryFormCluster`, and built the
+fixed point, same as `MergeReduction`/`BinaryFormReduction`, and built the
 same way (a function-local static `TernaryCarryTransformation`, for the
-same reason). Unlike `BinaryFormCluster`, it needs no `allowed` bound at
+same reason). Unlike `BinaryFormReduction`, it needs no `allowed` bound at
 all: `TernaryCarryTransformation`'s own `canApply()` is already
 self-limiting (a column with `<= 1` bit set simply stops being a
 candidate), so there's nothing external left to bound.
 
-### TernaryFormCluster
+### TernaryFormReduction
 
 ```cpp
-#include "smooth/algorithm_cluster_zoo/ternary_form_cluster.hpp"
+#include "smooth/reduction_zoo/ternary_form_reduction.hpp"
 #include "smooth/smooth.hpp"
 
 smooth::SmoothInteger n;
 n.setValue(13LL);  // 13 = 2^2 + 3^2, not itself a single term
 auto rep = n.representationAs(smooth::SmoothInteger::Representation::RowValues);
 
-smooth::TernaryFormCluster toTernary;
+smooth::TernaryFormReduction toTernary;
 toTernary.run(*rep);
 rep->print();  // n[0] = 4, n[2] = 1  -- 13 = 4*3^0 + 1*3^2
 ```
 
-`TernaryFormCluster` (`include/smooth/algorithm_cluster_zoo/ternary_form_cluster.hpp`)
+`TernaryFormReduction` (`include/smooth/reduction_zoo/ternary_form_reduction.hpp`)
 reduces a number to a form where every nonzero column holds exactly one
 bit — i.e. every nonzero `n_j` is a single power of two, never an
-arbitrary magnitude. Two phases, run in sequence: first `BinaryFormCluster`
+arbitrary magnitude. Two phases, run in sequence: first `BinaryFormReduction`
 (collapsing whatever column layout the number started with down into
 column 0's `n_0`, so the final result only ever depends on the number's
-value, never on how it got there), then `TernaryCarryCluster` (working
+value, never on how it got there), then `TernaryCarryReduction` (working
 column by column from there, exactly as described above). Since it runs
 two separate fixed-point searches rather than one, it doesn't fit the
-"just configure `TransformationAlgorithmCluster`" mold `MergeCluster`/
-`BinaryFormCluster`/`TernaryCarryCluster` do — it implements
-`AlgorithmCluster` directly, holding a `BinaryFormCluster` and a
-`TernaryCarryCluster` as members and running them one after the other.
+"just configure `TransformationReduction`" mold `MergeReduction`/
+`BinaryFormReduction`/`TernaryCarryReduction` do — it implements
+`Reduction` directly, holding a `BinaryFormReduction` and a
+`TernaryCarryReduction` as members and running them one after the other.
 
 `run()` also checks and throws `std::invalid_argument` immediately,
 unconditionally, if `rep` isn't a `RowValuesRepresentation` — rather than
 relying on `TernaryCarryTransformation`'s own (otherwise equivalent) check
 ever actually being reached. If `rep` happens to be empty,
-`BinaryFormCluster`'s reduction is a silent no-op regardless of
-representation kind, and `TernaryCarryCluster`'s worklist would never
+`BinaryFormReduction`'s reduction is a silent no-op regardless of
+representation kind, and `TernaryCarryReduction`'s worklist would never
 examine a single candidate — so without this upfront check, calling
 `run()` against the wrong kind of representation could easily fail to
 throw at all, purely by chance of what's currently in it.
@@ -972,11 +972,10 @@ else); building never computes anything, and never touches a
 turns that declaration into a **blueprint**: the same tree, but with
 explicit `Ensure(target)` steps spliced in wherever a leaf needs to become
 a specific representation (or, for a strategy like `MergingSparsePlan` —
-see "plan_zoo" below — `Cluster` steps wherever an `AlgorithmCluster`
+see "plan_zoo" below — `Reduce` steps wherever a `Reduction`
 needs to run). The blueprint is what's actually executed — *and printed by
-`plan()`* — so every conversion (or transformation cluster) a `Plan`
-performs shows up as a real, inspectable step, never hidden inside a
-virtual call:
+`plan()`* — so every conversion (or reduction) a `Plan` performs shows up
+as a real, inspectable step, never hidden inside a virtual call:
 
 ```cpp
 smooth::SparsePlan().scalar(1).plus().scalar(2).plan();
@@ -1133,8 +1132,8 @@ instead of `DefaultPlan`'s `ScalarRepresentation` — nothing else about
 error-handling are all inherited as-is. `include/smooth/plan_zoo.hpp` is a
 convenience header pulling in all of them, mirroring `smooth.hpp`. For now
 there are four, with more meant to follow as this library explores which
-representation — and which transformation clusters — are actually fastest
-for what. Three of the four are as simple as strategies get: each one's
+representation — and which reductions — are actually fastest for what.
+Three of the four are as simple as strategies get: each one's
 `buildBlueprint()` is exactly
 `return wrapLeavesWithEnsure(declaration, Representation::X);`:
 
@@ -1153,8 +1152,8 @@ The fourth, `MergingSparsePlan` (`name()` → `"merging_sparse"`), builds on
 `SparsePlan` rather than reimplementing `wrapLeavesWithEnsure` from
 scratch: it calls `SparsePlan::buildBlueprint()` first, then walks the
 result and wraps both operands of every `Multiply` node (however deeply
-nested) in a `Cluster` step running `MergeCluster` (see
-"algorithm_cluster_zoo" above) — greedily coalescing each operand's set
+nested) in a `Reduce` step running `MergeReduction` (see
+"reduction_zoo" above) — greedily coalescing each operand's set
 bits before the multiply actually runs, since `multiplyBitsWithCarry`'s
 cost is one `bit_operation`
 per pair of set bits, so fewer bits in means a cheaper multiply. `Add`
@@ -1169,10 +1168,10 @@ smooth::MergingSparsePlan p(metrics);
 p.scalar(15).times().scalar(15);
 p.plan();
 // multiply
-// ├─ cluster(merge)
+// ├─ reduce(merge)
 // │  └─ ensure(sparse)
 // │     └─ scalar: 15
-// └─ cluster(merge)
+// └─ reduce(merge)
 //    └─ ensure(sparse)
 //       └─ scalar: 15
 // = 225
@@ -1283,24 +1282,24 @@ same number; a merge that has to carry because its output bit is already
 occupied (12 + 12 carrying to 24); a custom `OffsetTransformation` built
 directly from its own offset lists, combining bits across both axes at
 once; and `SpreadTransformation(4)` bridging two bits 4 columns apart
-into `(i+2, j)` plus a 3-bit staircase; a `TransformationAlgorithmCluster`
+into `(i+2, j)` plus a 3-bit staircase; a `TransformationReduction`
 running just `MergeTransformation` to fixed point over a number with
 several independent merge opportunities and one collision-triggered
 cascade, with a `Metrics` attached to show `transformations_applied`; and,
 from `plan_zoo`, `MergingSparsePlan` computing the same expressions as
 `SparsePlan`, with `plan()` showing each `Multiply` node's operands wrapped
-in `cluster(merge)` while `Add` nodes are left bare, and a side-by-side
+in `reduce(merge)` while `Add` nodes are left bare, and a side-by-side
 `bit_operations` comparison against plain `SparsePlan` for the same
-multiplication; `BinaryFormCluster` reducing 18 (a single bit at
+multiplication; `BinaryFormReduction` reducing 18 (a single bit at
 `(1, 2)`) down to its binary form (bits at `(1, 0)` and `(4, 0)`, i.e.
 `16 + 2`), with a `Metrics` attached to show how many splits it took; and
-`TernaryFormCluster` reducing 13 (not itself a single term) down to two
+`TernaryFormReduction` reducing 13 (not itself a single term) down to two
 single-bit columns, `n[0] = 4` and `n[2] = 1`, with a `Metrics` attached
 to show how many subtract-3/add-1 steps it took; and, directly,
-`TernaryCarryTransformation`/`TernaryCarryCluster` reducing 9 (built
+`TernaryCarryTransformation`/`TernaryCarryReduction` reducing 9 (built
 straight into column 0 via `RowValuesRepresentation::setColumnValue()`,
-skipping `BinaryFormCluster` entirely) down to a single bit at column 2 --
-the same result `TernaryFormCluster` gets for 9 via its full two-phase
+skipping `BinaryFormReduction` entirely) down to a single bit at column 2 --
+the same result `TernaryFormReduction` gets for 9 via its full two-phase
 pipeline.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
@@ -1349,23 +1348,23 @@ multi-bit one, that one application both subtracts 3 from column `j` and
 adds 1 to column `j+1` while preserving `value()`, that its landings
 report *both* columns — unlike any `OffsetTransformation` — and that
 `affectedAnchors()` always answers `(0, j)` regardless of which row
-within the column actually changed), `TransformationAlgorithmCluster` (a
+within the column actually changed), `TransformationReduction` (a
 single merge, two independent merges applied in one `run()`, a
 collision-triggered cascade, a fully-packed number where every bit
 eventually merges, the `transformations_applied` counter, and a no-op
 case confirming an already-fixed-point number is left untouched),
-`BinaryFormCluster` (a single split with no carry, an already-binary
+`BinaryFormReduction` (a single split with no carry, an already-binary
 number left untouched, a carry-cascade case confirming 18 converges to
 exactly its true binary form — bits at rows 1 and 4, nowhere else — the
 `transformations_applied` counter, and value preservation, plus the
 column-0-only guarantee, checked across a range of representative numbers
-including 0), `TernaryCarryCluster` (`name()`, a no-op on an
+including 0), `TernaryCarryReduction` (`name()`, a no-op on an
 already-single-bit column, 9 reducing to a single bit at column 2 with the
 exact `transformations_applied` count checked — the same result
-`TernaryFormCluster` gets for 9 — and that it throws
+`TernaryFormReduction` gets for 9 — and that it throws
 `std::invalid_argument` for a non-`RowValuesRepresentation`, same as the
-transformation it's built from), `TernaryFormCluster` (a number already a
-single bit left untouched past `BinaryFormCluster`'s own no-op, 9 draining
+transformation it's built from), `TernaryFormReduction` (a number already a
+single bit left untouched past `BinaryFormReduction`'s own no-op, 9 draining
 fully out of columns 0 and 1 to land as a single bit at column 2 —
 matching its own single-term sparse form exactly — with the exact
 `transformations_applied` count checked, 13 landing on two single-bit
@@ -1392,16 +1391,16 @@ immediately at `scalar()`, its `Metrics` counter name, that `DefaultPlan`'s
 `name()` is unaffected, and polymorphic dispatch/destruction through a
 `Plan*`), `MergingSparsePlan` (`name()`, correctness against both an
 add-inside-multiply and a squared expression, `plan()`'s exact printed
-tree confirming `cluster(merge)` wraps only `Multiply` operands and never
+tree confirming `reduce(merge)` wraps only `Multiply` operands and never
 an `Add` node, a `bit_operations`/`transformations_applied` comparison
 against plain `SparsePlan` for the same multiplication, and that a nested
-`Multiply` gets its own inner `Cluster` wrapping too), `AlgorithmCluster`
+`Multiply` gets its own inner `Reduce` wrapping too), `Reduction`
 polymorphism (a `SparsePlan` subclass that wraps every leaf in a
-`BinaryFormCluster` instead of `MergeCluster`, confirming `Plan`'s
-`Cluster` mechanism — `wrapWithCluster()`, holding a plain
-`const AlgorithmCluster*` — genuinely doesn't care which concrete cluster
+`BinaryFormReduction` instead of `MergeReduction`, confirming `Plan`'s
+`Reduce` mechanism — `wrapWithReduction()`, holding a plain
+`const Reduction*` — genuinely doesn't care which concrete reduction
 it's given: it computes the right value, and `plan()` prints
-`cluster(binary_form)`), `validateBlueprint()` (three deliberately broken `Plan`
+`reduce(binary_form)`), `validateBlueprint()` (three deliberately broken `Plan`
 subclasses — one that tampers with a leaf's value, one that swaps in the
 wrong declaration shape, one that produces a malformed `Ensure` node — each
 confirmed to throw, plus a normal, correct `buildBlueprint()` confirmed

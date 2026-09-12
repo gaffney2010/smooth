@@ -12,8 +12,8 @@
 #include <utility>
 #include <vector>
 
-#include "smooth/algorithm_cluster_zoo.hpp"
 #include "smooth/plan_zoo.hpp"
+#include "smooth/reduction_zoo.hpp"
 #include "smooth/representation_zoo.hpp"
 #include "smooth/smooth.hpp"
 #include "smooth/transformation_zoo.hpp"
@@ -899,15 +899,15 @@ void testTransformation() {
 }
 
 // ---------------------------------------------------------------------
-// TransformationAlgorithmCluster: greedily applies a family of
+// TransformationReduction: greedily applies a family of
 // Transformations across an entire representation until none of them can
 // fire anywhere anymore, using a worklist seeded from the representation's
 // own set bits and re-examined only around each application's own output
 // landings -- never a full rescan.
 // ---------------------------------------------------------------------
-void testTransformationAlgorithmCluster() {
+void testTransformationReduction() {
     MergeTransformation merge;
-    TransformationAlgorithmCluster cluster({&merge}, "merge");
+    TransformationReduction reduction({&merge}, "merge");
 
     // A single merge, no cascading needed.
     {
@@ -915,8 +915,8 @@ void testTransformationAlgorithmCluster() {
         rep.set(0, 0, true);
         rep.set(1, 0, true);
         checkNear(rep.value(), 3.0, "before: 1 + 2 = 3");
-        cluster.run(rep);
-        checkNear(rep.value(), 3.0, "cluster.run() preserves value(): still 3");
+        reduction.run(rep);
+        checkNear(rep.value(), 3.0, "reduction.run() preserves value(): still 3");
         check(!rep.get(0, 0) && !rep.get(1, 0) && rep.get(0, 1), "the single merge opportunity is taken");
     }
 
@@ -929,8 +929,8 @@ void testTransformationAlgorithmCluster() {
         rep.set(2, 0, true);
         rep.set(3, 0, true);
         checkNear(rep.value(), 15.0, "before: 1 + 2 + 4 + 8 = 15");
-        cluster.run(rep);
-        checkNear(rep.value(), 15.0, "cluster.run() preserves value(): still 15");
+        reduction.run(rep);
+        checkNear(rep.value(), 15.0, "reduction.run() preserves value(): still 15");
         check(rep.get(0, 1) && rep.get(2, 1) && !rep.get(0, 0) && !rep.get(1, 0) && !rep.get(2, 0) &&
                   !rep.get(3, 0),
               "both independent merges (0+1 and 2+3) are found and applied, reaching a fixed point with no "
@@ -946,8 +946,8 @@ void testTransformationAlgorithmCluster() {
         rep.set(1, 0, true);  // 2  )
         rep.set(0, 1, true);  // 3  -- already occupies (0, 1), the merge's own output
         checkNear(rep.value(), 6.0, "before: 1 + 2 + 3 = 6");
-        cluster.run(rep);
-        checkNear(rep.value(), 6.0, "cluster.run() preserves value(), even through a carry mid-cluster");
+        reduction.run(rep);
+        checkNear(rep.value(), 6.0, "reduction.run() preserves value(), even through a carry mid-reduction");
         check(rep.get(1, 1) && !rep.get(0, 0) && !rep.get(1, 0) && !rep.get(0, 1),
               "the merge's carry (colliding with the pre-existing bit at (0, 1)) is followed to its landing "
               "at (1, 1) = 2*3 = 6, reaching a fixed point");
@@ -959,8 +959,8 @@ void testTransformationAlgorithmCluster() {
         SparseRepresentation rep(/*allow_fractional=*/true);
         for (int row = 0; row <= 5; ++row) rep.set(row, 0, true);  // 1+2+4+8+16+32 = 63
         checkNear(rep.value(), 63.0, "before: 1+2+4+8+16+32 = 63");
-        cluster.run(rep);
-        checkNear(rep.value(), 63.0, "cluster.run() preserves value() across a fully-packed run: still 63");
+        reduction.run(rep);
+        checkNear(rep.value(), 63.0, "reduction.run() preserves value() across a fully-packed run: still 63");
         check(rep.get(0, 1) && rep.get(2, 1) && rep.get(4, 1),
               "a fully-packed run of 6 bits collapses to 3, at every other row in column 1");
     }
@@ -974,9 +974,9 @@ void testTransformationAlgorithmCluster() {
         rep.set(1, 0, true);
         rep.set(2, 0, true);
         rep.set(3, 0, true);
-        cluster.run(rep, metrics);
+        reduction.run(rep, metrics);
         check(metrics->get("transformations_applied") == 2,
-              "TransformationAlgorithmCluster::run() counts one \"transformations_applied\" per successful "
+              "TransformationReduction::run() counts one \"transformations_applied\" per successful "
               "application when given a Metrics");
     }
 
@@ -986,27 +986,27 @@ void testTransformationAlgorithmCluster() {
         SparseRepresentation rep(/*allow_fractional=*/true);
         rep.set(0, 0, true);
         rep.set(2, 0, true);  // not adjacent to (0, 0) -- no merge opportunity
-        cluster.run(rep);
+        reduction.run(rep);
         check(rep.get(0, 0) && rep.get(2, 0), "run() on an already-fixed-point representation changes nothing");
     }
 }
 
 // ---------------------------------------------------------------------
-// BinaryFormCluster: SplitTransformation, run to fixed point but bounded
-// to column >= 0 -- see its own class comment (binary_form_cluster.hpp)
+// BinaryFormReduction: SplitTransformation, run to fixed point but bounded
+// to column >= 0 -- see its own class comment (binary_form_reduction.hpp)
 // for why the bound is required at all: unlike merge, split alone has no
 // natural floor, so an unbounded run() would never terminate.
 // ---------------------------------------------------------------------
-void testBinaryFormCluster() {
-    BinaryFormCluster cluster;
+void testBinaryFormReduction() {
+    BinaryFormReduction reduction;
 
     // A single bit with one factor of 3: splits once, no carry needed.
     {
         SparseRepresentation rep(/*allow_fractional=*/true);
         rep.set(0, 1, true);  // 2^0 * 3^1 = 3
         checkNear(rep.value(), 3.0, "before: 3");
-        cluster.run(rep);
-        checkNear(rep.value(), 3.0, "BinaryFormCluster::run() preserves value(): still 3");
+        reduction.run(rep);
+        checkNear(rep.value(), 3.0, "BinaryFormReduction::run() preserves value(): still 3");
         check(rep.get(0, 0) && rep.get(1, 0) && !rep.get(0, 1),
               "3 = 1 + 2 splits into column 0's bits at rows 0 and 1");
     }
@@ -1016,7 +1016,7 @@ void testBinaryFormCluster() {
         SparseRepresentation rep(/*allow_fractional=*/true);
         rep.set(0, 0, true);
         rep.set(3, 0, true);
-        cluster.run(rep);
+        reduction.run(rep);
         check(rep.get(0, 0) && rep.get(3, 0), "run() on an already-binary representation changes nothing");
     }
 
@@ -1028,8 +1028,8 @@ void testBinaryFormCluster() {
         SmoothInteger n;
         n.setValue(18LL);
         auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
-        cluster.run(*rep);
-        checkNear(rep->value(), 18.0, "BinaryFormCluster::run() preserves value(): still 18");
+        reduction.run(*rep);
+        checkNear(rep->value(), 18.0, "BinaryFormReduction::run() preserves value(): still 18");
         int count = 0;
         bool allCol0 = true;
         rep->forEachSet([&](int, int j) {
@@ -1046,9 +1046,9 @@ void testBinaryFormCluster() {
         auto metrics = std::make_shared<Metrics>();
         SparseRepresentation rep(/*allow_fractional=*/true);
         rep.set(0, 1, true);  // 3 -- one split needed
-        cluster.run(rep, metrics);
+        reduction.run(rep, metrics);
         check(metrics->get("transformations_applied") == 1,
-              "BinaryFormCluster::run() counts one \"transformations_applied\" per successful split");
+              "BinaryFormReduction::run() counts one \"transformations_applied\" per successful split");
     }
 
     // Value preservation, and that every surviving bit really does land in
@@ -1058,7 +1058,7 @@ void testBinaryFormCluster() {
             SmoothInteger n;
             n.setValue(v);
             auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
-            cluster.run(*rep);
+            reduction.run(*rep);
             bool allCol0 = true;
             long long recomputed = 0;
             rep->forEachSet([&](int i, int j) {
@@ -1128,34 +1128,34 @@ void testTernaryCarryTransformation() {
 }
 
 // ---------------------------------------------------------------------
-// TernaryCarryCluster: TernaryCarryTransformation run to a fixed point --
-// needs no `allowed` bound, unlike BinaryFormCluster, since
+// TernaryCarryReduction: TernaryCarryTransformation run to a fixed point --
+// needs no `allowed` bound, unlike BinaryFormReduction, since
 // TernaryCarryTransformation's own canApply() is already self-limiting.
 // ---------------------------------------------------------------------
-void testTernaryCarryCluster() {
-    TernaryCarryCluster cluster;
+void testTernaryCarryReduction() {
+    TernaryCarryReduction reduction;
 
-    check(cluster.name() == "ternary_carry", "TernaryCarryCluster::name() is \"ternary_carry\"");
+    check(reduction.name() == "ternary_carry", "TernaryCarryReduction::name() is \"ternary_carry\"");
 
     // A column already down to a single bit: a safe no-op.
     {
         RowValuesRepresentation rep(/*allow_fractional=*/false);
         rep.setColumnValue(0, 4.0);
-        cluster.run(rep);
+        reduction.run(rep);
         check(rep.columnValue(0) == 4.0, "run() on an already-reduced column changes nothing");
     }
 
     // 9 = 1001 (2 bits) at column 0: drains fully out of columns 0 and 1,
     // landing as a single bit at column 2 -- the same result
-    // testTernaryFormCluster() gets for 9, confirming TernaryCarryCluster
+    // testTernaryFormReduction() gets for 9, confirming TernaryCarryReduction
     // alone (given a RowValuesRepresentation already holding 9 at column 0,
-    // BinaryFormCluster's job elsewhere) reduces it exactly the same way.
+    // BinaryFormReduction's job elsewhere) reduces it exactly the same way.
     {
         RowValuesRepresentation rep(/*allow_fractional=*/false);
         rep.setColumnValue(0, 9.0);
         auto metrics = std::make_shared<Metrics>();
-        cluster.run(rep, metrics);
-        checkNear(rep.value(), 9.0, "TernaryCarryCluster::run() preserves value(): still 9");
+        reduction.run(rep, metrics);
+        checkNear(rep.value(), 9.0, "TernaryCarryReduction::run() preserves value(): still 9");
         check(rep.columnValue(0) == 0.0 && rep.columnValue(1) == 0.0 && rep.columnValue(2) == 1.0,
               "9 = 1*3^2 after ternary-carry reduction alone");
         check(metrics->get("transformations_applied") == 4, "9 needs 4 subtract-3/add-1 steps");
@@ -1167,32 +1167,32 @@ void testTernaryCarryCluster() {
         SparseRepresentation rep(/*allow_fractional=*/true);
         rep.set(0, 0, true);
         rep.set(1, 0, true);
-        checkThrows([&] { cluster.run(rep); }, "TernaryCarryCluster::run() throws for a non-RowValuesRepresentation");
+        checkThrows([&] { reduction.run(rep); }, "TernaryCarryReduction::run() throws for a non-RowValuesRepresentation");
     }
 }
 
 // ---------------------------------------------------------------------
-// TernaryFormCluster: BinaryFormCluster followed by TernaryCarryCluster,
+// TernaryFormReduction: BinaryFormReduction followed by TernaryCarryReduction,
 // so every nonzero column of a RowValuesRepresentation ends up holding a
 // single power of two.
 // ---------------------------------------------------------------------
-void testTernaryFormCluster() {
+void testTernaryFormReduction() {
     auto isSingleBit = [](double n) {
         long long w = static_cast<long long>(std::llround(n));
         return (w & (w - 1)) == 0;  // true for 0 and every power of two
     };
 
-    TernaryFormCluster cluster;
+    TernaryFormReduction reduction;
 
     // Already a single bit, no factor of 3 to redistribute at all: a
-    // no-op past the initial (also no-op) BinaryFormCluster pass.
+    // no-op past the initial (also no-op) BinaryFormReduction pass.
     {
         SmoothInteger n;
         n.setValue(4LL);
         auto rep = n.representationAs(SmoothInteger::Representation::RowValues);
-        cluster.run(*rep);
+        reduction.run(*rep);
         auto* rv = dynamic_cast<RowValuesRepresentation*>(rep.get());
-        checkNear(rep->value(), 4.0, "TernaryFormCluster::run() preserves value(): still 4");
+        checkNear(rep->value(), 4.0, "TernaryFormReduction::run() preserves value(): still 4");
         check(rv->columnValue(0) == 4.0, "4 is already a single bit -- column 0 is untouched");
     }
 
@@ -1206,9 +1206,9 @@ void testTernaryFormCluster() {
         n.setValue(9LL);
         auto rep = n.representationAs(SmoothInteger::Representation::RowValues);
         auto metrics = std::make_shared<Metrics>();
-        cluster.run(*rep, metrics);
+        reduction.run(*rep, metrics);
         auto* rv = dynamic_cast<RowValuesRepresentation*>(rep.get());
-        checkNear(rep->value(), 9.0, "TernaryFormCluster::run() preserves value(): still 9");
+        checkNear(rep->value(), 9.0, "TernaryFormReduction::run() preserves value(): still 9");
         check(rv->columnValue(0) == 0.0 && rv->columnValue(1) == 0.0 && rv->columnValue(2) == 1.0,
               "9 = 1 * 3^2: columns 0 and 1 empty out entirely, column 2 ends at 1");
         check(metrics->get("transformations_applied") == 4,
@@ -1221,9 +1221,9 @@ void testTernaryFormCluster() {
         SmoothInteger n;
         n.setValue(13LL);
         auto rep = n.representationAs(SmoothInteger::Representation::RowValues);
-        cluster.run(*rep);
+        reduction.run(*rep);
         auto* rv = dynamic_cast<RowValuesRepresentation*>(rep.get());
-        checkNear(rep->value(), 13.0, "TernaryFormCluster::run() preserves value(): still 13");
+        checkNear(rep->value(), 13.0, "TernaryFormReduction::run() preserves value(): still 13");
         check(rv->columnValue(0) == 4.0 && rv->columnValue(2) == 1.0 && rv->columnValue(1) == 0.0,
               "13 = 4 * 3^0 + 1 * 3^2: two surviving columns, each a single bit");
     }
@@ -1231,7 +1231,7 @@ void testTernaryFormCluster() {
     // The result only ever depends on the total value, never on the
     // starting column layout: build 11 (= 5*3^0 + 2*3^1) directly via
     // setColumnValue() rather than SmoothInteger's own column-0-only
-    // setValue(), confirming BinaryFormCluster's initial pass really does
+    // setValue(), confirming BinaryFormReduction's initial pass really does
     // collapse an arbitrary starting layout before the column-by-column
     // reduction begins.
     {
@@ -1239,8 +1239,8 @@ void testTernaryFormCluster() {
         rep.setColumnValue(0, 5.0);
         rep.setColumnValue(1, 2.0);
         checkNear(rep.value(), 11.0, "before: 5*3^0 + 2*3^1 = 11");
-        cluster.run(rep);
-        checkNear(rep.value(), 11.0, "TernaryFormCluster::run() preserves value(): still 11");
+        reduction.run(rep);
+        checkNear(rep.value(), 11.0, "TernaryFormReduction::run() preserves value(): still 11");
         bool allSingle = true;
         rep.forEachSet([&](int, int j) {
             if (!isSingleBit(rep.columnValue(j))) allSingle = false;
@@ -1255,7 +1255,7 @@ void testTernaryFormCluster() {
             SmoothInteger n;
             n.setValue(v);
             auto rep = n.representationAs(SmoothInteger::Representation::RowValues);
-            cluster.run(*rep);
+            reduction.run(*rep);
             auto* rv = dynamic_cast<RowValuesRepresentation*>(rep.get());
             check(rep->value() == static_cast<double>(v), "value is preserved for v=" + std::to_string(v));
             bool allSingle = true;
@@ -1269,17 +1269,17 @@ void testTernaryFormCluster() {
     // Running it against anything other than a RowValuesRepresentation is
     // a usage error -- there's no way to subtract 3 from an arbitrary
     // column's magnitude without decomposing it into individual bits
-    // first, which this cluster deliberately doesn't do.
+    // first, which this reduction deliberately doesn't do.
     {
         SparseRepresentation rep(/*allow_fractional=*/true);
         rep.set(0, 0, true);
         bool threw = false;
         try {
-            cluster.run(rep);
+            reduction.run(rep);
         } catch (const std::invalid_argument&) {
             threw = true;
         }
-        check(threw, "TernaryFormCluster::run() throws std::invalid_argument for a non-RowValuesRepresentation");
+        check(threw, "TernaryFormReduction::run() throws std::invalid_argument for a non-RowValuesRepresentation");
     }
 }
 
@@ -1834,7 +1834,7 @@ void testPlanZoo() {
 }
 
 // ---------------------------------------------------------------------
-// MergingSparsePlan: SparsePlan, plus a TransformationAlgorithmCluster
+// MergingSparsePlan: SparsePlan, plus a TransformationReduction
 // (just MergeTransformation) run on both operands before every multiply --
 // never before an add, since merging only helps a multiply's n*m
 // bit_operations blowup. Both operands of *every* Multiply node get
@@ -1850,7 +1850,7 @@ void testMergingSparsePlan() {
     checkNear(MergingSparsePlan().scalar(15).times().scalar(15).calculate(), 225.0,
               "MergingSparsePlan: 15 * 15 = 225");
 
-    // The printed tree shows cluster(merge) wrapping each Multiply
+    // The printed tree shows reduce(merge) wrapping each Multiply
     // operand, but *not* wrapping Add's operands.
     {
         MergingSparsePlan p;
@@ -1859,17 +1859,17 @@ void testMergingSparsePlan() {
         p.plan(out);
         check(out.str() ==
                   "multiply\n"
-                  "├─ cluster(merge)\n"
+                  "├─ reduce(merge)\n"
                   "│  └─ ensure(sparse)\n"
                   "│     └─ scalar: 3\n"
-                  "└─ cluster(merge)\n"
+                  "└─ reduce(merge)\n"
                   "   └─ add\n"
                   "      ├─ ensure(sparse)\n"
                   "      │  └─ scalar: 4\n"
                   "      └─ ensure(sparse)\n"
                   "         └─ scalar: 2\n"
                   "= 18\n",
-              "MergingSparsePlan wraps both of multiply's operands in cluster(merge), but add's operands are "
+              "MergingSparsePlan wraps both of multiply's operands in reduce(merge), but add's operands are "
               "untouched");
     }
 
@@ -1901,18 +1901,18 @@ void testMergingSparsePlan() {
         std::ostringstream out;
         p.plan(out);
         std::string tree = out.str();
-        check(tree.find("cluster(merge)\n│  └─ multiply\n") != std::string::npos,
-              "the inner multiply's own result is wrapped in cluster(merge) before feeding the outer multiply");
+        check(tree.find("reduce(merge)\n│  └─ multiply\n") != std::string::npos,
+              "the inner multiply's own result is wrapped in reduce(merge) before feeding the outer multiply");
     }
 }
 
 // ---------------------------------------------------------------------
-// AlgorithmCluster polymorphism: Plan's Cluster blueprint node
-// (wrapWithCluster()) holds a plain AlgorithmCluster*, not a
-// TransformationAlgorithmCluster* -- so a buildBlueprint() override can
-// splice in *any* concrete cluster, not just MergeCluster. This Plan
-// subclass wraps every leaf in a BinaryFormCluster instead, purely to
-// prove the mechanism doesn't hardcode which cluster kind it expects.
+// Reduction polymorphism: Plan's Reduce blueprint node
+// (wrapWithReduction()) holds a plain Reduction*, not a
+// TransformationReduction* -- so a buildBlueprint() override can
+// splice in *any* concrete reduction, not just MergeReduction. This Plan
+// subclass wraps every leaf in a BinaryFormReduction instead, purely to
+// prove the mechanism doesn't hardcode which reduction kind it expects.
 // ---------------------------------------------------------------------
 class BinaryWrappingPlan : public SparsePlan {
 public:
@@ -1921,36 +1921,36 @@ public:
 
 protected:
     std::unique_ptr<Node> buildBlueprint(const Node& declaration) const override {
-        return wrapEveryLeafWithCluster(SparsePlan::buildBlueprint(declaration));
+        return wrapEveryLeafWithReduction(SparsePlan::buildBlueprint(declaration));
     }
 
 private:
-    std::unique_ptr<Node> wrapEveryLeafWithCluster(std::unique_ptr<Node> node) const {
+    std::unique_ptr<Node> wrapEveryLeafWithReduction(std::unique_ptr<Node> node) const {
         if (node->kind == Node::Kind::Ensure) {
-            return wrapWithCluster(std::move(node), cluster_);
+            return wrapWithReduction(std::move(node), reduction_);
         }
         if (node->kind == Node::Kind::Add || node->kind == Node::Kind::Multiply) {
-            node->left = wrapEveryLeafWithCluster(std::move(node->left));
-            node->right = wrapEveryLeafWithCluster(std::move(node->right));
+            node->left = wrapEveryLeafWithReduction(std::move(node->left));
+            node->right = wrapEveryLeafWithReduction(std::move(node->right));
         }
         return node;
     }
 
-    BinaryFormCluster cluster_;
+    BinaryFormReduction reduction_;
 };
 
-void testAlgorithmClusterPolymorphism() {
+void testReductionPolymorphism() {
     checkNear(BinaryWrappingPlan().scalar(3).times().left().scalar(4).plus().scalar(2).right().calculate(), 18.0,
-              "BinaryWrappingPlan (Cluster wraps every leaf in BinaryFormCluster instead of MergeCluster): "
+              "BinaryWrappingPlan (Reduce wraps every leaf in BinaryFormReduction instead of MergeReduction): "
               "3 * (4 + 2) = 18");
 
     BinaryWrappingPlan p;
     p.scalar(3).times().scalar(4);
     std::ostringstream out;
     p.plan(out);
-    check(out.str().find("cluster(binary_form)") != std::string::npos,
-          "Plan's Cluster mechanism accepts any AlgorithmCluster, not just MergeCluster -- the printed tree shows "
-          "cluster(binary_form)");
+    check(out.str().find("reduce(binary_form)") != std::string::npos,
+          "Plan's Reduce mechanism accepts any Reduction, not just MergeReduction -- the printed tree shows "
+          "reduce(binary_form)");
 }
 
 // ---------------------------------------------------------------------
@@ -2103,17 +2103,17 @@ int main() {
     testMultiplication();
     testCopyAndMoveSemantics();
     testTransformation();
-    testTransformationAlgorithmCluster();
-    testBinaryFormCluster();
+    testTransformationReduction();
+    testBinaryFormReduction();
     testTernaryCarryTransformation();
-    testTernaryCarryCluster();
-    testTernaryFormCluster();
+    testTernaryCarryReduction();
+    testTernaryFormReduction();
     testMetrics();
     testInstrumentationCounters();
     testPlan();
     testPlanZoo();
     testMergingSparsePlan();
-    testAlgorithmClusterPolymorphism();
+    testReductionPolymorphism();
     testBlueprintValidation();
     testNumberViaForcesConversion();
 

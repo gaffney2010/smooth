@@ -41,8 +41,8 @@ namespace smooth {
 // confined to one residue class mod 3, and that class's smallest
 // nonnegative member -- 0, 1, or 2 -- always has popcount <= 1. So it's
 // guaranteed to stop at or before reaching it, never below -- see
-// TernaryCarryCluster (algorithm_cluster_zoo/ternary_carry_cluster.hpp),
-// which runs this to a fixed point the same way MergeCluster runs
+// TernaryCarryReduction (reduction_zoo/ternary_carry_reduction.hpp), which
+// runs this to a fixed point the same way MergeReduction runs
 // MergeTransformation, needing no bound at all.
 class TernaryCarryTransformation : public Transformation {
 public:

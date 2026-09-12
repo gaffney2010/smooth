@@ -8,8 +8,8 @@
 #include <utility>
 #include <vector>
 
-#include "smooth/algorithm_cluster.hpp"
 #include "smooth/metrics.hpp"
+#include "smooth/reduction.hpp"
 #include "smooth/representation_base.hpp"
 #include "smooth/representation_zoo.hpp"
 #include "smooth/smooth_number_base.hpp"
@@ -227,18 +227,17 @@ protected:
     // Node serves as both the declaration (the pure, representation-
     // agnostic expression tree scalar()/number()/numberVia()/plus()/
     // times()/left()/right() build -- ScalarLeaf/NumberLeaf/Add/Multiply
-    // only, never Ensure or Cluster) and, after buildBlueprint() runs, the
-    // blueprint itself (the same shape, but with Ensure/Cluster nodes
-    // spliced in wherever a conversion, or a transformation cluster, needs
-    // to run).
+    // only, never Ensure or Reduce) and, after buildBlueprint() runs, the
+    // blueprint itself (the same shape, but with Ensure/Reduce nodes
+    // spliced in wherever a conversion, or a reduction, needs to run).
     struct Node {
-        enum class Kind { ScalarLeaf, NumberLeaf, Ensure, Cluster, Add, Multiply };
+        enum class Kind { ScalarLeaf, NumberLeaf, Ensure, Reduce, Add, Multiply };
         Kind kind;
         double scalarValue = 0.0;                        // ScalarLeaf
         SmoothNumberBase* numberSource = nullptr;          // NumberLeaf
         SmoothNumberBase::Representation ensureTarget{};    // Ensure
-        const AlgorithmCluster* cluster = nullptr;  // Cluster
-        std::unique_ptr<Node> child;                         // Ensure, Cluster: the node being wrapped
+        const Reduction* reduction = nullptr;  // Reduce
+        std::unique_ptr<Node> child;                         // Ensure, Reduce: the node being wrapped
         std::unique_ptr<Node> left, right;                    // Add, Multiply
     };
 
@@ -270,25 +269,25 @@ protected:
         return node;
     }
 
-    // Wraps an already-built blueprint node in a Cluster node that, at
-    // execution time, greedily runs `cluster` against that node's own
-    // resulting representation (a clone of it, so the un-clustered node
+    // Wraps an already-built blueprint node in a Reduce node that, at
+    // execution time, greedily runs `reduction` against that node's own
+    // resulting representation (a clone of it, so the un-reduced node
     // still prints/inspects with its original bits) until none of
-    // `cluster`'s transformations can fire anywhere anymore. Unlike
-    // Ensure, a Cluster node's *shape* -- that a cluster runs here at all,
-    // wrapping this particular operand -- is still decided statically by
-    // buildBlueprint(), same as always; only *which cells it actually
-    // touches* is inherently data-dependent, discovered at execution time
-    // from the real bits. `cluster` is any AlgorithmCluster
-    // (algorithm_cluster.hpp) -- a named algorithm_cluster_zoo/ preset, or
-    // a bespoke TransformationAlgorithmCluster -- so a buildBlueprint()
-    // override never has to name which concrete kind it's using; Plan
-    // itself never does either. See plan_zoo/merging_sparse_plan.hpp for
-    // the one strategy that currently uses this.
-    std::unique_ptr<Node> wrapWithCluster(std::unique_ptr<Node> node, const AlgorithmCluster& cluster) const {
+    // `reduction`'s transformations can fire anywhere anymore. Unlike
+    // Ensure, a Reduce node's *shape* -- that a reduction runs here at
+    // all, wrapping this particular operand -- is still decided
+    // statically by buildBlueprint(), same as always; only *which cells
+    // it actually touches* is inherently data-dependent, discovered at
+    // execution time from the real bits. `reduction` is any Reduction
+    // (reduction.hpp) -- a named reduction_zoo/ preset, or a bespoke
+    // TransformationReduction -- so a buildBlueprint() override never has
+    // to name which concrete kind it's using; Plan itself never does
+    // either. See plan_zoo/merging_sparse_plan.hpp for the one strategy
+    // that currently uses this.
+    std::unique_ptr<Node> wrapWithReduction(std::unique_ptr<Node> node, const Reduction& reduction) const {
         auto wrapped = std::make_unique<Node>();
-        wrapped->kind = Node::Kind::Cluster;
-        wrapped->cluster = &cluster;
+        wrapped->kind = Node::Kind::Reduce;
+        wrapped->reduction = &reduction;
         wrapped->child = std::move(node);
         return wrapped;
     }
@@ -308,12 +307,12 @@ private:
     // carrying its already-computed representation. The last entry is
     // always the overall root.
     struct Step {
-        enum class Kind { Scalar, Ensure, EnsureNumber, Cluster, Add, Multiply } kind;
+        enum class Kind { Scalar, Ensure, EnsureNumber, Reduce, Add, Multiply } kind;
         std::unique_ptr<RepresentationBase> rep;
-        std::size_t childStep = 0;                 // Ensure, Cluster
+        std::size_t childStep = 0;                 // Ensure, Reduce
         std::size_t leftStep = 0, rightStep = 0;    // Add, Multiply
         SmoothNumberBase::Representation ensureTarget{};  // Ensure, EnsureNumber
-        const AlgorithmCluster* cluster = nullptr;  // Cluster
+        const Reduction* reduction = nullptr;  // Reduce
     };
 
     static bool isLeaf(const Node& n) { return n.kind == Node::Kind::ScalarLeaf || n.kind == Node::Kind::NumberLeaf; }
@@ -325,26 +324,25 @@ private:
         copy->scalarValue = n.scalarValue;
         copy->numberSource = n.numberSource;
         copy->ensureTarget = n.ensureTarget;
-        copy->cluster = n.cluster;
+        copy->reduction = n.reduction;
         if (n.child) copy->child = cloneNode(*n.child);
         if (n.left) copy->left = cloneNode(*n.left);
         if (n.right) copy->right = cloneNode(*n.right);
         return copy;
     }
 
-    // Confirms that stripping every Ensure/Cluster "decoration" node out of
+    // Confirms that stripping every Ensure/Reduce "decoration" node out of
     // `blueprint` yields back exactly `declaration`'s own shape and leaf
     // contents -- i.e. a buildBlueprint() override may only ever *decorate*
-    // the declaration with conversions/transformation clusters, never
-    // change what's actually being computed. Throws std::invalid_argument
-    // -- a bug in the Plan subclass, not a usage error -- if it doesn't
-    // match.
+    // the declaration with conversions/reductions, never change what's
+    // actually being computed. Throws std::invalid_argument -- a bug in
+    // the Plan subclass, not a usage error -- if it doesn't match.
     void validateBlueprint(const Node& declaration, const Node& blueprint) const {
         const Node* b = &blueprint;
-        while (b->kind == Node::Kind::Ensure || b->kind == Node::Kind::Cluster) {
+        while (b->kind == Node::Kind::Ensure || b->kind == Node::Kind::Reduce) {
             if (!b->child) {
                 throw std::invalid_argument("Plan: " + name() +
-                                             "::buildBlueprint() produced an Ensure/Cluster node with no child");
+                                             "::buildBlueprint() produced an Ensure/Reduce node with no child");
             }
             b = b->child.get();
         }
@@ -371,8 +369,8 @@ private:
                 validateBlueprint(*declaration.right, *b->right);
                 return;
             case Node::Kind::Ensure:
-            case Node::Kind::Cluster:
-                return;  // unreachable: declaration never contains Ensure/Cluster nodes
+            case Node::Kind::Reduce:
+                return;  // unreachable: declaration never contains Ensure/Reduce nodes
         }
     }
 
@@ -518,19 +516,19 @@ private:
                 steps_.push_back(std::move(step));
                 return steps_.size() - 1;
             }
-            case Node::Kind::Cluster: {
+            case Node::Kind::Reduce: {
                 std::size_t childStep = compileBlueprintNode(*node.child);
                 // Cloned, not mutated in place: steps_[childStep].rep stays
                 // exactly as it was (so printing/inspecting that step still
-                // shows its pre-cluster bits), and the cluster's changes
+                // shows its pre-reduction bits), and the reduction's changes
                 // land only on this new step's own independent copy.
                 std::unique_ptr<RepresentationBase> rep = steps_[childStep].rep->clone();
-                node.cluster->run(*rep, metrics_);
+                node.reduction->run(*rep, metrics_);
                 Step step;
-                step.kind = Step::Kind::Cluster;
+                step.kind = Step::Kind::Reduce;
                 step.rep = std::move(rep);
                 step.childStep = childStep;
-                step.cluster = node.cluster;
+                step.reduction = node.reduction;
                 steps_.push_back(std::move(step));
                 return steps_.size() - 1;
             }
@@ -600,8 +598,8 @@ private:
                 printStep(os, step.childStep, childIndent, true, false);
                 return;
             }
-            case Step::Kind::Cluster: {
-                os << "cluster(" << step.cluster->name() << ")\n";
+            case Step::Kind::Reduce: {
+                os << "reduce(" << step.reduction->name() << ")\n";
                 std::string childIndent = indent + (isRoot ? "" : (isLast ? "   " : "│  "));
                 printStep(os, step.childStep, childIndent, true, false);
                 return;

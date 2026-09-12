@@ -15,9 +15,9 @@ namespace smooth {
 // (its "landings") -- the only cells worth re-examining afterward for
 // newly created opportunities, since applying a Transformation can only
 // ever create new opportunities at cells it touched, never anywhere else.
-// AlgorithmCluster (algorithm_cluster.hpp) is the other half of this
-// idea: repeated application of one or more Transformations until some
-// condition is met (typically: none of them can fire anywhere anymore).
+// Reduction (reduction.hpp) is the other half of this idea: repeated
+// application of one or more Transformations until some condition is met
+// (typically: none of them can fire anywhere anymore).
 //
 // This is deliberately the smallest possible interface, because
 // "distinct unit of work" covers genuinely different shapes. Every
@@ -45,9 +45,8 @@ public:
     // Precondition: canApply(rep, i, j). Returns every cell this
     // application actually changed -- see the class comment above for why
     // that's exactly what's worth re-examining afterward, and
-    // TransformationAlgorithmCluster
-    // (algorithm_cluster_zoo/transformation_algorithm_cluster.hpp) for the
-    // one place that currently relies on it.
+    // TransformationReduction (reduction_zoo/transformation_reduction.hpp)
+    // for the one place that currently relies on it.
     virtual std::vector<std::pair<int, int>> applyAndReportLandings(RepresentationBase& rep, int i, int j) const = 0;
 
     // Given that cell (i, j) just changed, returns every anchor -- for
@@ -58,7 +57,7 @@ public:
     // column rather than a fixed cell, it can be just as simple (any
     // change anywhere in column j means column j itself is worth
     // rechecking) but for a fundamentally different reason. Either way,
-    // this is what lets TransformationAlgorithmCluster seed and grow its
+    // this is what lets TransformationReduction seed and grow its
     // worklist without knowing anything about what shape a particular
     // Transformation actually is.
     virtual std::vector<std::pair<int, int>> affectedAnchors(int i, int j) const = 0;
@@ -81,11 +80,11 @@ public:
 // every representation but the canonical one, same as any other set()
 // call) or directly on a bare RepresentationBase. The non-template
 // canApply()/applyAndReportLandings() overrides below (required by
-// Transformation) are what TransformationAlgorithmCluster and Plan
-// actually call, through a `const Transformation&`/`const Transformation*`
-// -- a plain RepresentationBase is all either of them ever has, and all
-// either of them ever needs, since a Plan's blueprint execution works
-// with representations directly, never a SmoothNumberBase. The two
+// Transformation) are what TransformationReduction and Plan actually
+// call, through a `const Transformation&`/`const Transformation*` -- a
+// plain RepresentationBase is all either of them ever has, and all either
+// of them ever needs, since a Plan's blueprint execution works with
+// representations directly, never a SmoothNumberBase. The two
 // non-template overrides just instantiate the template versions with
 // Bits = RepresentationBase -- overload resolution always prefers a
 // non-template exact match over a template instantiation when both are

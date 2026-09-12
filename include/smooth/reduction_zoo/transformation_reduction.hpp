@@ -8,8 +8,8 @@
 #include <utility>
 #include <vector>
 
-#include "smooth/algorithm_cluster.hpp"
 #include "smooth/metrics.hpp"
+#include "smooth/reduction.hpp"
 #include "smooth/representation_base.hpp"
 #include "smooth/transformation.hpp"
 
@@ -18,21 +18,20 @@ namespace smooth {
 // A small family of Transformations (transformation.hpp), greedily
 // applied across an entire RepresentationBase until none of them can fire
 // anywhere anymore -- a fixed point. This is the generic engine behind
-// every AlgorithmCluster (algorithm_cluster.hpp) this library builds
-// directly from Transformations, and it lives here in
-// algorithm_cluster_zoo/ -- despite being the generic case, not a
-// specific preset -- because nothing outside this folder ever needs to
-// name it: MergeCluster, BinaryFormCluster, and TernaryCarryCluster (this
-// folder) are its only subclasses, each fixing its own
-// Transformation(s)/name/bound as constructor arguments and adding
-// nothing else; Plan (plan.hpp) only ever holds the abstract
-// AlgorithmCluster it produces. Nothing about this engine cares what
-// *kind* of Transformation it's holding, or whether all of them are even
-// the same kind -- transformations_ is a vector of the abstract
-// Transformation base, so an OffsetTransformation-based preset and one
-// built some entirely other way (see TernaryCarryTransformation,
+// every Reduction (reduction.hpp) this library builds directly from
+// Transformations, and it lives here in reduction_zoo/ -- despite being
+// the generic case, not a specific preset -- because nothing outside this
+// folder ever needs to name it: MergeReduction, BinaryFormReduction, and
+// TernaryCarryReduction (this folder) are its only subclasses, each
+// fixing its own Transformation(s)/name/bound as constructor arguments
+// and adding nothing else; Plan (plan.hpp) only ever holds the abstract
+// Reduction it produces. Nothing about this engine cares what *kind* of
+// Transformation it's holding, or whether all of them are even the same
+// kind -- transformations_ is a vector of the abstract Transformation
+// base, so an OffsetTransformation-based preset and one built some
+// entirely other way (see TernaryCarryTransformation,
 // transformation_zoo/ternary_carry_transformation.hpp) can even be mixed
-// in the same cluster.
+// in the same reduction.
 //
 // Whether that fixed point is ever reached depends on the family. A
 // family like {MergeTransformation} always terminates on its own: every
@@ -52,14 +51,13 @@ namespace smooth {
 // forever. That's what the optional `allowed` constructor parameter below
 // is for -- it lets a caller bound the region a fixed-point search is
 // allowed to explore, turning a search that would otherwise run forever
-// into one that provably terminates at the boundary. See BinaryFormCluster
-// (algorithm_cluster_zoo/binary_form_cluster.hpp) for exactly this:
+// into one that provably terminates at the boundary. See BinaryFormReduction
+// (reduction_zoo/binary_form_reduction.hpp) for exactly this:
 // {SplitTransformation}, bounded to column >= 0. It's a constructor
 // parameter, not a per-run() one, because it's a property of *this
-// cluster* (which region it's meant to search), fixed for its whole
-// lifetime -- and because run(rep, metrics) then matches
-// AlgorithmCluster's own signature exactly, with nothing extra to pass at
-// the call site.
+// reduction* (which region it's meant to search), fixed for its whole
+// lifetime -- and because run(rep, metrics) then matches Reduction's own
+// signature exactly, with nothing extra to pass at the call site.
 //
 // The interesting part is doing this *without* rescanning the whole
 // representation after every single application. A new opportunity for
@@ -73,20 +71,20 @@ namespace smooth {
 // re-examines the cells right around where that application's own
 // affectedAnchors() says are worth another look, rather than looking
 // anywhere else.
-class TransformationAlgorithmCluster : public AlgorithmCluster {
+class TransformationReduction : public Reduction {
 public:
     // `name` is purely cosmetic -- it's what Plan (plan.hpp) shows for a
-    // Cluster blueprint step that runs this cluster, e.g. "cluster(merge)".
-    // `allowed`, if given, bounds every anchor this cluster will ever try
+    // Reduce blueprint step that runs this reduction, e.g. "reduce(merge)".
+    // `allowed`, if given, bounds every anchor this reduction will ever try
     // (see the class comment above) -- e.g. `[](int, int j){ return j >= 0; }`
     // to never explore below column 0.
-    TransformationAlgorithmCluster(std::vector<const Transformation*> transformations, std::string name,
-                                    std::function<bool(int, int)> allowed = nullptr)
+    TransformationReduction(std::vector<const Transformation*> transformations, std::string name,
+                             std::function<bool(int, int)> allowed = nullptr)
         : transformations_(std::move(transformations)), name_(std::move(name)), allowed_(std::move(allowed)) {}
 
     const std::string& name() const override { return name_; }
 
-    // Runs every transformation in this cluster, wherever any of them can
+    // Runs every transformation in this reduction, wherever any of them can
     // apply (and `allowed`, if given at construction, permits), against
     // `rep`, until none of them can fire anywhere anymore. If `metrics` is
     // given, increments "transformations_applied" once per successful

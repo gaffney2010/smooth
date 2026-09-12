@@ -2,8 +2,8 @@
 #include <memory>
 #include <sstream>
 
-#include "smooth/algorithm_cluster_zoo.hpp"
 #include "smooth/plan_zoo.hpp"
+#include "smooth/reduction_zoo.hpp"
 #include "smooth/representation_zoo.hpp"
 #include "smooth/smooth.hpp"
 #include "smooth/transformation_zoo.hpp"
@@ -573,7 +573,7 @@ int main() {
     spread.printSparse();
 
     // --- MergingSparsePlan ----------------------------------------------------
-    // A TransformationAlgorithmCluster greedily applies a family of
+    // A TransformationReduction greedily applies a family of
     // Transformations across an entire representation until none of them
     // can fire anywhere anymore -- MergingSparsePlan uses one containing
     // just MergeTransformation, run on both operands before every multiply
@@ -581,7 +581,7 @@ int main() {
     // bit_operations blowup). 15 = 1111 binary (4 bits) merges down to just
     // 2 bits first, so 15*15 costs 2*2 = 4 bit_operations instead of
     // SparsePlan's unmerged 4*4 = 16 -- and the printed tree shows exactly
-    // where each cluster ran.
+    // where each reduction ran.
     std::cout << "\n--- MergingSparsePlan ---\n";
     smooth::MergingSparsePlan mergingPlan;
     mergingPlan.scalar(15).times().scalar(15);
@@ -595,32 +595,32 @@ int main() {
     std::cout << "MergingSparsePlan bit_operations for 15*15: " << mergingMetrics->get("bit_operations")
               << " (after " << mergingMetrics->get("transformations_applied") << " merges)\n";
 
-    // --- BinaryFormCluster ------------------------------------------------
-    // The reverse idea: a TransformationAlgorithmCluster containing just
+    // --- BinaryFormReduction ------------------------------------------------
+    // The reverse idea: a TransformationReduction containing just
     // SplitTransformation, run until every bit sits in column 0 -- i.e.
     // until the number is a plain sum of distinct powers of 2, its
-    // ordinary binary representation. Unlike the merge cluster above,
+    // ordinary binary representation. Unlike the merge reduction above,
     // split alone has no natural floor (nothing about it knows column 0 is
     // special -- left unbounded it would just keep splitting a column-0 bit
-    // into column -1, then -2, forever), so BinaryFormCluster bounds its
-    // TransformationAlgorithmCluster::run() with an `allowed` predicate
-    // that blocks every anchor below column 0.
-    std::cout << "\n--- BinaryFormCluster ---\n";
+    // into column -1, then -2, forever), so BinaryFormReduction bounds its
+    // TransformationReduction::run() with an `allowed` predicate that
+    // blocks every anchor below column 0.
+    std::cout << "\n--- BinaryFormReduction ---\n";
     smooth::SmoothInteger toBinary;
     toBinary.set(1, 2);  // 2^1 * 3^2 = 18
     std::cout << "before: value = " << toBinary.value() << ", ";
     toBinary.printSparse();
     auto binaryRep = toBinary.representationAs(smooth::SmoothInteger::Representation::Sparse);
-    smooth::BinaryFormCluster binaryCluster;
+    smooth::BinaryFormReduction binaryReduction;
     auto binaryMetrics = std::make_shared<smooth::Metrics>();
-    binaryCluster.run(*binaryRep, binaryMetrics);
+    binaryReduction.run(*binaryRep, binaryMetrics);
     std::cout << "after: value = " << binaryRep->value() << ", ";
     binaryRep->print(std::cout);
     std::cout << "18 = 16 + 2 = 10010 in binary, reached after "
               << binaryMetrics->get("transformations_applied") << " splits\n";
 
-    // --- TernaryFormCluster -------------------------------------------------
-    // First runs BinaryFormCluster (collapsing whatever column layout the
+    // --- TernaryFormReduction -------------------------------------------------
+    // First runs BinaryFormReduction (collapsing whatever column layout the
     // number started with down into column 0), then works column by column:
     // so long as a column's total has more than one bit, subtracts 3 from
     // it and adds 1 to the next column -- value-preserving, since
@@ -628,42 +628,42 @@ int main() {
     // then moves to the next. This can only run on a RowValuesRepresentation
     // directly, since "subtract 3" needs each column's magnitude as one
     // number, not individual bits with no borrow-subtraction of their own.
-    std::cout << "\n--- TernaryFormCluster ---\n";
+    std::cout << "\n--- TernaryFormReduction ---\n";
     smooth::SmoothInteger toTernary;
     toTernary.setValue(13LL);  // 13 = 2^2 + 3^2, not itself a single term
     std::cout << "before: value = " << toTernary.value() << "\n";
     auto ternaryRep = toTernary.representationAs(smooth::SmoothInteger::Representation::RowValues);
-    smooth::TernaryFormCluster ternaryCluster;
+    smooth::TernaryFormReduction ternaryReduction;
     auto ternaryMetrics = std::make_shared<smooth::Metrics>();
-    ternaryCluster.run(*ternaryRep, ternaryMetrics);
+    ternaryReduction.run(*ternaryRep, ternaryMetrics);
     std::cout << "after: value = " << ternaryRep->value() << "\n";
     ternaryRep->print(std::cout);
     std::cout << "13 = 4*3^0 + 1*3^2, reached after " << ternaryMetrics->get("transformations_applied")
               << " subtract-3/add-1 steps\n";
 
-    // --- TernaryCarryTransformation / TernaryCarryCluster --------------------
-    // The Transformation (not OffsetTransformation) TernaryFormCluster's
+    // --- TernaryCarryTransformation / TernaryCarryReduction --------------------
+    // The Transformation (not OffsetTransformation) TernaryFormReduction's
     // second phase is actually built from: anchored at column j, while n_j
     // has more than one bit set, subtracts 3 from n_j and adds 1 to
     // n_(j+1). Its precondition depends on a whole column's magnitude, not
     // a handful of fixed bit offsets, so it implements Transformation
     // directly rather than going through OffsetTransformation.
-    // TernaryCarryCluster runs it to a fixed point, needing no `allowed`
-    // bound the way BinaryFormCluster does -- its own canApply() is
+    // TernaryCarryReduction runs it to a fixed point, needing no `allowed`
+    // bound the way BinaryFormReduction does -- its own canApply() is
     // already self-limiting.
-    std::cout << "\n--- TernaryCarryTransformation / TernaryCarryCluster ---\n";
+    std::cout << "\n--- TernaryCarryTransformation / TernaryCarryReduction ---\n";
     smooth::RowValuesRepresentation carryRep(/*allow_fractional=*/false);
     carryRep.setColumnValue(0, 9.0);  // 9 = 1001 binary, at column 0
     std::cout << "before: value = " << carryRep.value() << ", ";
     carryRep.print(std::cout);
-    smooth::TernaryCarryCluster carryCluster;
+    smooth::TernaryCarryReduction carryReduction;
     auto carryMetrics = std::make_shared<smooth::Metrics>();
-    carryCluster.run(carryRep, carryMetrics);
+    carryReduction.run(carryRep, carryMetrics);
     std::cout << "after: value = " << carryRep.value() << ", ";
     carryRep.print(std::cout);
     std::cout << "9 = 1*3^2, reached after " << carryMetrics->get("transformations_applied")
-              << " subtract-3/add-1 steps -- same result as BinaryFormCluster + TernaryCarryCluster together (see "
-                 "TernaryFormCluster above), starting directly from column 0 instead\n";
+              << " subtract-3/add-1 steps -- same result as BinaryFormReduction + TernaryCarryReduction together "
+                 "(see TernaryFormReduction above), starting directly from column 0 instead\n";
 
     return 0;
 }
