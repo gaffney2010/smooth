@@ -43,3 +43,11 @@ compile_commands.json
 
 # OS junk
 .DS_Store
+
+# openevolve (evolve/) -- venv, API key, and run output are all local-only
+evolve/.venv/
+evolve/secrets.yaml
+evolve/output/
+evolve/output*/
+__pycache__/
+*.pyc

@@ -1,0 +1,206 @@
+# openevolve config for evolving smooth::EvolvedPlan (evolve/initial_program.hpp).
+# See evolve/README.md for how to run this.
+
+max_iterations: 150
+checkpoint_interval: 5
+log_level: INFO
+random_seed: 42
+
+# The evolved file is a C++ header -- without this, openevolve guesses the
+# language from the seed program's contents, which is unreliable enough to
+# just pin down.
+language: cpp
+file_suffix: ".hpp"
+
+llm:
+  # openevolve only ships two provider backends (see its llm/ensemble.py):
+  # "openai" (any endpoint that speaks the OpenAI chat completions API --
+  # left unset here, since that's the default) and "claude_code" (shells out
+  # to this very CLI, no API key needed -- see evolve/README.md if you'd
+  # rather use that instead of a key). Since Anthropic's API has its own
+  # OpenAI-compatible endpoint, pointing "openai" at it is all a Claude
+  # model needs -- api_base below, plus Claude model names. evolve/run.py
+  # fills in api_key from evolve/secrets.yaml; it will also override
+  # api_base/the model names below if you set them in secrets.yaml, so you
+  # don't have to edit this file just to switch providers.
+  #
+  # Known compatibility gaps going through this endpoint rather than
+  # Anthropic's native Messages API: no prompt caching (every iteration's
+  # system prompt gets re-charged in full -- the system prompt here is long,
+  # so this isn't free), and temperature is capped to [0, 1] (already true
+  # of the 0.8 below). Neither affects correctness, just cost/behavior.
+  api_base: "https://api.anthropic.com/v1/"
+  models:
+    - name: "claude-sonnet-5"
+      weight: 0.7
+    - name: "claude-haiku-4-5-20251001"
+      weight: 0.3
+  temperature: 0.8
+  timeout: 90
+  retries: 3
+
+prompt:
+  num_top_programs: 3
+  num_diverse_programs: 2
+  include_artifacts: true
+  # See system_message.txt alongside this file -- this is the domain
+  # briefing (Plan's API, what each scored metric actually measures, which
+  # existing plan_zoo strategies do well and why, known landmines) that lets
+  # the LLM make informed changes instead of guessing blind.
+  system_message: |
+    You are evolving a single C++ class, smooth::EvolvedPlan, inside a small
+    arithmetic library ("smooth") that represents 3-smooth numbers (values
+    whose prime factors are only 2 and 3) as bit grids indexed by (i, j),
+    where bit (i,j) contributes 2^i * 3^j. EvolvedPlan is a *strategy*: given
+    a declared arithmetic expression (a tree of scalar/number leaves
+    combined by add/multiply), it decides which internal representation
+    each leaf should be converted to, and which cleanup pass ("reduction")
+    to run on a multiply's operands beforehand. It does not implement
+    arithmetic itself -- Plan's own machinery (compileBlueprintNode in
+    plan.hpp) does that, and is already value-preserving no matter what
+    representations/reductions you pick. Your only job is to pick well.
+
+    ## The API you have to work with
+
+    Your class overrides one method:
+
+        std::unique_ptr<Node> buildBlueprint(const Node& declaration) const override;
+
+    `declaration` is a tree of `Node`s (Plan::Node, defined in plan.hpp):
+    ScalarLeaf (a literal, `node.scalarValue`), NumberLeaf (a pre-existing
+    SmoothNumberBase fed in via numberVia(), `node.numberSource`), Add, and
+    Multiply (`node.left`/`node.right`). You return a new tree with the same
+    exact shape and leaf contents, decorated with Ensure(target) nodes
+    (wrapping a leaf, forcing it into a specific representation before use)
+    and/or Reduce(reduction) nodes (wrapping an already-Ensure'd subtree,
+    running a cleanup pass on its bits). Plan::validateBlueprint() checks
+    this after every call and throws if the shape or leaf values changed --
+    that's a hard failure, not a style nit.
+
+    Representations (SmoothNumberBase::Representation): Scalar (a plain
+    double -- cheapest for a leaf that never needs bit-level surgery, but
+    only ever holds one column, so plugging it into a Reduce throws), Sparse
+    (an explicit set of (i,j) bits -- the natural target for anything that's
+    about to be Reduce'd), RowValues (per-column magnitudes rather than
+    individual bits -- what lets TernaryCarryReduction/atoms do direct
+    column arithmetic instead of bit-by-bit carry chasing), Dynamic (a dense
+    matrix -- simple, no conversion needed from a fresh number since it's
+    the canonical starting representation, but multiplying two of these is
+    the most expensive way to combine large numbers).
+
+    Helpers already on Plan (base class, all `protected`, all in plan.hpp):
+      - wrapLeavesWithEnsure(declaration, target): every leaf -> Ensure(target).
+      - wrapLeavesWithEnsure(declaration, chooseTarget_fn): same, but
+        chooseTarget_fn(leaf) picks per-leaf -- e.g. reuse whatever
+        representation a numberVia() leaf's own number already has cached
+        (SmoothNumberBase::isRepresentationCached()) to skip a conversion
+        entirely.
+      - wrapMultiplyOperandsWithReduction(blueprint, reduction_or_chooser):
+        wraps both operands of every Multiply node in Reduce(reduction).
+        The chooser form picks (or declines, returning nullptr) per operand,
+        based on that already-built operand's own subtree -- e.g. by
+        estimated bit count.
+      - wrapWithReduction(node, reduction): the single-node primitive the
+        above two are built from, if you want to reduce something that
+        isn't a multiply operand (e.g. the whole result before returning).
+
+    Reductions available (reduction_zoo.hpp), everything is `Reduction` and
+    slots into wrap*WithReduction: MergeReduction (cheap, greedily combines
+    (i,j)/(i+1,j) pairs -- can only ever shrink bit count, good default for
+    small-to-medium multiply operands), BinaryFormReduction (collapses
+    everything into column 0 -- ordinary binary), TernaryCarryReduction
+    (only valid against RowValues), StaircaseReduction (drives a
+    representation all the way to an antichain -- most thorough, most
+    per-step work, worth it once an operand is big), TernaryFormReduction
+    (drives every column to at most one bit -- a different, often cheaper,
+    alternative to Staircase for the same "operand got big" situation; see
+    plan_zoo/ternary_form_sparse_plan.hpp's own comment for how it compares
+    to MergeReduction in practice -- neither wins for every shape).
+
+    Known landmine: RowSpreadTransformation/SpreadTransformation's atomize()
+    decomposition has a real bug where certain background bits corrupt the
+    result -- StaircaseReduction/TernaryFormReduction already work around
+    it internally, so just use them as-is. Don't write new Transformation
+    subclasses or call viaAtoms=true yourself; compose the existing
+    Plan/Reduction building blocks instead. A change that doesn't compile,
+    throws, or produces a wrong numeric result (checked against DefaultPlan)
+    scores far below even a mediocre-but-correct one -- correctness always
+    comes first.
+
+    ## What you're being scored on
+
+    Every candidate is run against a fixed battery of profiles (everyday
+    arithmetic expressions, 2 to 10 leaves, mixing +/*, some via numberVia()
+    with pre-existing numbers -- see include/smooth/profile_zoo.hpp for the
+    exact list) and its Metrics counters are *summed across all of them*.
+    Five counters are scored, each capturing a genuinely different kind of
+    work, so there's a real tradeoff surface here, not one number to
+    minimize:
+      - bit_operations: one per (termA, termB) pair when multiplying two
+        Sparse/Dynamic operands together. Quadratic in each operand's bit
+        count -- this is *why* reducing a multiply's operands first
+        (fewer bits in, fewer pairs) usually pays for itself.
+      - scalar_operations: primitive set()/get()/arithmetic cost against
+        Scalar or RowValues representations. Cheap per-op, but every
+        Ensure/Reduce/combine touching one of these adds a little.
+      - carries: ripple-carry steps when a bit lands on an already-occupied
+        cell (during combine(), or inside a reduction's own transformation
+        applications). Grows with how "collision-prone" a representation's
+        current bit layout is.
+      - total_converts: one per genuine representation conversion (an
+        Ensure whose target differs from what's already cached, or a
+        numberVia() leaf's own representationAs() call). An Ensure landing
+        on an *already-cached* representation is free -- see
+        plan_zoo/representation_aware_plan.hpp's whole strategy, which is
+        built entirely around reusing whatever representation a fed-in
+        number already happens to have.
+      - atomic_transforms: one per specialized-atom application inside a
+        reduction. Not inherently bad (it's how a reduction gets its work
+        done) -- but a reduction that thrashes back and forth wastes them.
+
+    There is no single "right" answer -- a plan that's great at low bit
+    counts (skip reductions entirely, they're pure overhead below some
+    threshold) can be bad at high ones, and vice versa. Adaptive strategies
+    that look at the declaration/blueprint shape (estimated bit count, leaf
+    kind, existing cached representation) before choosing, the way
+    plan_zoo/size_adaptive_sparse_plan.hpp and
+    plan_zoo/representation_aware_plan.hpp already do, tend to generalize
+    better across the whole profile battery than any single fixed choice.
+    You're encouraged to combine ideas from multiple existing plan_zoo
+    strategies, tune their thresholds, or try something genuinely new --
+    just keep it to composing the primitives above.
+
+database:
+  population_size: 200
+  archive_size: 40
+  num_islands: 3
+  elite_selection_ratio: 0.1
+  exploration_ratio: 0.25
+  exploitation_ratio: 0.65
+  # Raw values, not pre-binned -- openevolve handles the min-max scaling.
+  # This is what actually drives the Pareto-style exploration: it keeps the
+  # best program found so far in each region of this 5D cost space, rather
+  # than collapsing everything to a single winner by combined_score.
+  feature_dimensions:
+    - bit_operations
+    - scalar_operations
+    - carries
+    - total_converts
+    - atomic_transforms
+  feature_bins: 5
+  migration_interval: 25
+  migration_rate: 0.1
+  random_seed: 42
+
+evaluator:
+  timeout: 120
+  cascade_evaluation: false
+  parallel_evaluations: 2
+  enable_artifacts: true
+
+# Off: with a fixed, deterministic evaluator (recompile + rerun), letting
+# the search run its full budget explores more of the tradeoff surface than
+# stopping early once combined_score plateaus -- plateauing on the single
+# scalar score says nothing about whether under-explored corners of the
+# other four dimensions still have room to improve.
+early_stopping_patience: null
