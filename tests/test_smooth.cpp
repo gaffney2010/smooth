@@ -1376,6 +1376,160 @@ void testTernaryFormReduction() {
 }
 
 // ---------------------------------------------------------------------
+// StaircaseReduction: so long as two distinct set bits (i1, j1)/(i2, j2)
+// exist with i2 >= i1 and j2 >= j1, combines them -- SpreadTransformation
+// for a same-row pair, RowSpreadTransformation for a same-column pair,
+// CornerSplitTransformation on the dominating bit otherwise -- until no
+// such pair remains: an antichain under the product order (at most one
+// bit per row, at most one per column, strictly decreasing).
+// ---------------------------------------------------------------------
+namespace {
+bool isAntichain(RepresentationBase& rep) {
+    std::vector<std::pair<int, int>> bits;
+    rep.forEachSet([&bits](int i, int j) { bits.emplace_back(i, j); });
+    for (std::size_t a = 0; a < bits.size(); ++a) {
+        for (std::size_t b = 0; b < bits.size(); ++b) {
+            if (a == b) continue;
+            if (bits[b].first >= bits[a].first && bits[b].second >= bits[a].second) return false;
+        }
+    }
+    return true;
+}
+}  // namespace
+
+void testStaircaseReduction() {
+    StaircaseReduction reduction;
+
+    check(reduction.name() == "staircase", "StaircaseReduction::name() is \"staircase\"");
+
+    // Same-row pair: i1 == i2, so this is exactly SpreadTransformation.
+    {
+        SmoothInteger n;
+        n.set(0, 0);  // 1
+        n.set(0, 2);  // 9
+        checkNear(n.value(), 10.0, "before: 1 + 9 = 10");
+        auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
+        auto metrics = std::make_shared<Metrics>();
+        reduction.run(*rep, metrics);
+        checkNear(rep->value(), 10.0, "StaircaseReduction::run() preserves value(): still 10");
+        check(isAntichain(*rep), "a same-row pair reduces to an antichain");
+        check(metrics->get("transformations_applied") == 1,
+              "a single same-row pair takes exactly one SpreadTransformation step");
+    }
+
+    // Same-column pair: j1 == j2, so this is exactly RowSpreadTransformation.
+    // n = 2 keeps the staircase to a single bit -- large enough that
+    // RowSpreadTransformation actually has a staircase to produce (unlike
+    // n = 1, indistinguishable from a plain merge), small enough that the
+    // result is already an antichain with no further steps needed.
+    {
+        SmoothInteger n;
+        n.set(0, 0);  // 1
+        n.set(2, 0);  // 4
+        checkNear(n.value(), 5.0, "before: 1 + 4 = 5");
+        auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
+        auto metrics = std::make_shared<Metrics>();
+        reduction.run(*rep, metrics);
+        checkNear(rep->value(), 5.0, "StaircaseReduction::run() preserves value(): still 5");
+        check(isAntichain(*rep), "a same-column pair reduces to an antichain");
+        check(metrics->get("transformations_applied") == 1,
+              "a single same-column pair takes exactly one RowSpreadTransformation step");
+    }
+
+    // A larger same-column gap: RowSpreadTransformation(n)'s own staircase
+    // (i+1, j) .. (i+n-1, j) shares a column, so for n >= 3 it isn't
+    // automatically an antichain either -- further same-column steps
+    // finish the job, and the total still preserves value and terminates.
+    {
+        SmoothInteger n;
+        n.set(0, 0);  // 1
+        n.set(4, 0);  // 16
+        checkNear(n.value(), 17.0, "before: 1 + 16 = 17");
+        auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
+        reduction.run(*rep);
+        checkNear(rep->value(), 17.0, "StaircaseReduction::run() preserves value(): still 17");
+        check(isAntichain(*rep), "a wider same-column gap still reduces to an antichain");
+    }
+
+    // A genuine diagonal pair: neither shares a row nor a column, so this
+    // goes through CornerSplitTransformation instead.
+    {
+        SmoothInteger n;
+        n.set(0, 0);  // 1
+        n.set(1, 1);  // 6
+        checkNear(n.value(), 7.0, "before: 1 + 6 = 7");
+        auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
+        reduction.run(*rep);
+        checkNear(rep->value(), 7.0, "StaircaseReduction::run() preserves value(): still 7");
+        check(isAntichain(*rep), "a diagonal pair reduces to an antichain");
+    }
+
+    // A no-op case: already an antichain, nothing to do.
+    {
+        SmoothInteger n;
+        n.set(0, 2);  // 9
+        n.set(1, 0);  // 2
+        auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
+        auto metrics = std::make_shared<Metrics>();
+        reduction.run(*rep, metrics);
+        check(rep->get(0, 2) && rep->get(1, 0), "run() on an already-antichain representation changes nothing");
+        check(metrics->get("transformations_applied") == 0, "no work is done when it's already an antichain");
+    }
+
+    // A larger, multi-step case that needs a CornerSplitTransformation
+    // cascade before settling: (1, 1) and (4, 5) reduce, in exactly 13
+    // steps, to the specific antichain {(1,6), (2,5), (3,4), (4,3), (7,1)}.
+    {
+        SmoothInteger n;
+        n.set(1, 1);
+        n.set(4, 5);
+        checkNear(n.value(), 3894.0, "before: 2*3 + 16*243 = 3894");
+        auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
+        auto metrics = std::make_shared<Metrics>();
+        reduction.run(*rep, metrics);
+        checkNear(rep->value(), 3894.0, "StaircaseReduction::run() preserves value() through a longer cascade");
+        check(isAntichain(*rep), "the longer cascade still reaches an antichain");
+        check(rep->get(1, 6) && rep->get(2, 5) && rep->get(3, 4) && rep->get(4, 3) && rep->get(7, 1),
+              "the cascade lands on the specific antichain {(1,6), (2,5), (3,4), (4,3), (7,1)}");
+        check(metrics->get("transformations_applied") == 13, "the cascade takes exactly 13 steps");
+    }
+
+    // Value preservation and the antichain property, checked across a
+    // range of representative numbers -- including one built from several
+    // scattered bits, not just a single pair.
+    {
+        for (long long v : {0LL, 1LL, 7LL, 100LL, 12345LL}) {
+            SmoothInteger n;
+            n.setValue(v);
+            auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
+            reduction.run(*rep);
+            check(rep->value() == static_cast<double>(v), "value is preserved for v=" + std::to_string(v));
+            check(isAntichain(*rep), "the result is an antichain for v=" + std::to_string(v));
+        }
+    }
+
+    // Works directly on a plain, non-fractional representation: as long as
+    // every starting bit is non-negative, CornerSplitTransformation only
+    // ever fires on a bit that strictly dominates some other existing
+    // (non-negative) bit, so its anchor is always at row >= 1, column >= 1
+    // -- no fractional-capable representation is ever needed.
+    {
+        SmoothInteger n;
+        n.set(2, 2);
+        n.set(0, 0);
+        n.set(1, 4);
+        auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
+        reduction.run(*rep);
+        check(isAntichain(*rep), "a plain SmoothInteger's Sparse representation reduces to an antichain directly");
+        bool anyNegative = false;
+        rep->forEachSet([&anyNegative](int i, int j) {
+            if (i < 0 || j < 0) anyNegative = true;
+        });
+        check(!anyNegative, "no negative index is ever needed starting from an all-non-negative representation");
+    }
+}
+
+// ---------------------------------------------------------------------
 // Metrics: optional per-number counter tracking, incremented once per
 // representation conversion, and the a+=b / a+b metrics-inheritance
 // rules.
@@ -2200,6 +2354,7 @@ int main() {
     testTernaryCarryTransformation();
     testTernaryCarryReduction();
     testTernaryFormReduction();
+    testStaircaseReduction();
     testMetrics();
     testInstrumentationCounters();
     testPlan();

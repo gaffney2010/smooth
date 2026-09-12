@@ -692,5 +692,25 @@ int main() {
               << " subtract-3/add-1 steps -- same result as BinaryFormReduction + TernaryCarryReduction together "
                  "(see TernaryFormReduction above), starting directly from column 0 instead\n";
 
+    // --- StaircaseReduction ---------------------------------------------------
+    // So long as two set bits (i1, j1)/(i2, j2) exist with i2 >= i1 and
+    // j2 >= j1, combines them: SpreadTransformation for a same-row pair,
+    // RowSpreadTransformation for a same-column pair, or
+    // CornerSplitTransformation on the dominating bit otherwise. The fixed
+    // point is an antichain: sorted by row, columns strictly decrease.
+    std::cout << "\n--- StaircaseReduction ---\n";
+    smooth::SmoothInteger staircase;
+    staircase.set(1, 1);  // 6
+    staircase.set(4, 5);  // 3888
+    std::cout << "before: value = " << staircase.value() << ", ";
+    staircase.printSparse();
+    auto staircaseRep = staircase.representationAs(smooth::SmoothInteger::Representation::Sparse);
+    smooth::StaircaseReduction staircaseReduction;
+    auto staircaseMetrics = std::make_shared<smooth::Metrics>();
+    staircaseReduction.run(*staircaseRep, staircaseMetrics);
+    std::cout << "after: value = " << staircaseRep->value() << ", ";
+    staircaseRep->print(std::cout);
+    std::cout << "reached in " << staircaseMetrics->get("transformations_applied") << " steps\n";
+
     return 0;
 }

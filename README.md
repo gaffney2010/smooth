@@ -573,13 +573,15 @@ the generic mechanism, not a preset.
 `include/smooth/reduction_zoo/` holds every concrete
 `Reduction` this library has: `TransformationReduction`, the
 generic engine, alongside the named presets built from it
-(`MergeReduction`, `BinaryFormReduction`, `TernaryCarryReduction`) or composing
-more than one (`TernaryFormReduction`). `TransformationReduction`
+(`MergeReduction`, `BinaryFormReduction`, `TernaryCarryReduction`) or
+implementing `Reduction` directly (`TernaryFormReduction`, composing more
+than one together; `StaircaseReduction`, which needs its own bespoke
+search — see its own section below). `TransformationReduction`
 lives here, rather than at the top level alongside `Reduction`,
 precisely because nothing outside this folder ever needs to name it
 directly — `Plan` only ever holds the `Reduction` a strategy
 produces (see "Reduction" above). `include/smooth/reduction_zoo.hpp`
-is a convenience header pulling in all five, mirroring `plan_zoo.hpp`/
+is a convenience header pulling in all six, mirroring `plan_zoo.hpp`/
 `transformation_zoo.hpp`/`representation_zoo.hpp`.
 
 ### TransformationReduction
@@ -835,6 +837,64 @@ representation kind, and `TernaryCarryReduction`'s worklist would never
 examine a single candidate — so without this upfront check, calling
 `run()` against the wrong kind of representation could easily fail to
 throw at all, purely by chance of what's currently in it.
+
+### StaircaseReduction
+
+```cpp
+#include "smooth/reduction_zoo/staircase_reduction.hpp"
+#include "smooth/smooth.hpp"
+
+smooth::SmoothInteger n;
+n.set(1, 1);  // 6
+n.set(4, 5);  // 3888
+auto rep = n.representationAs(smooth::SmoothInteger::Representation::Sparse);
+
+smooth::StaircaseReduction staircase;
+staircase.run(*rep);
+rep->print();  // {(1, 6), (2, 5), (3, 4), (4, 3), (7, 1)}
+```
+
+So long as two distinct set bits `(i1, j1)` and `(i2, j2)` exist with
+`i2 >= i1` and `j2 >= j1` — i.e. `(i2, j2)` weakly dominates `(i1, j1)` in
+both coordinates — combines them:
+
+- `i1 == i2` (same row): `SpreadTransformation(j2 - j1)` anchored at
+  `(i1, j1)`.
+- `j1 == j2` (same column): `RowSpreadTransformation(i2 - i1)` anchored at
+  `(i1, j1)`.
+- otherwise (a genuine diagonal pair): `CornerSplitTransformation` anchored
+  at `(i2, j2)` — pulls the dominating bit one step toward `(i1, j1)`
+  without touching `(i1, j1)` itself.
+
+The fixed point — no such pair exists — is exactly an antichain under the
+product order: sorted by row, columns are strictly decreasing (at most one
+bit per row, at most one per column). Every 3-smooth number has such a
+"staircase" form.
+
+Termination isn't free: naively picking *any* dominating pair each step
+can run for tens of thousands of steps without converging (verified
+empirically before this was written). What works reliably — and is what
+`run()` does — is always picking the *first* dominating pair found while
+scanning the current set bits in sorted `(i, j)` order: for the smallest
+bit that has any dominating partner at all, its smallest (lexicographic)
+valid partner. `SpreadTransformation`'s and `RowSpreadTransformation`'s own
+staircases aren't automatically antichains either for `n >= 3` (their
+intermediate bits share a row/column with each other), so one dominating
+pair can take several steps to fully resolve — the 13-step example above
+is typical.
+
+Since candidate pairs aren't confined to a small local neighborhood the
+way a single `Transformation`'s own `affectedAnchors()` are,
+`TransformationReduction`'s worklist approach doesn't apply here — `run()`
+rescans all of `rep`'s set bits from scratch after every application,
+unlike every other reduction in this library.
+
+`CornerSplitTransformation` only ever fires here on a bit that strictly
+dominates some other existing (non-negative) bit in both coordinates, so
+its anchor is always at row `>= 1` and column `>= 1` — its outputs can
+never go negative. Starting from an all-non-negative representation (a
+plain `SmoothInteger`'s `Sparse`, say), `StaircaseReduction` never needs a
+fractional-capable one.
 
 ## Metrics
 
@@ -1327,7 +1387,10 @@ to show how many subtract-3/add-1 steps it took; and, directly,
 straight into column 0 via `RowValuesRepresentation::setColumnValue()`,
 skipping `BinaryFormReduction` entirely) down to a single bit at column 2 --
 the same result `TernaryFormReduction` gets for 9 via its full two-phase
-pipeline.
+pipeline; and `StaircaseReduction` combining two bits — `(1, 1)` and
+`(4, 5)`, a genuine diagonal pair — into the five-bit antichain
+`{(1,6), (2,5), (3,4), (4,3), (7,1)}` over 13 steps, with a `Metrics`
+attached to show the count.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
 suite (no test framework linked in — see `CMakeLists.txt`) covering all of
@@ -1407,6 +1470,15 @@ total value and not the starting column layout — built directly via
 preservation and the single-bit-per-column guarantee checked across a
 range of representative numbers, and that running it against anything
 other than a `RowValuesRepresentation` throws `std::invalid_argument`),
+`StaircaseReduction` (`name()`, a same-row pair resolving via
+`SpreadTransformation` in exactly one step, a same-column pair via
+`RowSpreadTransformation` — both a single-step case and a wider gap whose
+own multi-bit staircase needs further steps to settle — a diagonal pair
+via `CornerSplitTransformation`, a no-op on an already-antichain
+representation, the longer 13-step cascade landing on its exact expected
+antichain, value preservation and the antichain property checked across a
+range of representative numbers, and that it never needs a
+fractional-capable representation starting from all-non-negative bits),
 and `DefaultPlan`
 (the confirmed example, unbracketed left-associative chaining, that
 `number()` throws for a negative signed operand instead of silently
