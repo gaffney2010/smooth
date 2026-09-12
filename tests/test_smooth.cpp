@@ -526,14 +526,10 @@ void testUnsignedAddition() {
 }
 
 // ---------------------------------------------------------------------
-// Addition requires matching representations (SmoothNumberBase::
-// addMatchingInPlace()/subtractMagnitudeInPlace(), used internally by
-// every concrete type's operator+, throw std::invalid_argument otherwise).
-// This can't directly be tested by forcing a mismatch through the public
-// API, though: canonical() always starts out (and, for now, stays)
-// Dynamic for every freshly constructed number, and there's no public way
-// to change it -- so any two independently constructed numbers always
-// match trivially, which is what this actually verifies.
+// Addition requires matching representations (throws std::invalid_argument
+// otherwise). Every freshly constructed number stays canonical on Dynamic
+// with no public way to change it, so this verifies two independent
+// numbers always match trivially.
 // ---------------------------------------------------------------------
 void testAdditionRequiresMatchingRepresentation() {
     SmoothInteger a, b;
@@ -709,17 +705,12 @@ void testCopyAndMoveSemantics() {
 }
 
 // ---------------------------------------------------------------------
-// OffsetTransformation: value-preserving bit-grid rewrites, built from a
-// fixed list of input offsets (each must hold a 1; applying always clears
-// them) and output offsets (each gets carry-set to 1 -- ripple-carrying up
-// the row axis, exactly like ordinary addition, if already occupied).
-// canApply() only ever checks the inputs, since an occupied output is
-// never a reason to reject -- apply() carries through it instead.
-// 2^i*3^j + 2^(i+1)*3^j = 2^i*3^(j+1), so MergeTransformation/
-// SplitTransformation trade the two bits at (i, j)/(i+1, j) for the one
-// bit at (i, j+1), and back, without changing value() at all.
-// SmoothNumberBase::applyTransformation() checks canApply() first and
-// throws if it doesn't hold, rather than applying regardless.
+// OffsetTransformation: value-preserving bit-grid rewrites, built from
+// input offsets (each must hold a 1; applying always clears them) and
+// output offsets (carry-set to 1, ripple-carrying if already occupied).
+// canApply() only checks the inputs. MergeTransformation/
+// SplitTransformation trade the two bits at (i,j)/(i+1,j) for the one bit
+// at (i,j+1), and back, without changing value() at all.
 // ---------------------------------------------------------------------
 void testTransformation() {
     // MergeTransformation: applicable exactly when both input bits are
@@ -1119,19 +1110,13 @@ void testAtomize() {
 // RowValuesRepresentation, ordinary column-magnitude arithmetic instead of
 // bit-by-bit get()/set(); against ScalarRepresentation, an explicit throw;
 // against anything else, the same generic get()/set() logic as before.
-// Plus OffsetTransformation's own `viaAtoms` apply path (transformation.hpp),
-// which routes a composite transformation's application through its own
-// atomize() instead of its direct input-clear/output-carry-set logic.
+// Plus OffsetTransformation's own `viaAtoms` apply path, routing a
+// composite's application through atomize() instead of its direct logic.
 //
-// Every check below goes through an explicit RepresentationBase& (rather
-// than calling straight through a concrete representation's own type) --
-// that's what actually triggers the specialized dispatch. Calling an
-// atom's canApply()/applyAndReportLandings() directly on a concrete
-// representation variable (or a SmoothNumberBase, as ordinary
-// applyTransformation() calls throughout this file do) instead resolves to
-// the inherited, generic Bits-templated overload -- unaffected by any of
-// this, which is exactly why every existing atom test above still passes
-// unchanged.
+// Every check below goes through an explicit RepresentationBase& -- that's
+// what triggers the specialized dispatch. Calling an atom's methods
+// directly on a concrete representation variable (or a SmoothNumberBase)
+// instead resolves to the inherited generic Bits-templated overload.
 // ---------------------------------------------------------------------
 void testAtomRepresentationDispatch() {
     // MergeTransformation against RowValuesRepresentation: ordinary
@@ -1948,12 +1933,9 @@ void testMetrics() {
 
 // ---------------------------------------------------------------------
 // The four counters instrumented directly on the representations
-// (carries, bit_operations, scalar_operations, bit_iterations -- see
-// representation_base.hpp, sparse_representation.hpp,
-// dynamic_matrix_representation.hpp, row_values_representation.hpp,
-// scalar_representation.hpp). Checked against each representation
-// directly, with a fresh Metrics per case, so each counter's exact
-// semantics are pinned down independently of the others.
+// (carries, bit_operations, scalar_operations, bit_iterations). Checked
+// against each representation directly, with a fresh Metrics per case, so
+// each counter's semantics are pinned down independently.
 // ---------------------------------------------------------------------
 void testInstrumentationCounters() {
     // carries: one ripple step per cell that was already occupied and had
@@ -2094,12 +2076,10 @@ void testInstrumentationCounters() {
 }
 
 // ---------------------------------------------------------------------
-// Plan: the fluent scalar-arithmetic expression builder. For now it just
-// converts every leaf to a plain double and evaluates with ordinary
-// arithmetic -- these tests check the tree-building mechanics (left()/
-// right() as an open/close bracket pair, default left-associative
-// chaining without them), number()'s use of value() at T's static type,
-// plan()'s tree rendering, and the usage-error cases.
+// Plan: the fluent arithmetic expression builder. These tests check the
+// tree-building mechanics (left()/right() as an open/close bracket pair,
+// default left-associative chaining without them), number()'s use of
+// value() at T's static type, plan()'s tree rendering, and usage errors.
 // ---------------------------------------------------------------------
 void testPlan() {
     // The confirmed example: 3 * (4 + 2) = 18.
@@ -2260,11 +2240,9 @@ void testPlan() {
 // ---------------------------------------------------------------------
 // plan_zoo/: Plan subclasses whose buildBlueprint() wraps every leaf in
 // Ensure(target), routing through a specific RepresentationBase instead of
-// DefaultPlan's Scalar. Checked generically (template helper) against all
-// three, since they should all behave identically except for name(),
-// which representation actually does the work, and (for MatrixPlan only)
-// the Ensure label not matching name() -- "matrix" is this library's
-// display name for what SmoothNumberBase::Representation calls "dynamic".
+// DefaultPlan's Scalar. Checked generically against all three, since they
+// should behave identically except for name(), which representation does
+// the work, and (MatrixPlan only) the Ensure label not matching name().
 // ---------------------------------------------------------------------
 template <typename PlanType>
 void checkPlanZooVariant(const std::string& expectedName, const std::string& ensureLabel,
@@ -2303,10 +2281,10 @@ void checkPlanZooVariant(const std::string& expectedName, const std::string& ens
 
 // ---------------------------------------------------------------------
 // Plan::validateBlueprint(): a misbehaving buildBlueprint() override
-// should never be able to silently change what's actually being computed
-// -- only decorate it with Ensure steps. These three deliberately broken
-// Plan subclasses each corrupt the blueprint one way; testBlueprintValidation()
-// (below) confirms each one is caught.
+// should never silently change what's being computed -- only decorate it
+// with Ensure steps. Three deliberately broken Plan subclasses each
+// corrupt the blueprint one way; testBlueprintValidation() confirms each
+// is caught.
 // ---------------------------------------------------------------------
 class TamperedValuePlan : public Plan {
 public:
@@ -2403,11 +2381,10 @@ void testPlanZoo() {
 }
 
 // ---------------------------------------------------------------------
-// MergingSparsePlan: SparsePlan, plus a TransformationReduction
-// (just MergeTransformation) run on both operands before every multiply --
-// never before an add, since merging only helps a multiply's n*m
-// bit_operations blowup. Both operands of *every* Multiply node get
-// wrapped, however deeply nested.
+// MergingSparsePlan: SparsePlan, plus MergeReduction run on both operands
+// before every multiply (never an add, since merging only helps a
+// multiply's n*m bit_operations blowup). Both operands of every Multiply
+// node get wrapped, however deeply nested.
 // ---------------------------------------------------------------------
 void testMergingSparsePlan() {
     check(MergingSparsePlan().name() == "merging_sparse", "MergingSparsePlan::name() is \"merging_sparse\"");
@@ -2476,12 +2453,11 @@ void testMergingSparsePlan() {
 }
 
 // ---------------------------------------------------------------------
-// Reduction polymorphism: Plan's Reduce blueprint node
-// (wrapWithReduction()) holds a plain Reduction*, not a
-// TransformationReduction* -- so a buildBlueprint() override can
-// splice in *any* concrete reduction, not just MergeReduction. This Plan
-// subclass wraps every leaf in a BinaryFormReduction instead, purely to
-// prove the mechanism doesn't hardcode which reduction kind it expects.
+// Reduction polymorphism: Plan's Reduce blueprint node holds a plain
+// Reduction*, not a TransformationReduction*, so a buildBlueprint()
+// override can splice in *any* concrete reduction. This Plan subclass
+// wraps every leaf in a BinaryFormReduction instead, purely to prove the
+// mechanism doesn't hardcode which reduction kind it expects.
 // ---------------------------------------------------------------------
 class BinaryWrappingPlan : public SparsePlan {
 public:
@@ -2525,11 +2501,9 @@ void testReductionPolymorphism() {
 // ---------------------------------------------------------------------
 // SmoothNumberBase::valueAs()/representationAs() and Plan::numberVia(): the
 // mechanism that lets a Plan-driven computation force an existing number
-// through its own real ensure()-driven conversion into that Plan's own
-// target representation (and thus its convert_<canonical>_to_<target>
-// Metrics counter), rather than reading a snapshot value and rebuilding
-// from a double. Every Plan does this for numberVia() leaves now -- it's
-// not a special case any one variant opts into.
+// through its own real ensure()-driven conversion into that Plan's target
+// representation (and thus its convert_<canonical>_to_<target> counter),
+// rather than reading a snapshot value and rebuilding from a double.
 // ---------------------------------------------------------------------
 void testNumberViaForcesConversion() {
     // valueAs(): converts to the requested representation only if it isn't

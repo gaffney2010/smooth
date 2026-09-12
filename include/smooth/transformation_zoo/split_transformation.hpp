@@ -25,8 +25,8 @@ public:
     }
 
 protected:
-    // The reverse of MergeTransformation's own RowValues arithmetic:
-    // subtract 2^i from column j+1, add 2^i + 2^(i+1) = 3*2^i to column j.
+    // The reverse of Merge's arithmetic: subtract 2^i from column j+1,
+    // add 3*2^i to column j.
     std::vector<std::pair<int, int>> applyRowValuesAndReportLandings(RowValuesRepresentation& rep, int i,
                                                                       int j) const override {
         double bit = std::pow(2.0, i);

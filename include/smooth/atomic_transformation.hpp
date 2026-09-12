@@ -14,46 +14,34 @@ namespace smooth {
 
 // Tags MergeTransformation, SplitTransformation, and
 // CornerSplitTransformation (transformation_zoo/) as "atoms" -- the two
-// independent generating families every OffsetTransformation in this
-// library reduces to: Merge/Split encode 2^i + 2^(i+1) = 2^i*3 ("1+2=3"),
-// CornerSplit encodes 2^(i-1)*3^j + 2^i*3^(j-1) + 2^(i-1)*3^(j-1) =
-// 2^i*3^j ("1+2+3=6"). Every other named OffsetTransformation
-// (SpreadTransformation, RowSpreadTransformation) can be written as some
-// sequence of these -- see atomize() on each (transformation.hpp).
+// independent generating families every OffsetTransformation reduces to:
+// Merge/Split encode 2^i + 2^(i+1) = 2^i*3 ("1+2=3"), CornerSplit encodes
+// 2^(i-1)*3^j + 2^i*3^(j-1) + 2^(i-1)*3^(j-1) = 2^i*3^j ("1+2+3=6"). Every
+// other named OffsetTransformation can be written as a sequence of these --
+// see atomize() on each (transformation.hpp).
 //
 // Unlike a plain OffsetTransformation, an atom's canApply()/
-// applyAndReportLandings() are specialized per representation, rather than
-// going through the generic get()/set() bit grid interface for everything:
+// applyAndReportLandings() are specialized per representation:
 //
-// - Against a RowValuesRepresentation, applying an atom is ordinary
-//   arithmetic on the affected column(s)' own magnitudes -- add/subtract
-//   the net delta directly (addToColumnValue()), the same way
-//   TernaryCarryTransformation (transformation_zoo/ternary_carry_transformation.hpp)
-//   already works -- rather than clearing/carry-setting bit by bit through
-//   get()/set(), which for RowValues would mean repeatedly decoding and
-//   re-encoding the very same column. Each concrete atom below overrides
-//   applyRowValuesAndReportLandings() with its own deltas.
-// - Against a ScalarRepresentation, atoms don't apply at all: it holds the
-//   whole number as one plain value with no independent per-(i, j)
-//   structure to rewrite a handful of cells within, so both canApply() and
-//   applyAndReportLandings() throw std::invalid_argument unconditionally.
-// - Against anything else (Sparse, Dynamic, or some future representation),
-//   the ordinary get()/set() bit-grid logic (OffsetTransformation's own
-//   template, instantiated with Bits = RepresentationBase) is exactly
-//   right, so canApply() and the non-RowValues branch of
-//   applyAndReportLandings() just fall back to it.
+// - Against RowValuesRepresentation, applying an atom is ordinary
+//   arithmetic on the affected column(s)' magnitude (addToColumnValue()),
+//   the same way TernaryCarryTransformation works, rather than
+//   clearing/carry-setting bit by bit -- which for RowValues would mean
+//   repeatedly decoding and re-encoding the same column. Each concrete
+//   atom overrides applyRowValuesAndReportLandings() with its own deltas.
+// - Against ScalarRepresentation, atoms don't apply at all: no
+//   independent per-(i,j) structure to rewrite, so both throw
+//   std::invalid_argument unconditionally.
+// - Against anything else (Sparse, Dynamic), the ordinary get()/set()
+//   logic is exactly right, so both fall back to it.
 //
-// This is what makes OffsetTransformation::atomize()'s `viaAtoms` apply
-// path (transformation.hpp) actually able to "hyper-optimize" a composite
-// transformation: SpreadTransformation/RowSpreadTransformation's own direct
-// apply still goes through the generic bit-grid path (unchanged), but
-// applying either *through* atomize() dispatches each step to whichever of
-// these representation-specific implementations actually fits.
+// This is what makes OffsetTransformation::atomize()'s `viaAtoms` path
+// able to "hyper-optimize" a composite transformation: its own direct
+// apply is unchanged, but applying *through* atomize() dispatches each
+// step to whichever representation-specific implementation fits.
 //
-// canApply() itself is not specialized per representation -- get() is
-// already exactly as cheap for RowValues as for any other representation
-// (a single decode), so there's nothing to gain by special-casing it; only
-// applyAndReportLandings() benefits from skipping the bit-by-bit dance.
+// canApply() isn't specialized beyond the Scalar check -- get() is
+// already just as cheap for RowValues as anywhere else.
 class AtomicTransformation : public OffsetTransformation {
 public:
     using OffsetTransformation::OffsetTransformation;
@@ -92,10 +80,7 @@ private:
 };
 
 // Defined here (not in transformation.hpp) since it needs
-// AtomicTransformation's full definition, just above -- see AtomApplication
-// and OffsetTransformation::applyAndReportLandings()'s own `viaAtoms`
-// overload in transformation.hpp for why that declaration had to be split
-// from this definition in the first place.
+// AtomicTransformation's full definition, just above.
 inline std::vector<std::pair<int, int>> OffsetTransformation::applyAndReportLandings(RepresentationBase& rep, int i,
                                                                                       int j, bool viaAtoms) const {
     if (!viaAtoms) return applyAndReportLandings(rep, i, j);

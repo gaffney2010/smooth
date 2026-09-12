@@ -4,7 +4,6 @@
 #include <cmath>
 #include <cstddef>
 #include <iostream>
-#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -16,50 +15,40 @@
 namespace smooth {
 
 // Forward-declared, not included: OffsetTransformation (transformation.hpp)
-// needs SmoothNumberBase's full definition (its canApply()/apply()
-// implementations call n.get()/n.set()), so the dependency can't run the
-// other way too -- applyTransformation() below is declared here but
+// needs SmoothNumberBase's full definition, so the dependency can't run
+// the other way too -- applyTransformation() below is declared here but
 // defined in transformation.hpp, once OffsetTransformation is fully known.
-// (Transformation, the abstract interface OffsetTransformation implements,
-// doesn't have this problem -- it only ever talks to a RepresentationBase,
-// never a SmoothNumberBase directly -- but applyTransformation() only ever
-// makes sense for a fixed-offset rewrite applied directly to a number, so
-// it's typed to the concrete OffsetTransformation, not the interface.)
 class OffsetTransformation;
 
 // Shared engine behind all four concrete 3-smooth number types
-// (SmoothInteger, SmoothFloat, and their Signed<> counterparts -- see
-// smooth_integer.hpp, smooth_float.hpp, signed.hpp). Represents a 3-smooth
-// number (a number of the form 2^i * 3^j summed over a set of (i, j)
-// pairs). Row index i is the power of 2, column index j is the power of 3.
+// (SmoothInteger, SmoothFloat, and their Signed<> counterparts). Represents
+// a 3-smooth number (a number of the form 2^i * 3^j summed over a set of
+// (i, j) pairs). Row index i is the power of 2, column index j is the
+// power of 3.
 //
 // Not meant to be used directly: its constructor is protected, since
-// whether fractional (negative-index) terms are allowed is meant to be
-// fixed by which concrete class you pick, not a runtime flag callers set.
+// whether fractional (negative-index) terms are allowed is fixed by which
+// concrete class you pick, not a runtime flag.
 //
 // Internally, the same logical bit grid can be held in more than one
-// representation (see representation_base.hpp and its implementations:
-// SparseRepresentation, RowValuesRepresentation, DynamicMatrixRepresentation,
-// ScalarRepresentation). None of them need any capacity declared up front --
-// each is either naturally unbounded (Sparse, RowValues, Scalar) or grows to
-// fit whatever gets set (Dynamic). Only one representation is canonical at a
-// time -- it is the trusted source of truth. The others are lazily
-// (re)derived from it on demand and are otherwise considered
-// outdated/un-built. This class talks to representations purely through the
+// representation (representation_base.hpp: SparseRepresentation,
+// RowValuesRepresentation, DynamicMatrixRepresentation,
+// ScalarRepresentation). Only one representation is canonical at a time --
+// the trusted source of truth; the others are lazily (re)derived from it
+// on demand. This class talks to representations purely through the
 // RepresentationBase interface, so adding a new one means: adding an
-// enumerator to Representation, adding a slot to the
-// construction/registration in the constructor below, and writing the new
-// class -- no other existing logic needs to change.
+// enumerator, registering it in the constructor, and writing the class --
+// no other existing logic needs to change.
 class SmoothNumberBase {
 public:
     enum class Representation { Sparse, RowValues, Dynamic, Scalar };
 
     virtual ~SmoothNumberBase() = default;
 
-    // Deep-copies every representation (via RepresentationBase::clone()),
-    // so the copy shares no state with the original. Needed for
-    // value-returning addition (operator+, below): it's built out of a
-    // copy plus operator+=, rather than duplicating add's logic.
+    // Deep-copies every representation, so the copy shares no state with
+    // the original. Needed for value-returning addition (operator+,
+    // below): built out of a copy plus operator+=, rather than
+    // duplicating add's logic.
     SmoothNumberBase(const SmoothNumberBase& other)
         : allowFractional_(other.allowFractional_),
           boundsSet_(other.boundsSet_),
@@ -97,24 +86,21 @@ public:
 
     bool allowsFractional() const { return allowFractional_; }
 
-    // Which representation is currently canonical (trusted). Which one that
-    // is, and when (if ever) that changes, is an internal decision -- there
-    // is no public way to force it.
+    // Which representation is currently canonical. There is no public way
+    // to force it.
     Representation canonical() const { return canonical_; }
 
-    // The optional Metrics this number was constructed with (or later given
-    // via setMetrics()), or nullptr if none. Exposed publicly so free
-    // functions like operator+ (below) can implement the "keep a's
-    // metrics, falling back to b's" rule without being members.
+    // The optional Metrics this number was constructed with, or nullptr.
+    // Exposed so free functions like operator+ can implement "keep a's
+    // metrics, falling back to b's" without being members.
     bool hasMetrics() const { return static_cast<bool>(metrics_); }
     const std::shared_ptr<Metrics>& metricsPtr() const { return metrics_; }
     void setMetricsPtr(std::shared_ptr<Metrics> metrics) { metrics_ = std::move(metrics); }
 
     // Purely an optional, after-the-fact sanity check: future set()/get()
-    // calls outside [-neg_rows, max_rows) x [-neg_cols, max_cols) will
-    // throw. It does not preallocate, reserve, or otherwise change how any
-    // representation stores data -- every representation is unbounded (or
-    // grows to fit) regardless of whether this has ever been called.
+    // calls outside [-neg_rows, max_rows) x [-neg_cols, max_cols) throw.
+    // Doesn't preallocate or reserve anything -- every representation is
+    // unbounded regardless of whether this has ever been called.
     void setBounds(std::size_t max_rows, std::size_t max_cols, std::size_t neg_rows, std::size_t neg_cols) {
         rowBound_ = max_rows;
         colBound_ = max_cols;
@@ -124,8 +110,7 @@ public:
     }
 
     // Reads/writes go through the canonical representation. A set() that
-    // actually changes the value invalidates every other representation;
-    // one that doesn't change anything leaves them as they are.
+    // actually changes the value invalidates every other representation.
     bool get(int i, int j) const {
         checkBounds(i, j);
         return repFor(canonical_).get(i, j);
@@ -139,106 +124,59 @@ public:
 
     void clear(int i, int j) { set(i, j, false); }
 
-    // Checks that `t` can be applied at (i, j) (see OffsetTransformation, in
-    // transformation.hpp) and, if so, applies it; throws
-    // std::invalid_argument otherwise. Works directly against whichever
-    // representation is currently canonical (rather than through this
-    // class's own get()/set()), so a per-representation-specialized
-    // Transformation -- an atom, see atomic_transformation.hpp -- actually
-    // gets its specialized behavior, not the generic bit-by-bit one; the
-    // other representations are invalidated once afterward instead of per
-    // bit. When `atomize` is true, applies `t` via its own atomize()
-    // decomposition instead of directly (see OffsetTransformation::
-    // applyAndReportLandings()'s own `viaAtoms` overload). Defined
-    // out-of-line in transformation.hpp, once OffsetTransformation itself
-    // is fully defined -- see the forward-declaration comment above.
+    // Checks that `t` can be applied at (i, j) and, if so, applies it;
+    // throws std::invalid_argument otherwise. Works directly against
+    // whichever representation is currently canonical (not through this
+    // class's own get()/set()), so a per-representation-specialized atom
+    // (atomic_transformation.hpp) gets its specialized behavior; the other
+    // representations are invalidated once afterward instead of per bit.
+    // When `atomize` is true, applies `t` via its own atomize()
+    // decomposition instead of directly. Defined out-of-line in
+    // transformation.hpp, once OffsetTransformation is fully defined.
     void applyTransformation(const OffsetTransformation& t, int i, int j, bool atomize = false);
 
     // Converts to Sparse if needed, then prints it.
-    void printSparse(std::ostream& os = std::cout) {
-        ensure(Representation::Sparse);
-        repFor(Representation::Sparse).print(os);
-    }
+    void printSparse(std::ostream& os = std::cout) { ensured(Representation::Sparse).print(os); }
 
     // Converts to RowValues if needed, then prints it.
-    void printRowValues(std::ostream& os = std::cout) {
-        ensure(Representation::RowValues);
-        repFor(Representation::RowValues).print(os);
-    }
+    void printRowValues(std::ostream& os = std::cout) { ensured(Representation::RowValues).print(os); }
 
     // Converts to Dynamic if needed, then prints it (including its current
-    // grown capacity -- see DynamicMatrixRepresentation).
-    void printDynamic(std::ostream& os = std::cout) {
-        ensure(Representation::Dynamic);
-        repFor(Representation::Dynamic).print(os);
-    }
+    // grown capacity).
+    void printDynamic(std::ostream& os = std::cout) { ensured(Representation::Dynamic).print(os); }
 
-    // Converts to Scalar if needed, then prints it, as a plain integer or
-    // float. Converting throws std::invalid_argument if the number's value
-    // isn't representable as a plain number (i.e. it has a term with
-    // column j != 0 -- see ScalarRepresentation).
-    void printScalar(std::ostream& os = std::cout) {
-        ensure(Representation::Scalar);
-        repFor(Representation::Scalar).print(os);
-    }
+    // Converts to Scalar if needed, then prints it. Throws
+    // std::invalid_argument if the value isn't representable as a plain
+    // number (a term with column j != 0).
+    void printScalar(std::ostream& os = std::cout) { ensured(Representation::Scalar).print(os); }
 
-    // Converts to `target` if needed (the same ensure() every print*()
-    // above already does internally, generalized to any representation and
-    // handed back as a value instead of printed), then returns that
-    // representation's value. Lets external code -- e.g. a Plan variant
-    // that wants to force a specific representation and observe the real
-    // conversion, rather than just reading whatever's currently canonical
-    // (see Plan::numberVia()/convertNumberLeaf()) -- request a
-    // representation without needing to know or care which one happens to
-    // already be canonical.
-    double valueAs(Representation target) {
-        ensure(target);
-        return repFor(target).value();
-    }
+    // Converts to `target` if needed, then returns that representation's
+    // value -- lets external code request a specific representation
+    // without needing to know or care which one is already canonical.
+    double valueAs(Representation target) { return ensured(target).value(); }
 
-    // Same idea as valueAs(), but hands back an independent clone of the
-    // representation itself instead of just its value -- so external code
-    // (e.g. Plan::convertNumberLeaf()'s default -- see plan.hpp) can obtain
-    // a specific representation of this number directly, genuinely
-    // converted via ensure(), without ever reading a value out and
-    // re-encoding it from scratch. The clone is independent: mutating it
-    // (e.g. via addInPlace()) never touches this number's own state.
+    // Same idea, but hands back an independent clone of the representation
+    // itself instead of just its value. Mutating the clone never touches
+    // this number's own state.
     std::unique_ptr<RepresentationBase> representationAs(Representation target) {
-        ensure(target);
-        return repFor(target).clone();
+        return ensured(target).clone();
     }
 
-    // Sum of 2^i * 3^j over all set bits, computed by whichever
-    // representation is canonical (see each representation's value() for
-    // its strategy). Uses double, so precision degrades for large
-    // row/column counts or deeply negative indices. Not virtual: Signed<>
-    // hides rather than overrides this (see signed.hpp) since these classes
-    // are always used by their concrete type, never through a
+    // Sum of 2^i * 3^j over all set bits. Not virtual: Signed<> hides
+    // rather than overrides this (signed.hpp), since these classes are
+    // always used by their concrete type, never through a
     // SmoothNumberBase*.
     double value() const { return repFor(canonical_).value(); }
 
     // Replaces whatever this number currently holds with `v`, encoded
-    // entirely in row j = 0: since value() = sum_j n_j * 3^j, putting
-    // everything in column 0 means the total is just n_0 * 3^0 = n_0 = v.
-    // Delegates the actual encoding to the canonical representation's own
-    // setColumnValue() (see RepresentationBase), so e.g. RowValues -- which
-    // already stores exactly n_0 -- assigns it directly in O(1) rather than
-    // going through a bit-by-bit decomposition.
-    //
-    // Throws std::invalid_argument for a negative v -- the bit grid can
-    // only ever hold positive magnitude; use a Signed<> type (which
-    // overrides this to split off the sign first) for negative values.
-    void setValue(long long v) {
-        if (v < 0) {
-            throw std::invalid_argument("SmoothNumberBase::setValue: value must be non-negative for this type");
-        }
-        clearAllBits();
-        repFor(canonical_).setColumnValue(0, static_cast<double>(v));
-    }
+    // entirely in row j = 0 (since value() = sum_j n_j * 3^j, n_0 = v
+    // reproduces it exactly). Throws std::invalid_argument for a negative
+    // v -- use a Signed<> type for negative values.
+    void setValue(long long v) { setValue(static_cast<double>(v)); }
 
     // Same idea, but v may have a fractional part. Throws
-    // std::invalid_argument if v is negative, or if it has a fractional
-    // part but this type doesn't allow fractional (negative-index) terms.
+    // std::invalid_argument if v is negative, or fractional on a
+    // non-fractional type.
     void setValue(double v) {
         if (v < 0.0) {
             throw std::invalid_argument("SmoothNumberBase::setValue: value must be non-negative for this type");
@@ -254,12 +192,8 @@ public:
     }
 
 protected:
-    // allow_fractional lets i and j go negative, so the number can
-    // represent fractional values (e.g. i = -1 contributes a factor of
-    // 1/2). This has to be decided up front because it's the one thing no
-    // representation can discover on its own: it affects how RowValues
-    // formats and decodes its numbers, and it's the only structural
-    // restriction any representation still enforces.
+    // allow_fractional lets i and j go negative. Decided up front since
+    // it's the one thing no representation can discover on its own.
     explicit SmoothNumberBase(bool allow_fractional, std::shared_ptr<Metrics> metrics = nullptr)
         : allowFractional_(allow_fractional), metrics_(std::move(metrics)), canonical_(Representation::Dynamic) {
         reps_[index(Representation::Sparse)] = std::make_unique<SparseRepresentation>(allow_fractional, metrics_);
@@ -271,19 +205,14 @@ protected:
         valid_[index(Representation::Dynamic)] = true;
     }
 
-    // Adds other's value into this one's, in place, through the canonical
-    // representation's addInPlace() (see RepresentationBase) -- each
-    // representation adds the 1s and handles carries however is natural
-    // for its own storage. Protected: mutating in place is only ever used
-    // internally, to build the copy-based, value-returning operator+ (see
-    // smooth_integer.hpp, smooth_float.hpp, signed.hpp) -- it's not part of
-    // the public API.
+    // Adds other's value into this one's in place, through the canonical
+    // representation's addInPlace(). Protected: only used internally to
+    // build value-returning operator+ (smooth_integer.hpp, smooth_float.hpp,
+    // signed.hpp).
     //
     // Throws std::invalid_argument if this->canonical() != other.canonical()
-    // (representations must match -- this never implicitly reconciles two
-    // different representations the way ensure()'s forEachSet-based
-    // conversion does), or if `other` has fractional terms this type
-    // doesn't allow.
+    // (no implicit reconciliation, unlike ensure()), or if `other` has
+    // fractional terms this type doesn't allow.
     void addMatchingInPlace(const SmoothNumberBase& other) {
         requireMatchingRepresentation(other);
         requireCompatibleFractional(other, "addMatchingInPlace");
@@ -291,20 +220,10 @@ protected:
         invalidateAllExcept(canonical_);
     }
 
-    // Multiplies this one's value by other's, in place, through the
-    // canonical representation's multiplyInPlace() (see
-    // RepresentationBase) -- each representation multiplies however is
-    // natural for its own storage. Protected for the same reason as
-    // addMatchingInPlace() -- mutating in place is only ever used
-    // internally, to build the copy-based, value-returning operator* (see
-    // smooth_integer.hpp, smooth_float.hpp, signed.hpp).
-    //
-    // Throws std::invalid_argument if this->canonical() != other.canonical()
-    // (representations must match, same as addMatchingInPlace()), or if
-    // `other` has fractional terms this type doesn't allow -- multiplying
-    // two non-negative exponents can never produce a negative one, so this
-    // type's own bits can never be the source of a new fractional term;
-    // only other's can.
+    // Multiplies this one's value by other's, in place. Same reasoning
+    // and same throwing conditions as addMatchingInPlace() -- except
+    // multiplying two non-negative exponents can never produce a negative
+    // one, so only `other` can be the source of a new fractional term.
     void multiplyMatchingInPlace(const SmoothNumberBase& other) {
         requireMatchingRepresentation(other);
         requireCompatibleFractional(other, "multiplyMatchingInPlace");
@@ -313,46 +232,19 @@ protected:
     }
 
     // Subtracts other's magnitude from this one's, in place: this - other.
-    // Precondition: this->value() >= other.value(), and `other` is the same
-    // concrete type as `this` (so their allowFractional_ agree) -- callers
-    // (currently only Signed<Base>'s operator+, for combining operands with
-    // different signs) are responsible for both. Protected rather than
-    // public: unlike addition, plain subtraction has no meaning for the two
-    // unsigned types (their bit grid can't hold a negative result), so it's
-    // only exposed as a building block for signed addition.
+    // Precondition: this->value() >= other.value(), same concrete type as
+    // this. Protected: plain subtraction has no meaning for the two
+    // unsigned types, so it's only exposed as a building block for signed
+    // addition (Signed<Base>::operator+, combining operands with
+    // different signs).
     //
-    // Throws std::invalid_argument if this->canonical() != other.canonical()
-    // (representations must match, same as addMatchingInPlace()).
-    //
-    // Unlike addInPlace(), this isn't dispatched per representation: it
-    // works by converting both operands to per-column totals (n_j, as in
-    // RowValues) via forEachSet(), subtracting column by column, and
-    // resolving any column that goes negative by borrowing from the next
-    // column up -- one unit of n_(j+1) is worth exactly 3 units of n_j,
-    // since 3^(j+1) = 3 * 3^j -- before writing the result back through
-    // setColumnValue(). That borrow step has no natural per-representation
-    // variation the way carrying during addition does (nothing here is
-    // cheaper for RowValues to do directly), so one shared implementation
-    // covers every representation.
+    // The actual per-column borrow algorithm is generic across every
+    // representation (see subtractMagnitudeInPlace() in
+    // representation_base.hpp), so this just enforces the matching-
+    // representation precondition and invalidates the rest afterward.
     void subtractMagnitudeInPlace(const SmoothNumberBase& other) {
         requireMatchingRepresentation(other);
-        std::map<int, double> totals;
-        repFor(canonical_).forEachSet([&totals](int i, int j) { totals[j] += std::pow(2.0, i); });
-        other.repFor(other.canonical_).forEachSet([&totals](int i, int j) { totals[j] -= std::pow(2.0, i); });
-
-        for (auto it = totals.begin(); it != totals.end(); ++it) {
-            if (it->second < -1e-9) {
-                double borrowUnits = std::ceil((-it->second) / 3.0 - 1e-9);
-                totals[it->first + 1] -= borrowUnits;
-                it->second += borrowUnits * 3.0;
-            }
-        }
-
-        RepresentationBase& canon = repFor(canonical_);
-        canon.reset();
-        for (const auto& col : totals) {
-            if (std::abs(col.second) > 1e-9) canon.setColumnValue(col.first, col.second);
-        }
+        smooth::subtractMagnitudeInPlace(repFor(canonical_), other.repFor(other.canonical_));
         invalidateAllExcept(canonical_);
     }
 
@@ -379,9 +271,8 @@ private:
     const RepresentationBase& repFor(Representation r) const { return *reps_[index(r)]; }
 
     // Shared by addMatchingInPlace(), multiplyMatchingInPlace(), and
-    // subtractMagnitudeInPlace(): all three require this->canonical() ==
-    // other.canonical() -- no automatic cross-representation reconciliation
-    // for arithmetic, unlike ensure().
+    // subtractMagnitudeInPlace(): all three require matching canonical
+    // representations, unlike ensure()'s automatic reconciliation.
     void requireMatchingRepresentation(const SmoothNumberBase& other) const {
         if (canonical_ != other.canonical_) {
             throw std::invalid_argument(
@@ -391,9 +282,7 @@ private:
     }
 
     // Shared by addMatchingInPlace() and multiplyMatchingInPlace(): both
-    // throw if `other` has a fractional (negative-index) term that this
-    // type doesn't allow. `caller` names the throwing operation, for the
-    // error message.
+    // throw if `other` has a fractional term this type doesn't allow.
     void requireCompatibleFractional(const SmoothNumberBase& other, const char* caller) const {
         if (allowFractional_ || !other.allowFractional_) return;
         bool otherHasFractional = false;
@@ -427,12 +316,10 @@ private:
         }
     }
 
-    // Brings `target` up to date by asking the canonical representation to
-    // enumerate every cell it has set, and replaying each into `target` --
-    // unless `target` is already up to date (canonical is always considered
-    // up to date, and an already-valid representation is never redundantly
-    // reconverted). No global bounds are needed for this, since
-    // forEachSet() is each representation's own responsibility.
+    // Brings `target` up to date by enumerating the canonical
+    // representation's bits and replaying each into `target`, unless
+    // `target` is already valid (canonical is always considered up to
+    // date).
     void ensure(Representation target) {
         if (target == canonical_ || isValid(target)) return;
         if (metrics_) {
@@ -446,18 +333,17 @@ private:
         markValid(target);
     }
 
-    // Converts to `target` if needed and makes it canonical. Private:
-    // representation choice is an internal decision, not something callers
-    // dictate. Currently unused -- it's the hook for future internal
-    // heuristics that pick the best representation for a given workload.
-    void convertTo(Representation target) {
+    // ensure(target) followed by a reference to that now-up-to-date
+    // representation -- what every read-only "give me representation X"
+    // accessor below (printX()/valueAs()/representationAs()) needs.
+    RepresentationBase& ensured(Representation target) {
         ensure(target);
-        canonical_ = target;
+        return repFor(target);
     }
 
     // Wipes the canonical representation back to empty and every other
-    // representation back to outdated, in one step -- used by setValue()
-    // so it fully replaces this number's value rather than adding to it.
+    // representation back to outdated -- used by setValue() so it fully
+    // replaces this number's value rather than adding to it.
     void clearAllBits() {
         repFor(canonical_).reset();
         invalidateAllExcept(canonical_);
@@ -478,17 +364,13 @@ private:
     Representation canonical_;
 };
 
-// There is deliberately no operator+=/add()/operator*=/multiply() here, and
-// no free operator+/operator* template either: arithmetic never mutates in
-// place, and each concrete type (SmoothInteger, SmoothFloat, Signed<Base>)
-// defines its own value-returning operator+ and operator* as hidden friends
-// (see smooth_integer.hpp, smooth_float.hpp, signed.hpp), each built from a
-// copy plus the protected addMatchingInPlace()/multiplyMatchingInPlace()/
-// subtractMagnitudeInPlace() above. A hidden friend is used (rather than a
-// shared free template, as before addition worked this way) because those
-// in-place building blocks are protected, not public -- a plain free
-// function couldn't reach them, but a friend defined inside a derived class
-// can, through an object of that derived type, per ordinary protected-
-// access rules.
+// There is deliberately no operator+=/add()/operator*=/multiply() here:
+// arithmetic never mutates in place. Each concrete type defines its own
+// value-returning operator+/operator* as hidden friends (smooth_integer.hpp,
+// smooth_float.hpp, signed.hpp), built from a copy plus the protected
+// ...MatchingInPlace()/subtractMagnitudeInPlace() above -- a hidden friend,
+// rather than a shared free template, because those building blocks are
+// protected: a plain free function couldn't reach them, but a friend
+// defined inside a derived class can.
 
 }  // namespace smooth

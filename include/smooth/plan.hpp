@@ -18,15 +18,13 @@ namespace smooth {
 
 // A fluent builder for an arithmetic expression over 3-smooth numbers.
 // Building it produces a **declaration** -- a pure, representation-agnostic
-// record of exactly what was asked for (a tree of scalar/number leaves
-// combined by add/multiply), and nothing else; building never computes
-// anything, and never touches a RepresentationBase. Compiling (the first
-// call to plan()/calculate()) turns that declaration into a **blueprint**:
-// the same tree, but with explicit Ensure(target) steps spliced in
-// wherever a leaf needs to become a specific representation. The blueprint
-// is what's actually executed -- and printed by plan() -- so every
-// conversion this Plan performs shows up as a real, inspectable step, not
-// something hidden inside a virtual call:
+// record of what was asked for (scalar/number leaves combined by
+// add/multiply); building never computes anything. Compiling (the first
+// call to plan()/calculate()) turns that into a **blueprint**: the same
+// tree with explicit Ensure(target) steps spliced in wherever a leaf needs
+// a specific representation. The blueprint is what's executed -- and
+// printed by plan() -- so every conversion shows up as a real,
+// inspectable step:
 //
 //   smooth::SparsePlan().scalar(1).plus().scalar(2).plan();
 //   // add
@@ -37,19 +35,12 @@ namespace smooth {
 //   // = 3
 //
 // A concrete Plan's *entire* strategy is one method: buildBlueprint(),
-// which maps a declaration node to a blueprint node. Every plan_zoo
-// strategy's override is one line, built on the shared
-// wrapLeavesWithEnsure() helper below (see DefaultPlan in this file, and
-// plan_zoo/ for the others) -- there is no convertLeaf()/convertNumberLeaf()/
-// targetRepresentation() split to keep in sync; a strategy either wraps
-// leaves in Ensure(some representation), or (for a future strategy that
-// wants to do something else -- pick a representation per-node, insert some
-// other kind of step, ...) writes its own buildBlueprint() from scratch.
-// Immediately after buildBlueprint() runs, validateBlueprint() (below)
-// confirms that stripping every Ensure node back out of the blueprint
-// yields the declaration's exact shape and leaf contents again -- so a
-// buildBlueprint() override can only ever *decorate* what's being
-// computed, never change it.
+// mapping a declaration node to a blueprint node. Every plan_zoo strategy's
+// override is one line, built on the shared wrapLeavesWithEnsure() helper
+// below. Immediately after buildBlueprint() runs, validateBlueprint()
+// (below) confirms that stripping every Ensure node back out yields the
+// declaration's exact shape again -- so an override can only *decorate*
+// what's being computed, never change it.
 //
 //   double result = smooth::DefaultPlan()
 //       .scalar(3)
@@ -61,62 +52,36 @@ namespace smooth {
 //       .right()
 //       .calculate();  // 3 * (4 + 2) = 18
 //
-// - scalar(x): a leaf. Throws std::invalid_argument for a negative x:
+// - scalar(x): a leaf. Throws std::invalid_argument for a negative x --
 //   every RepresentationBase is magnitude-only, and a negative value would
-//   otherwise infinite-loop the first time something tries to decompose it
-//   into bits (see ScalarRepresentation::forEachSet()/
-//   representation_base.hpp's decomposeColumnValue()) -- so this is the
-//   one place a raw literal enters the system, and the one place that gets
-//   checked. Nothing is built yet -- just the raw value, recorded in the
-//   declaration.
-// - number(n): a leaf holding an existing SmoothNumberBase-derived
-//   object's value, snapshotted immediately (via scalar(n.value())) -- so
-//   it's subject to the same non-negative restriction. Templated
-//   specifically so T::value() is resolved at compile time against T's
-//   *own* type -- required for signed types, whose value() intentionally
-//   hides (isn't a virtual override of) SmoothNumberBase::value(); calling
-//   it through a SmoothNumberBase& would silently read the unsigned
-//   magnitude instead of throwing for a negative value.
-// - numberVia(n): keeps a live reference to n (which must outlive
-//   calculate()/plan()) instead. Compiling always wraps a numberVia() leaf
-//   in Ensure(target) too (see wrapLeavesWithEnsure()), and executing that
-//   Ensure step calls n's own SmoothNumberBase::representationAs(target)
-//   directly -- a genuine ensure()-driven conversion through n's own
-//   internal representation cache, not a value-then-rebuild round trip --
-//   so n's own Metrics (if it has any) sees the resulting
-//   convert_<canonical>_to_<target> counter.
-// - plus() / times(): wraps whatever's been built so far at the current
-//   nesting level into a new operator node (as its left side), and expects
-//   the next thing you build to become its right side.
-// - left() / right(): open and close a nested group, the way `(` and `)`
-//   do -- left() always starts a fresh, independent sub-expression;
-//   right() always finishes the most recently opened one and plugs its
-//   completed value into whichever slot is open one level up (which slot
-//   that is -- a pending operator's right side, or the top-level result --
-//   is whatever's actually open there; left()/right() name the bracket
-//   pair, not a side of the parent).
-// - calculate(): the computed result, as a double -- the final blueprint
-//   step's representation's own value().
-// - plan(os): prints the compiled blueprint as a tree (see above).
+//   otherwise infinite-loop the first bit decomposition -- so this is the
+//   one place a raw literal enters the system.
+// - number(n): a leaf snapshotting an existing number's value immediately
+//   (via scalar(n.value())). Templated so T::value() resolves at T's own
+//   type -- required for signed types, whose value() hides rather than
+//   overrides SmoothNumberBase::value().
+// - numberVia(n): keeps a live reference to n (must outlive
+//   calculate()/plan()) instead. Its Ensure step calls n's own
+//   representationAs(target) directly -- a genuine conversion through n's
+//   own cache -- so n's own Metrics sees the resulting counter.
+// - plus() / times(): wraps everything built so far at this nesting level
+//   into a new operator node, as its left side.
+// - left() / right(): open/close a nested group, like `(`/`)` -- left()
+//   starts a fresh sub-expression, right() finishes the most recent one
+//   and plugs it into whatever slot is open one level up.
+// - calculate(): the result, as a double.
+// - plan(os): prints the compiled blueprint as a tree.
 //
-// name() identifies which strategy is in use ("scalar" for DefaultPlan;
-// "sparse"/"matrix"/"row_values" for the plan_zoo/ subclasses). It drives
-// the convert_to_<name> metrics counter (incremented once per Ensure step),
-// so overriding it alone already shows up distinctly in the metrics.
+// name() identifies the strategy ("scalar" for DefaultPlan; others in
+// plan_zoo/) and drives the convert_to_<name> metrics counter.
 //
 // Like every concrete SmoothNumberBase-derived type, a Plan optionally
-// takes a shared Metrics at construction (see metrics.hpp). A Metrics
-// shared between a Plan and the numbers that feed it (via number() or
-// numberVia() -- the latter via setMetricsPtr(), since a numberVia()
-// argument isn't constructed by the Plan) tallies both under the same
-// counters: convert_to_<name()>/add/multiply from the Plan itself,
-// carries/bit_operations/scalar_operations/bit_iterations from whatever
-// representation-level work executing the blueprint actually does (an
-// Ensure step re-points its result at the Plan's own Metrics via
-// RepresentationBase::setMetricsPtr(), so this is true even for a
-// numberVia() leaf's forced conversion, not just scalar()/number() ones),
-// and, for numberVia() specifically, the fed-in number's own
-// convert_<canonical>_to_<target> counter too.
+// takes a shared Metrics. One shared between a Plan and the numbers
+// feeding it (via number()/numberVia()) tallies both under the same
+// counters: convert_to_<name()>/add/multiply from the Plan, whatever
+// representation-level work executing produces, and -- for numberVia()
+// specifically -- the fed-in number's own convert_<canonical>_to_<target>
+// counter too.
 class Plan {
 public:
     explicit Plan(std::shared_ptr<Metrics> metrics = nullptr) : metrics_(std::move(metrics)) {
@@ -130,11 +95,9 @@ public:
     bool hasMetrics() const { return static_cast<bool>(metrics_); }
     const std::shared_ptr<Metrics>& metricsPtr() const { return metrics_; }
 
-    // A single double overload (rather than separate long long/double
-    // overloads, as setValue() has elsewhere in this library): both would
-    // do exactly the same thing here, so a second overload would only add
-    // the risk of an ambiguous call for a plain int literal like
-    // scalar(3) -- int converts to double as easily as to long long.
+    // A single double overload rather than separate long long/double
+    // overloads (as setValue() has elsewhere): a second overload would
+    // only risk an ambiguous call for a plain int literal like scalar(3).
     Plan& scalar(double value) {
         if (value < 0.0) {
             throw std::invalid_argument(
@@ -224,12 +187,9 @@ public:
     }
 
 protected:
-    // Node serves as both the declaration (the pure, representation-
-    // agnostic expression tree scalar()/number()/numberVia()/plus()/
-    // times()/left()/right() build -- ScalarLeaf/NumberLeaf/Add/Multiply
-    // only, never Ensure or Reduce) and, after buildBlueprint() runs, the
-    // blueprint itself (the same shape, but with Ensure/Reduce nodes
-    // spliced in wherever a conversion, or a reduction, needs to run).
+    // Node serves as both the declaration (ScalarLeaf/NumberLeaf/Add/
+    // Multiply only) and, after buildBlueprint() runs, the blueprint
+    // itself (the same shape with Ensure/Reduce nodes spliced in).
     struct Node {
         enum class Kind { ScalarLeaf, NumberLeaf, Ensure, Reduce, Add, Multiply };
         Kind kind;
@@ -243,17 +203,13 @@ protected:
 
     // Maps the declaration into an executable blueprint by inserting
     // Ensure(target) nodes wherever this Plan's strategy needs a
-    // conversion. The one hook every concrete Plan overrides to declare
-    // its strategy -- pure virtual, so there is no default "do nothing
-    // special" behavior hiding in Plan itself; even DefaultPlan (below)
-    // spells out that its target is Scalar.
+    // conversion. The one hook every concrete Plan overrides -- pure
+    // virtual, so even DefaultPlan (below) spells out its own target.
     virtual std::unique_ptr<Node> buildBlueprint(const Node& declaration) const = 0;
 
-    // Shared by every strategy that just wants every leaf -- scalar() or
-    // numberVia() alike -- converted into one target representation: walks
-    // `declaration`, wrapping each leaf it finds in Ensure{target}. This is
-    // typically a buildBlueprint() override's entire body (see DefaultPlan
-    // below and plan_zoo/ for examples).
+    // Shared by every strategy that wants every leaf converted into one
+    // target representation: walks `declaration`, wrapping each leaf in
+    // Ensure{target}. Typically a buildBlueprint() override's entire body.
     std::unique_ptr<Node> wrapLeavesWithEnsure(const Node& declaration,
                                                 SmoothNumberBase::Representation target) const {
         auto node = std::make_unique<Node>();
@@ -270,19 +226,11 @@ protected:
     }
 
     // Wraps an already-built blueprint node in a Reduce node that, at
-    // execution time, greedily runs `reduction` against that node's own
-    // resulting representation (a clone of it, so the un-reduced node
-    // still prints/inspects with its original bits) until none of
-    // `reduction`'s transformations can fire anywhere anymore. Unlike
-    // Ensure, a Reduce node's *shape* -- that a reduction runs here at
-    // all, wrapping this particular operand -- is still decided
-    // statically by buildBlueprint(), same as always; only *which cells
-    // it actually touches* is inherently data-dependent, discovered at
-    // execution time from the real bits. `reduction` is any Reduction
-    // (reduction.hpp) -- a named reduction_zoo/ preset, or a bespoke
-    // TransformationReduction -- so a buildBlueprint() override never has
-    // to name which concrete kind it's using; Plan itself never does
-    // either. See plan_zoo/merging_sparse_plan.hpp for the one strategy
+    // execution time, runs `reduction` against a clone of that node's own
+    // representation (so the un-reduced node still prints its original
+    // bits). `reduction` is any Reduction (reduction.hpp), so a
+    // buildBlueprint() override never has to name which concrete kind it's
+    // using. See plan_zoo/merging_sparse_plan.hpp for the one strategy
     // that currently uses this.
     std::unique_ptr<Node> wrapWithReduction(std::unique_ptr<Node> node, const Reduction& reduction) const {
         auto wrapped = std::make_unique<Node>();
@@ -295,17 +243,15 @@ protected:
 private:
     enum class Op { Add, Multiply };
 
-    // One independent, in-progress sub-expression -- the stack of these is
-    // what left()/right() push and pop.
+    // One independent, in-progress sub-expression -- what left()/right()
+    // push and pop.
     struct Frame {
         std::unique_ptr<Node> root;  // null until something's been built here
     };
 
     // The compiled blueprint, executed: one entry per blueprint node, in
-    // post-order (a node's operands/child are always compiled -- and thus
-    // already present in this list -- before the node itself), each
-    // carrying its already-computed representation. The last entry is
-    // always the overall root.
+    // post-order, each carrying its already-computed representation. The
+    // last entry is always the overall root.
     struct Step {
         enum class Kind { Scalar, Ensure, EnsureNumber, Reduce, Add, Multiply } kind;
         std::unique_ptr<RepresentationBase> rep;
@@ -331,12 +277,9 @@ private:
         return copy;
     }
 
-    // Confirms that stripping every Ensure/Reduce "decoration" node out of
-    // `blueprint` yields back exactly `declaration`'s own shape and leaf
-    // contents -- i.e. a buildBlueprint() override may only ever *decorate*
-    // the declaration with conversions/reductions, never change what's
-    // actually being computed. Throws std::invalid_argument -- a bug in
-    // the Plan subclass, not a usage error -- if it doesn't match.
+    // Confirms that stripping every Ensure/Reduce node out of `blueprint`
+    // yields back exactly `declaration`'s own shape and leaf contents.
+    // Throws std::invalid_argument -- a bug in the Plan subclass -- if not.
     void validateBlueprint(const Node& declaration, const Node& blueprint) const {
         const Node* b = &blueprint;
         while (b->kind == Node::Kind::Ensure || b->kind == Node::Kind::Reduce) {
@@ -374,11 +317,10 @@ private:
         }
     }
 
-    // Returns the slot the next leaf/group-result should be written to: the
-    // current frame's root, if nothing's there yet, or a still-empty right
-    // child of a pending operator. Returns nullptr if the current frame
-    // already holds a complete expression with no pending operator -- i.e.
-    // there's nowhere left to put a new value without an operator first.
+    // The slot the next leaf/group-result should be written to: the
+    // current frame's root if empty, or a pending operator's empty right
+    // child. Returns nullptr if there's nowhere left to put a new value
+    // without an operator first.
     std::unique_ptr<Node>* writableSlot() {
         Frame& top = stack_.back();
         if (!top.root) return &top.root;
@@ -411,10 +353,8 @@ private:
     }
 
     // Builds a fresh, empty representation of `target`'s concrete type --
-    // the shared factory an Ensure step needs to know what to convert
-    // *into*, driven purely by the SmoothNumberBase::Representation value
-    // carried in the blueprint (data), rather than by a virtual call to
-    // some per-subclass method.
+    // what an Ensure step converts into, driven by the Representation
+    // value carried in the blueprint rather than a per-subclass method.
     static std::unique_ptr<RepresentationBase> makeEmptyRepresentation(SmoothNumberBase::Representation target,
                                                                          std::shared_ptr<Metrics> metrics) {
         switch (target) {
@@ -445,12 +385,9 @@ private:
     }
 
     // Clones `left` and combines `right` into the clone via
-    // RepresentationBase's own addInPlace()/multiplyInPlace() -- since
-    // those are already virtual and polymorphic over any RepresentationBase
-    // (regardless of its concrete type), this one implementation covers
-    // every strategy: no per-strategy override needed. `left` and `right`
-    // are always the same concrete type in practice, since a Add/Multiply
-    // node's operands were both produced by this same Plan's own blueprint.
+    // RepresentationBase's own addInPlace()/multiplyInPlace() -- one
+    // implementation covers every strategy, no per-strategy override
+    // needed.
     std::unique_ptr<RepresentationBase> combine(Op op, const RepresentationBase& left,
                                                  const RepresentationBase& right) const {
         std::unique_ptr<RepresentationBase> result = left.clone();
@@ -462,10 +399,10 @@ private:
         return result;
     }
 
-    // Executes one blueprint node (and, recursively, everything it depends
-    // on), appending each result to steps_ in post-order and returning the
-    // index of the one just appended. Each Ensure/Add/Multiply step
-    // increments a matching counter on metrics_, if one was given.
+    // Executes one blueprint node (and, recursively, its dependencies),
+    // appending each result to steps_ in post-order and returning the
+    // index just appended. Each Ensure/Add/Multiply step increments a
+    // matching counter on metrics_, if one was given.
     std::size_t compileBlueprintNode(const Node& node) {
         switch (node.kind) {
             case Node::Kind::ScalarLeaf: {
@@ -479,22 +416,17 @@ private:
             }
             case Node::Kind::NumberLeaf:
                 // Only ever valid as the direct child of an Ensure node --
-                // there's no meaningful "materialize, unconverted" form for
-                // an existing number the way a raw scalar naturally becomes
-                // Scalar, so a well-formed blueprint never compiles one on
-                // its own (see the Ensure case below, which special-cases
-                // this instead of recursing into it).
+                // there's no meaningful "unconverted" form for an existing
+                // number, so a well-formed blueprint never compiles one on
+                // its own (the Ensure case below special-cases it instead).
                 throw std::invalid_argument("Plan: " + name() +
                                              "::buildBlueprint() left a numberVia() leaf unwrapped by Ensure()");
             case Node::Kind::Ensure: {
                 if (metrics_) metrics_->increment("convert_to_" + name());
                 if (node.child->kind == Node::Kind::NumberLeaf) {
-                    // A genuine ensure()-driven conversion through the
-                    // number's own internal representation cache -- see
-                    // SmoothNumberBase::representationAs(). The clone comes
-                    // back carrying *that number's* Metrics (or none), so
-                    // it's re-pointed at this Plan's own Metrics before
-                    // anything downstream (e.g. combine()) touches it.
+                    // A genuine conversion through the number's own cache
+                    // (representationAs()); re-pointed at this Plan's own
+                    // Metrics before anything downstream touches it.
                     std::unique_ptr<RepresentationBase> rep =
                         node.child->numberSource->representationAs(node.ensureTarget);
                     rep->setMetricsPtr(metrics_);
@@ -518,10 +450,8 @@ private:
             }
             case Node::Kind::Reduce: {
                 std::size_t childStep = compileBlueprintNode(*node.child);
-                // Cloned, not mutated in place: steps_[childStep].rep stays
-                // exactly as it was (so printing/inspecting that step still
-                // shows its pre-reduction bits), and the reduction's changes
-                // land only on this new step's own independent copy.
+                // Cloned, not mutated in place, so the child step still
+                // shows its pre-reduction bits.
                 std::unique_ptr<RepresentationBase> rep = steps_[childStep].rep->clone();
                 node.reduction->run(*rep, metrics_);
                 Step step;
@@ -621,14 +551,10 @@ private:
     std::shared_ptr<Metrics> metrics_;
 };
 
-// The default strategy: every leaf (scalar()/number() or numberVia()) is
-// ensured into a plain ScalarRepresentation, and every add/multiply runs
-// through ScalarRepresentation's own addInPlace()/multiplyInPlace() -- this
-// is "ScalarPlan" in the same sense SparsePlan/MatrixPlan/RowValuesPlan
-// (see plan_zoo/) are, just given the name most code reaches for by
-// default, and defined here alongside Plan itself rather than living in
-// plan_zoo/. buildBlueprint() is the entire strategy: wrap every leaf in
-// Ensure(Scalar), via the shared wrapLeavesWithEnsure() helper.
+// The default strategy: every leaf is ensured into a plain
+// ScalarRepresentation. This is "ScalarPlan" in the same sense
+// SparsePlan/MatrixPlan/RowValuesPlan (plan_zoo/) are, just given the name
+// most code reaches for by default, and defined here rather than there.
 class DefaultPlan : public Plan {
 public:
     explicit DefaultPlan(std::shared_ptr<Metrics> metrics = nullptr) : Plan(std::move(metrics)) {}

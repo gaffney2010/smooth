@@ -12,18 +12,14 @@
 
 namespace smooth {
 
-// A (i, j) bit grid that starts empty and grows on demand: whenever set()
-// is asked to turn on a bit outside the currently allocated range, the
-// array is grown by doubling -- independently in whichever of the four
-// directions (more positive rows, more negative rows, more positive
-// columns, more negative columns) ran out -- and the old contents are
-// copied into the new, larger array. It never shrinks back down except via
-// reset(). Its capacity is discovered purely from what gets set into it --
-// it takes no capacity up front and needs none.
+// An (i, j) bit grid that starts empty and grows on demand: whenever
+// set() turns on a bit outside the currently allocated range, the array
+// doubles -- independently in whichever of the four directions ran out --
+// and the old contents are copied into the new, larger array. Never
+// shrinks except via reset().
 //
-// Every full-grid walk visits every cell, 1 or 0 -- each cell visited
-// increments the "bit_iterations" counter on metrics_, if one was given at
-// construction.
+// Every full-grid walk visits every cell, 1 or 0 -- each increments
+// "bit_iterations" on metrics_, if given.
 class DynamicMatrixRepresentation : public RepresentationBase {
 public:
     explicit DynamicMatrixRepresentation(bool /*allow_fractional*/, std::shared_ptr<Metrics> metrics = nullptr)
@@ -71,10 +67,8 @@ public:
         return total;
     }
 
-    // Prints the current allocated capacity, then the grid within it (with
-    // a horizontal/vertical line marking the negative/non-negative
-    // boundary, same as before) so growth is visible across successive
-    // prints.
+    // Prints the current allocated capacity, then the grid within it (a
+    // line marks the negative/non-negative boundary).
     void print(std::ostream& os) const override {
         os << "[capacity: rows " << firstRow() << ".." << (static_cast<int>(posRowCap_) - 1) << ", cols "
            << firstCol() << ".." << (static_cast<int>(posColCap_) - 1) << "]\n";
@@ -90,9 +84,8 @@ public:
         }
     }
 
-    // Only walks its own currently allocated capacity (not any global
-    // bound), which after a conversion is sized just large enough to cover
-    // the bits that were actually set.
+    // Only walks its own currently allocated capacity, sized just large
+    // enough to cover the bits actually set.
     void forEachSet(const std::function<void(int, int)>& fn) const override {
         for (int i = firstRow(); i < static_cast<int>(posRowCap_); ++i) {
             for (int j = firstCol(); j < static_cast<int>(posColCap_); ++j) {
@@ -102,9 +95,9 @@ public:
         }
     }
 
-    // A bit grid has no more direct way to encode a number than writing
-    // its bits one at a time (each set() call growing the array as
-    // needed), so this defers to the shared helper.
+    // No more direct way to encode a number than writing its bits one at
+    // a time (growing the array as needed), so this defers to the shared
+    // helper.
     void setColumnValue(int j, double n) override { decomposeColumnValue(*this, j, n); }
 
     std::unique_ptr<RepresentationBase> clone() const override {
@@ -113,20 +106,12 @@ public:
 
     void setMetricsPtr(std::shared_ptr<Metrics> metrics) override { metrics_ = std::move(metrics); }
 
-    // A bit grid has no more direct way to add a number than walking its
-    // bits one at a time and carrying (each set() call growing the array
-    // as needed), so this defers to the shared helper (passing metrics_
-    // along, so its carries are counted).
+    // Defers to the shared helper, same reasoning as setColumnValue().
     void addInPlace(const RepresentationBase& other) override { addBitsWithCarry(*this, other, metrics_); }
 
-    // Likewise, a bit grid has no more direct way to multiply than pairing
-    // up every one of its own terms with every one of other's and
-    // carrying each pairwise sum in (growing as needed), so this defers to
-    // the same shared helper Sparse uses (passing metrics_ along, so its
-    // bit operations and carries are counted) -- being a raw bit grid
-    // rather than a std::set doesn't change the strategy at all, so
-    // there's no need to convert to Sparse (or anything else) just to
-    // multiply.
+    // Likewise defers to the same shared helper Sparse uses -- being a raw
+    // bit grid rather than a std::set doesn't change the strategy, so
+    // there's no need to convert just to multiply.
     void multiplyInPlace(const RepresentationBase& other) override {
         multiplyBitsWithCarry(*this, *this, other, metrics_);
     }
@@ -164,17 +149,16 @@ private:
         return s;
     }
 
-    // Smallest power-of-two-ish capacity, starting from `current` (0 counts
-    // as needing a first allocation of 1), that is at least `needed`.
+    // Smallest power-of-two-ish capacity, starting from `current`, that's
+    // at least `needed`.
     static std::size_t growCapacity(std::size_t current, std::size_t needed) {
         std::size_t cap = current == 0 ? 1 : current;
         while (cap < needed) cap *= 2;
         return cap;
     }
 
-    // Doubles whichever of the four capacities (more positive/negative
-    // rows/columns) are too small to hold (i, j), then copies the old grid
-    // into a freshly allocated, larger one.
+    // Doubles whichever capacities are too small to hold (i, j), then
+    // copies the old grid into a freshly allocated, larger one.
     void growToFit(int i, int j) {
         std::size_t newPosRowCap = posRowCap_;
         std::size_t newNegRowCap = negRowCap_;

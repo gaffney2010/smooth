@@ -11,10 +11,9 @@
 namespace smooth {
 
 // The set of (i, j) coordinates whose bit is set -- inherently unbounded,
-// since it only ever stores the coordinates that are actually on. Since
-// coords_ only ever holds set bits, every loop over it visits only 1s --
-// each one increments the "bit_iterations" counter on metrics_, if one was
-// given at construction.
+// since it only stores coordinates that are actually on. Every loop over
+// coords_ visits only 1s, each incrementing "bit_iterations" on metrics_,
+// if given.
 class SparseRepresentation : public RepresentationBase {
 public:
     explicit SparseRepresentation(bool /*allow_fractional*/, std::shared_ptr<Metrics> metrics = nullptr)
@@ -67,8 +66,8 @@ public:
         }
     }
 
-    // A set of coordinates has no more direct way to encode a number than
-    // writing its bits one at a time, so this defers to the shared helper.
+    // No more direct way to encode a number than writing its bits one at
+    // a time, so this defers to the shared helper.
     void setColumnValue(int j, double n) override { decomposeColumnValue(*this, j, n); }
 
     std::unique_ptr<RepresentationBase> clone() const override {
@@ -77,18 +76,14 @@ public:
 
     void setMetricsPtr(std::shared_ptr<Metrics> metrics) override { metrics_ = std::move(metrics); }
 
-    // A set of coordinates has no more direct way to add a number than
-    // walking its bits one at a time and carrying, so this defers to the
-    // shared helper (passing metrics_ along, so its carries are counted).
+    // No more direct way to add than walking other's bits and carrying, so
+    // this defers to the shared helper.
     void addInPlace(const RepresentationBase& other) override { addBitsWithCarry(*this, other, metrics_); }
 
-    // Likewise, a set of coordinates has no more direct way to multiply
-    // than pairing up every one of its own terms with every one of
-    // other's and carrying each pairwise sum in, so this defers to the
-    // shared helper too (passing metrics_ along, so its bit operations and
-    // carries are counted). `*this` is passed as both the destination and
-    // the left-hand operand -- multiplyBitsWithCarry() snapshots both
-    // operands' bits before resetting the destination, so this is safe.
+    // Likewise, defers to the shared helper for multiplying. `*this` is
+    // passed as both destination and left-hand operand --
+    // multiplyBitsWithCarry() snapshots both operands' bits before
+    // resetting the destination, so this is safe.
     void multiplyInPlace(const RepresentationBase& other) override {
         multiplyBitsWithCarry(*this, *this, other, metrics_);
     }

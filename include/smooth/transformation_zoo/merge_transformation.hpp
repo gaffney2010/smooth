@@ -27,11 +27,8 @@ public:
     }
 
 protected:
-    // Against RowValues, clearing (i, j) and (i+1, j) then carry-setting
-    // (i, j+1) is exactly "subtract 2^i + 2^(i+1) = 3*2^i from column j,
-    // add 2^i to column j+1" -- ordinary column arithmetic, no bit-by-bit
-    // carry chase needed (RowValuesRepresentation's own magnitude already
-    // absorbs whatever was there).
+    // Against RowValues: subtract 3*2^i from column j, add 2^i to column
+    // j+1 -- ordinary arithmetic, no bit-by-bit carry chase needed.
     std::vector<std::pair<int, int>> applyRowValuesAndReportLandings(RowValuesRepresentation& rep, int i,
                                                                       int j) const override {
         double bit = std::pow(2.0, i);

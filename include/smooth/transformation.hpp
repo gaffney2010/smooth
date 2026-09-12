@@ -12,13 +12,11 @@ namespace smooth {
 
 // Forward-declared, not included: AtomicTransformation
 // (atomic_transformation.hpp) is itself an OffsetTransformation, so the
-// dependency can't run the other way too. AtomApplication only ever needs
-// a pointer to one, never its full definition.
+// dependency can't run the other way too.
 class AtomicTransformation;
 
 // One atom, anchored at a specific (i, j) -- what OffsetTransformation::
-// atomize() (below) returns a sequence of. See atomic_transformation.hpp
-// for what makes something an atom in the first place.
+// atomize() (below) returns a sequence of.
 struct AtomApplication {
     std::shared_ptr<const AtomicTransformation> atom;
     int i;
@@ -27,28 +25,18 @@ struct AtomApplication {
 
 // A Transformation is any distinct unit of work that doesn't change a
 // 3-smooth number's value: check whether it can fire at a given anchor
-// (i, j), apply it, and report which cells its own application changed
-// (its "landings") -- the only cells worth re-examining afterward for
-// newly created opportunities, since applying a Transformation can only
-// ever create new opportunities at cells it touched, never anywhere else.
-// Reduction (reduction.hpp) is the other half of this idea: repeated
-// application of one or more Transformations until some condition is met
-// (typically: none of them can fire anywhere anymore).
+// (i, j), apply it, and report which cells changed (its "landings") --
+// the only cells worth re-examining afterward. Reduction (reduction.hpp)
+// is the other half: repeated application until some condition is met.
 //
-// This is deliberately the smallest possible interface, because
-// "distinct unit of work" covers genuinely different shapes. Every
-// Transformation this library had until now fit one very specific shape:
-// a fixed list of input offsets that must all be 1 (cleared by applying),
-// and a fixed list of output offsets that get carry-set to 1 -- see
-// OffsetTransformation below, which is exactly that shape, pulled out as
-// its own concrete class once it became clear it was only a special
-// case, not the general one. TernaryCarryTransformation
+// Deliberately the smallest possible interface, since "distinct unit of
+// work" covers genuinely different shapes: most transformations fit one
+// specific shape -- a fixed list of input offsets that must all be 1, and
+// a fixed list of output offsets that get carry-set to 1 -- see
+// OffsetTransformation below. TernaryCarryTransformation
 // (transformation_zoo/ternary_carry_transformation.hpp) is the case that
-// forced the split: "subtract 3 from column j, add 1 to column j+1" has
-// no fixed set of bit offsets at all -- its own precondition ("column j
-// has more than one bit set") depends on an entire column's aggregate
-// magnitude, not a handful of fixed cells -- so it implements
-// Transformation directly instead of going through OffsetTransformation.
+// doesn't: its precondition depends on an entire column's magnitude, not
+// a handful of fixed cells, so it implements Transformation directly.
 class Transformation {
 public:
     virtual ~Transformation() = default;
@@ -59,71 +47,46 @@ public:
 
     // Applies this transformation, anchored at (i, j), to `rep` in place.
     // Precondition: canApply(rep, i, j). Returns every cell this
-    // application actually changed -- see the class comment above for why
-    // that's exactly what's worth re-examining afterward, and
-    // TransformationReduction (reduction_zoo/transformation_reduction.hpp)
-    // for the one place that currently relies on it.
+    // application actually changed.
     virtual std::vector<std::pair<int, int>> applyAndReportLandings(RepresentationBase& rep, int i, int j) const = 0;
 
     // Given that cell (i, j) just changed, returns every anchor -- for
     // *this* transformation specifically -- that might now be worth
-    // (re-)checking with canApply(). For OffsetTransformation this is
-    // purely arithmetic (see its override); for a transformation like
-    // TernaryCarryTransformation, whose notion of "input" is a whole
-    // column rather than a fixed cell, it can be just as simple (any
-    // change anywhere in column j means column j itself is worth
-    // rechecking) but for a fundamentally different reason. Either way,
-    // this is what lets TransformationReduction seed and grow its
-    // worklist without knowing anything about what shape a particular
-    // Transformation actually is.
+    // (re-)checking with canApply(). Lets TransformationReduction seed and
+    // grow its worklist without knowing anything about the transformation's
+    // shape.
     virtual std::vector<std::pair<int, int>> affectedAnchors(int i, int j) const = 0;
 };
 
-// The shape every Transformation this library had until now fits: a fixed
-// list of **input** offsets (relative to the anchor), each of which must
-// currently hold a 1 -- applying the transformation always clears every
-// one of them back to 0 -- and a fixed list of **output** offsets, each
-// of which gets set to 1, ripple-carrying up the row axis (exactly like
-// ordinary addition -- see addSingleBitWithCarry() in
-// representation_base.hpp) if that position is already occupied. Because
-// an occupied output never blocks the transformation (it just carries),
-// canApply() only ever needs to check the inputs.
+// The shape most Transformations fit: a fixed list of **input** offsets
+// (relative to the anchor), each of which must currently hold a 1 --
+// applying always clears them back to 0 -- and a fixed list of **output**
+// offsets, each set to 1, ripple-carrying up the row axis (like ordinary
+// addition -- see addSingleBitWithCarry() in representation_base.hpp) if
+// already occupied. An occupied output never blocks the transformation,
+// so canApply() only ever checks the inputs.
 //
-// canApply()/apply()/applyAndReportLandings() are also templated over
-// anything that looks like a bit grid -- `bool get(int, int) const` and
-// `set(int, int, bool)` -- so the exact same OffsetTransformation works
-// directly on a SmoothNumberBase (get()/set() there correctly invalidate
-// every representation but the canonical one, same as any other set()
-// call) or directly on a bare RepresentationBase. The non-template
-// canApply()/applyAndReportLandings() overrides below (required by
-// Transformation) are what TransformationReduction and Plan actually
-// call, through a `const Transformation&`/`const Transformation*` -- a
-// plain RepresentationBase is all either of them ever has, and all either
-// of them ever needs, since a Plan's blueprint execution works with
-// representations directly, never a SmoothNumberBase.
-// SmoothNumberBase::applyTransformation() (below) also goes through this
-// same RepresentationBase path now, working directly against whichever
-// representation is currently canonical, rather than through
-// SmoothNumberBase's own get()/set() -- this is what lets a
-// per-representation-specialized atom (AtomicTransformation,
-// atomic_transformation.hpp) actually get its specialized behavior for
-// ordinary n.applyTransformation(t, i, j) calls, not just when called
-// directly against a bare representation. Calling
-// canApply()/applyAndReportLandings() directly on some other duck-typed
-// Bits (including a bare SmoothNumberBase, which isn't a
-// RepresentationBase) still goes through the template instead -- overload
-// resolution always prefers a non-template exact match over a template
-// instantiation when both are viable, so the two versions simply serve
-// different call sites depending on what's actually being passed.
+// canApply()/apply()/applyAndReportLandings() are templated over anything
+// that looks like a bit grid (`get(int,int)`/`set(int,int,bool)`), so the
+// same object works on a SmoothNumberBase or a bare RepresentationBase.
+// The non-template overrides below are what TransformationReduction and
+// Plan call, through a `const Transformation&`. SmoothNumberBase::
+// applyTransformation() (below) also goes through the RepresentationBase
+// path now, working directly against whichever representation is
+// currently canonical -- this is what lets a per-representation-
+// specialized atom (AtomicTransformation, atomic_transformation.hpp)
+// actually get its specialized behavior for ordinary
+// n.applyTransformation(t, i, j) calls. Calling canApply()/
+// applyAndReportLandings() on some other duck-typed Bits (including a
+// bare SmoothNumberBase) still goes through the template -- overload
+// resolution prefers a non-template exact match over a template
+// instantiation when both are viable, so the two versions serve
+// different call sites depending on what's actually passed.
 //
-// This is deliberately concrete, not itself an interface: every
-// fixed-offset transformation this library has fits this one shape
-// (clear a fixed set of 1s, carry-set a fixed set of new 1s), so there's
-// no further virtual dispatch needed within it. Building a custom one is
-// just `OffsetTransformation({...input offsets...}, {...output
-// offsets...})`. See transformation_zoo/ for the named presets
-// (MergeTransformation/SplitTransformation/SpreadTransformation), built
-// exactly that way.
+// Deliberately concrete, not itself an interface: every fixed-offset
+// transformation this library has fits this one shape. Building a custom
+// one is just `OffsetTransformation({...input offsets...}, {...output
+// offsets...})`. See transformation_zoo/ for the named presets.
 class OffsetTransformation : public Transformation {
 public:
     OffsetTransformation(std::vector<std::pair<int, int>> inputs, std::vector<std::pair<int, int>> outputs)
@@ -147,18 +110,15 @@ public:
     // Clears every input offset, then carry-sets every output offset, in
     // order. Precondition: canApply(n, i, j). Callers that haven't just
     // checked it should go through SmoothNumberBase::applyTransformation()
-    // instead (see smooth_number_base.hpp), which checks first and throws
-    // if it doesn't hold.
+    // instead, which checks first and throws if it doesn't hold.
     template <typename Bits>
     void apply(Bits& n, int i, int j) const {
         applyAndReportLandings(n, i, j);
     }
 
     // Same as apply(), but also returns where each output actually landed
-    // after carrying -- the "frontier" of what changed. Clearing an input
-    // can only ever remove an opportunity for some other transformation
-    // (never create one), so these landings are the *only* cells worth
-    // re-examining for new opportunities after this call.
+    // after carrying -- the only cells worth re-examining for new
+    // opportunities after this call.
     template <typename Bits>
     std::vector<std::pair<int, int>> applyAndReportLandings(Bits& n, int i, int j) const {
         for (const auto& offset : inputs_) {
@@ -177,9 +137,7 @@ public:
     }
 
     // The anchor that would place a just-changed cell at (i, j) exactly on
-    // one of this transformation's own input offsets -- one candidate per
-    // input offset, same as before this was pulled behind a virtual
-    // method.
+    // one of this transformation's own input offsets.
     std::vector<std::pair<int, int>> affectedAnchors(int i, int j) const override {
         std::vector<std::pair<int, int>> anchors;
         anchors.reserve(inputs_.size());
@@ -191,44 +149,31 @@ public:
 
     // Exposed so external code can check a transformation's own
     // well-formedness directly -- e.g. that summing 2^i*3^j over the
-    // inputs equals the same sum over the outputs, which is exactly what
-    // "value-preserving" means, without needing to construct a
-    // SmoothNumberBase or call apply() at all.
+    // inputs equals the same sum over the outputs -- without ever
+    // constructing a SmoothNumberBase or calling apply().
     const std::vector<std::pair<int, int>>& inputs() const { return inputs_; }
     const std::vector<std::pair<int, int>>& outputs() const { return outputs_; }
 
     // Decomposes this transformation, anchored at (i, j), into a sequence
-    // of AtomApplications (above) whose combined effect reproduces this
-    // transformation's own -- see atomic_transformation.hpp for what an
-    // atom is, and each transformation_zoo/ preset's own override for its
-    // specific decomposition (an atom's own atomize() is trivial: itself,
-    // one step). Not every OffsetTransformation has one -- the base
-    // implementation here throws -- since a one-off custom
-    // OffsetTransformation built directly from its own offset lists has no
-    // way to know its own decomposition, if any exists at all.
+    // of AtomApplications whose combined effect reproduces this
+    // transformation's own. Not every OffsetTransformation has one -- the
+    // base implementation throws -- since a one-off custom
+    // OffsetTransformation has no way to know its own decomposition.
     virtual std::vector<AtomApplication> atomize(int i, int j) const {
         throw std::invalid_argument("OffsetTransformation::atomize(): no decomposition defined for this transformation");
     }
 
     // Same as apply()/applyAndReportLandings() above, but when `viaAtoms`
-    // is true, first decomposes via atomize() and applies the resulting
-    // atoms in sequence instead of this transformation's own input-clear/
-    // output-carry-set logic directly. Since every atom is an
-    // AtomicTransformation -- whose own canApply()/applyAndReportLandings()
-    // are specialized per representation (atomic_transformation.hpp) --
-    // this is the hook for hyper-optimizing a composite transformation
-    // later: swap in a faster atomize() or faster atoms, and every caller
-    // that opts in via viaAtoms=true gets it for free, with no change to
-    // canApply() or this transformation's own direct (non-atomized) path.
-    // Only meaningful against a RepresentationBase (each atom's own
-    // per-representation dispatch needs a concrete one to inspect), unlike
-    // the templated Bits-based apply()/applyAndReportLandings() above.
+    // is true, decomposes via atomize() and applies the resulting atoms in
+    // sequence instead of this transformation's own direct logic. Since
+    // every atom's own applyAndReportLandings() is specialized per
+    // representation (atomic_transformation.hpp), this is the hook for
+    // hyper-optimizing a composite transformation later, with no change to
+    // canApply() or the direct path. Only meaningful against a
+    // RepresentationBase, unlike the templated Bits-based versions above.
     //
     // Declared here but defined in atomic_transformation.hpp, once
-    // AtomicTransformation is fully known -- same reasoning as
-    // AtomApplication's forward declaration above, and
-    // SmoothNumberBase::applyTransformation()'s own declared-here/
-    // defined-later split (smooth_number_base.hpp / below).
+    // AtomicTransformation is fully known.
     std::vector<std::pair<int, int>> applyAndReportLandings(RepresentationBase& rep, int i, int j,
                                                              bool viaAtoms) const;
 
@@ -237,13 +182,10 @@ public:
     }
 
 private:
-    // Sets (i, j) to 1, ripple-carrying up the row axis within column j
-    // whenever a cell is already occupied -- moving a second 1 into an
-    // occupied cell is the same as moving that bit up to the next row
-    // (2 * 2^i * 3^j = 2^(i+1) * 3^j), the same one-term carry
-    // addSingleBitWithCarry() (representation_base.hpp) performs for
-    // ordinary addition, just through Bits's own get()/set() instead of a
-    // specific RepresentationBase. Returns where it finally landed.
+    // Sets (i, j) to 1, ripple-carrying up the row axis whenever a cell is
+    // already occupied -- moving a second 1 into an occupied cell is the
+    // same as moving that bit up to the next row
+    // (2 * 2^i * 3^j = 2^(i+1) * 3^j). Returns where it finally landed.
     template <typename Bits>
     static std::pair<int, int> carrySet(Bits& n, int i, int j) {
         while (n.get(i, j)) {

@@ -18,16 +18,12 @@ public:
         : SmoothNumberBase(/*allow_fractional=*/false, std::move(metrics)) {}
 
     // Value-returning addition: never mutates its two arguments. The
-    // left-hand argument is passed by value, so `result` here is already a
-    // fresh copy, distinct from whatever the caller passed as `a` in
-    // `a + b` -- mutating `result` in place (via the protected
+    // left-hand argument is passed by value, so `result` is already a
+    // fresh copy -- mutating it in place (via the protected
     // addMatchingInPlace(), which throws unless result.canonical() ==
-    // b.canonical()) is what builds the sum, and is exactly as safe as
-    // `result = a; result.addMatchingInPlace(b);` would be. A hidden
-    // friend (defined inside the class) rather than a member, so `a + b`
-    // reads symmetrically; it can reach addMatchingInPlace(), a protected
-    // SmoothNumberBase member, because it's a friend of SmoothInteger and
-    // `result` is of that derived type.
+    // b.canonical()) is what builds the sum. A hidden friend (rather than
+    // a member) so `a + b` reads symmetrically, while still reaching a
+    // protected SmoothNumberBase member as a friend of the derived type.
     //
     // Metrics: keeps the left-hand argument's, falling back to the
     // right-hand one's if the left-hand side has none.
@@ -37,10 +33,8 @@ public:
         return result;
     }
 
-    // Value-returning multiplication: same shape as operator+ above (see
-    // its comment for why this is a hidden friend, and why mutating
-    // `result` in place is safe), but builds the product via the
-    // protected multiplyMatchingInPlace() instead.
+    // Value-returning multiplication: same shape as operator+ above, but
+    // builds the product via multiplyMatchingInPlace() instead.
     friend SmoothInteger operator*(SmoothInteger result, const SmoothInteger& b) {
         result.multiplyMatchingInPlace(b);
         if (!result.hasMetrics() && b.hasMetrics()) result.setMetricsPtr(b.metricsPtr());

@@ -21,51 +21,37 @@ smooth::SmoothSignedFloat    // fractional terms allowed, may be negative
 
 Whether a number allows fractional (negative-index) terms and whether it
 can be negative are both fixed by which class you pick, not by a runtime
-flag — that's the point of having four distinct types instead of one type
-with two booleans. All four are default-constructible with no arguments;
-none of them need any capacity declared up front. All four also take an
-optional `std::shared_ptr<Metrics>` as their one constructor argument —
-see "Metrics" below.
+flag. All four are default-constructible, need no capacity declared up
+front, and take an optional `std::shared_ptr<Metrics>` as their one
+constructor argument (see "Metrics" below).
 
-Every type shares its `get`/`set`/`clear`/`value`/`print*`/`setBounds`/
-`operator+`/`operator*` behavior — see `SmoothNumberBase` and
-"Addition"/"Multiplication" below — and the two signed types add
-sign-related methods (and their own, sign-aware `operator+`/`operator*`) on
-top (see "Signed types" below). All four are copyable (a
-copy deep-clones the underlying representation, sharing no state with the
-original) as well as movable.
+Every type shares `get`/`set`/`clear`/`value`/`print*`/`setBounds`/
+`operator+`/`operator*` (see `SmoothNumberBase` and "Addition"/
+"Multiplication" below); the two signed types add sign-related methods on
+top (see "Signed types"). All four are copyable (deep-cloning the
+underlying representation) and movable.
 
 ### `SmoothNumberBase`
 
-Header-only class in `include/smooth/smooth_number_base.hpp`. This is the
-shared engine behind all four concrete types above; it's not meant to be
-constructed directly (its constructor is `protected`). It owns three
-internal representation objects (see below) and delegates to whichever one
-is canonical through the `RepresentationBase` interface
+Header-only class in `include/smooth/smooth_number_base.hpp`, the shared
+engine behind all four concrete types above (not meant to be constructed
+directly — its constructor is `protected`). It owns several internal
+representation objects (see below) and delegates to whichever one is
+canonical through the `RepresentationBase` interface
 (`include/smooth/representation_base.hpp`).
 
-- `set(i, j, value = true)` — set (or clear) the bit at `(i, j)`. `i`/`j` are
-  signed so negative indices can be addressed (on a fractional type).
-- `clear(i, j)` — clear the bit at `(i, j)`.
-- `get(i, j)` — read the bit at `(i, j)`.
-- `value()` — return the sum of `2^i * 3^j` over all set bits (as a
-  `double`; precision degrades for large row/column counts or deeply
-  negative indices). Uses a strategy suited to whichever representation is
-  currently canonical (see below) rather than always walking a full grid.
-  Not virtual — see "Signed types" for why.
-- `allowsFractional()` — whether this type permits negative indices
-  (`true` for `SmoothFloat`/`SmoothSignedFloat`, `false` for
-  `SmoothInteger`/`SmoothSignedInteger`).
-- `setValue(long long)` / `setValue(double)` — replaces whatever this
-  number currently holds with a plain integer or floating-point value.
-  Implemented by clearing the number, then putting the whole value into row
-  `j = 0` (`n[0]` in the `RowValues` view) via the canonical
-  representation's `setColumnValue(0, v)` — since `value() = sum_j n_j *
-  3^j` and `3^0 = 1`, `n_0` alone reproduces the input exactly. Throws
-  `std::invalid_argument` for a negative value on an unsigned type (`Base`
-  can only ever hold a positive magnitude — see "Signed types" for how the
-  signed types handle negative input), or for a fractional value on a
-  non-fractional type.
+- `set(i, j, value = true)` / `clear(i, j)` / `get(i, j)` — `i`/`j` are
+  signed so negative indices can be addressed on a fractional type.
+- `value()` — sum of `2^i * 3^j` over all set bits, as a `double`. Uses
+  whichever strategy suits the currently canonical representation (below)
+  rather than always walking a full grid. Not virtual — see "Signed types"
+  for why.
+- `allowsFractional()` — whether this type permits negative indices.
+- `setValue(long long)` / `setValue(double)` — replaces the number's value
+  entirely, by putting it directly into row `j = 0` via the canonical
+  representation's `setColumnValue(0, v)` (since `3^0 = 1`). Throws
+  `std::invalid_argument` for a negative value on an unsigned type, or a
+  fractional value on a non-fractional type.
 
 A negative index on a non-fractional type throws `std::out_of_range`.
 
@@ -76,159 +62,81 @@ void setBounds(std::size_t max_rows, std::size_t max_cols,
                std::size_t neg_rows, std::size_t neg_cols);
 ```
 
-Every representation is either naturally unbounded (Sparse, RowValues) or
-grows to fit whatever gets set into it (Dynamic), so `SmoothNumberBase`
-has nothing to preallocate and no real need for a maximum size. `setBounds`
-exists anyway as a pure sanity check: once called, any future `set()`/`get()`
-outside `[-neg_rows, max_rows) x [-neg_cols, max_cols)` throws
-`std::out_of_range`. It doesn't reserve memory, doesn't retroactively
-validate bits already set, and isn't required — it's there purely to catch
-mistakes if you want that guardrail, nothing more.
+Every representation is unbounded or grows to fit, so there's nothing to
+preallocate. `setBounds` is a pure sanity check: once called, any future
+`set()`/`get()` outside `[-neg_rows, max_rows) x [-neg_cols, max_cols)`
+throws `std::out_of_range`. It reserves nothing and doesn't retroactively
+validate anything already set.
 
 ### Internal representations
 
 The same number can be held in one of several internal representations,
-each a class implementing `RepresentationBase` (`representation_base.hpp`;
-`get`/`set`/`reset`/`value`/`print`/`forEachSet`/`setColumnValue`/
-`addInPlace`/`multiplyInPlace`/`clone`) and living in
-`include/smooth/representation_zoo/`
-(`include/smooth/representation_zoo.hpp` is a convenience header pulling
-in all four, mirroring `plan_zoo.hpp`/`transformation_zoo.hpp`):
+each implementing `RepresentationBase` (`representation_base.hpp`) and
+living in `include/smooth/representation_zoo/`
+(`representation_zoo.hpp` pulls in all four):
 
-- **Sparse** (`representation_zoo/sparse_representation.hpp`) — the set of
-  `(i, j)` coordinates whose bit is set. A `std::set` — a literal list of
-  the coordinates that are actually on.
-- **RowValues** (`representation_zoo/row_values_representation.hpp`) — one
-  number `n_j` per column `j` that has anything set, where
-  `n_j = sum_i (bit(i,j) ? 2^i : 0)`, so the total value is
-  `sum_j n_j * 3^j`. Stored as a `std::map<int, double>` keyed by `j` (an
-  entry is dropped once it returns to zero), so it only ever holds entries
-  for columns with something in them. `n_j` is an integer if the number
-  doesn't allow fractional terms, and may be fractional otherwise.
-- **Dynamic** (`representation_zoo/dynamic_matrix_representation.hpp`) — a
-  bit grid that starts at 0x0 and grows only as needed: whenever `set()`
-  turns on a bit outside the currently allocated range, the array doubles
-  in whichever of the four directions (more positive rows, more negative
-  rows, more positive columns, more negative columns) ran out —
-  repeatedly, if one `set()` call jumps far past the current capacity —
-  and the old contents are copied into the new, larger array. `reset()`
-  drops it back to 0x0, so converting into Dynamic from another
-  representation regrows it from scratch, one doubling at a time, as each
-  set bit is replayed into it.
-- **Scalar** (`representation_zoo/scalar_representation.hpp`) — stores the
-  number as a single plain value (an integer or a float) rather than a
-  `(i, j)` bit grid: every term it can hold lives in column `j = 0`, so its
-  value is just that one number (`3^0 = 1`). It's still a
-  `RepresentationBase`, purely so a
-  number stored this way can still convert to and from the others through
-  the ordinary machinery — it isn't a standalone type of its own. Because
-  it can only hold column-0 terms, converting a number with a genuine
-  multi-column value (e.g. one with a bit at `(0, 2)`, i.e. `3^2`) into
-  Scalar — or `set()`/`setColumnValue()` on any column but 0 — throws
-  `std::invalid_argument`.
+- **Sparse** — the `std::set` of `(i, j)` coordinates whose bit is set.
+- **RowValues** — one number `n_j` per column `j` that has anything set,
+  where `n_j = sum_i (bit(i,j) ? 2^i : 0)`, so the total value is
+  `sum_j n_j * 3^j`. Stored as a `std::map<int, double>` keyed by `j`
+  (dropped once it returns to zero). `n_j` is an integer unless the type
+  allows fractional terms.
+- **Dynamic** — a bit grid that starts at 0x0 and doubles in whichever
+  direction (more positive/negative rows or columns) ran out, whenever
+  `set()` reaches outside the currently allocated range.
+- **Scalar** — a single plain value (every term lives in column `j = 0`,
+  so its value is just that one number). Still a `RepresentationBase`,
+  purely so it can convert to and from the others; `set()`/
+  `setColumnValue()` on any column but 0 throws `std::invalid_argument`,
+  as does converting a number with a genuine multi-column value into it.
 
-Exactly one representation is **canonical** — the trusted, up-to-date copy
-(`Dynamic` by default). `set`/`get`/`value()` always operate through the
-canonical representation. A `set` call that actually changes a bit
-invalidates the other representations (a `set` to the same value it already
-had does not); an already-canonical representation is never redundantly
-reconverted. Which representation is *canonical*, and when (if ever) that
-changes, is decided internally — there is no public method to force it, by
-design (every number currently starts out, and stays, canonical on
-`Dynamic`). There *is* a public way to force any individual representation
-to become valid (i.e. genuinely converted and up to date), without
-changing which one is canonical — see `valueAs()` below.
+Exactly one representation is **canonical** (`Dynamic` by default) — the
+trusted, up-to-date copy that `set`/`get`/`value()` operate through. A
+`set()` that actually changes a bit invalidates the others; which
+representation is canonical, and when that changes, is an internal
+decision with no public override.
 
-- `canonical()` — which `Representation` (`Sparse`, `RowValues`, `Dynamic`,
-  or `Scalar`) is currently canonical (read-only).
-- `printSparse(os = std::cout)` — converts to Sparse if needed, then prints
-  the set of coordinates, e.g. `{(0, 2), (1, 0)}`.
-- `printRowValues(os = std::cout)` — converts to RowValues if needed, then
-  prints each `n_j`, one per line.
-- `printDynamic(os = std::cout)` — converts to Dynamic if needed, then
-  prints its currently allocated capacity followed by the grid within it. A
-  horizontal and/or vertical line marks the boundary between the fractional
-  entries (negative index) and the whole-number entries (non-negative
-  index); the whole-number part is the block below and to the right of the
-  lines.
-- `printScalar(os = std::cout)` — converts to Scalar if needed, then prints
-  the number as a plain integer or float. Converting throws
-  `std::invalid_argument` if the number's value isn't representable as a
-  plain number (see Scalar, above).
-- `valueAs(Representation target)` — the same "convert if needed" logic
-  every `print*()` above already does internally, generalized to any
-  representation and handed back as a `double` instead of printed. Lets
-  external code request a specific representation's value without needing
-  to know or care which one happens to already be canonical.
+- `canonical()` — which `Representation` is currently canonical.
+- `printSparse()`/`printRowValues()`/`printDynamic()`/`printScalar()` —
+  convert (if needed) and print. `printDynamic()` marks the
+  fractional/whole-number boundary with a line; `printScalar()` throws
+  `std::invalid_argument` if the value isn't representable as a plain
+  number.
+- `valueAs(Representation target)` — the same "convert if needed" logic,
+  generalized to any representation and handed back as a `double`.
 - `representationAs(Representation target)` — the same idea, but hands
-  back an independent `std::unique_ptr<RepresentationBase>` clone of the
-  representation itself, rather than just its value. This is what
-  `Plan::numberVia()` (see "Plan" below) uses to force a fed-in number
-  through a real conversion into whatever representation the `Plan` needs,
-  without ever reading a value out and re-encoding it from a `double`.
+  back an independent `std::unique_ptr<RepresentationBase>` clone instead
+  of just a value — what `Plan::numberVia()` (see "Plan" below) uses to
+  force a fed-in number through a real conversion.
 
 `value()` calls straight through to the canonical representation's own
-`value()`, so each avoids doing more work than it needs to:
-
-- Sparse — sums only over the set of coordinates that are actually set,
-  skipping the zero cells a full grid walk would visit.
-- RowValues — a single pass over the (typically few) columns with anything
-  set, computing `sum_j n_j * 3^j` directly, with no per-bit decoding.
-- Dynamic — walks only its own currently allocated capacity, which (after a
-  conversion) is sized just large enough to cover the set bits.
-- Scalar — the stored value already *is* the total (`3^0 = 1`), so this is
-  just returning it, no computation at all.
+strategy: Sparse sums only its set coordinates; RowValues does one pass
+over its (typically few) columns; Dynamic walks its own allocated
+capacity; Scalar just returns its one stored number.
 
 Converting one representation from another goes through `forEachSet(fn)`,
-which asks the *source* representation to invoke `fn(i, j)` once per set
-bit — each representation enumerates its own bits however is natural for
-its storage (Sparse walks its set, RowValues decodes each `n_j` back into
-individual bits, Dynamic walks its own allocated capacity). This is what
-makes conversion possible without any global bounds: nobody needs to know
-"the largest index that might be set" up front.
-
-`setColumnValue(j, n)` is the same per-representation-strategy idea, but for
-*writing* a whole column's contribution at once (used by `setValue()` — see
-above) instead of reading. Like every other `RepresentationBase` method,
-it's pure virtual — no default lives on the interface, so each
-representation is explicit about its own strategy:
-
-- Sparse and Dynamic have no more direct way to encode a number than
-  writing its bits one at a time, so both just call the free
-  `decomposeColumnValue(rep, j, n)` helper (`representation_base.hpp`),
-  which decomposes `n` into bits (integer part via bit-shifting, fractional
-  part via repeated doubling) and writes each one through `set()`. Sharing
-  that helper — rather than each duplicating the same loop, or the
-  interface providing it as a default — is the "share logic where you can"
-  part.
-- RowValues overrides it directly: because its storage already *is* `n_j`
-  per column, it just assigns `n` — O(1), exact, and without the small
-  floating-point error that adding/subtracting powers of two one bit at a
-  time could otherwise accumulate.
+which asks the source to invoke `fn(i, j)` once per set bit, however is
+natural for its own storage — this is what makes conversion possible
+without any global bounds. `setColumnValue(j, n)` is the same
+per-representation-strategy idea for *writing* a whole column at once
+(used by `setValue()`): Sparse/Dynamic decompose `n` into bits via the
+shared `decomposeColumnValue()` helper; RowValues just assigns `n`
+directly, in O(1).
 
 This is a Strategy pattern: `SmoothNumberBase` only ever talks to
-representations through the `RepresentationBase` interface (an
-`std::array<std::unique_ptr<RepresentationBase>, 3>`), and generic
-operations like `ensure()` (rebuild an outdated representation from the
-canonical one, via `forEachSet`) are written purely in terms of that
-interface. Adding another representation means writing one new class that
-implements `RepresentationBase`, adding an enumerator to `Representation`,
-and adding one line to register it in the constructor — no existing logic
-needs to change.
-
-`clone()` (`std::unique_ptr<RepresentationBase> clone() const`) is what
-lets a `SmoothNumberBase` be copied without knowing which concrete
-representation types exist: each implementation just returns
-`std::make_unique<ThatClass>(*this)`, using its own ordinary copy
-constructor.
+representations through the `RepresentationBase` interface, so adding a
+new one means writing one class, adding an enumerator, and registering it
+— no existing logic changes. `clone()` is what lets a `SmoothNumberBase`
+be copied without knowing which concrete representation types exist.
 
 ## Addition
 
-Addition is purely value-returning — there is no `add()` method and no
-`operator+=`, only `operator+`, which never mutates either operand.
-Scalars can't be added either; use `setValue()` to build a plain number
-first, or the Scalar representation (below), and add that. Each concrete
-type defines its own `operator+`:
+Addition is purely value-returning — no `add()`, no `operator+=`, only
+`operator+`, which never mutates either operand. Each concrete type
+defines its own, as a **hidden friend** (needed since the in-place
+building block it calls, `SmoothNumberBase::addMatchingInPlace()`, is
+`protected` — a plain free function couldn't reach it, but a friend
+defined inside a derived class can, through an object of that type):
 
 ```cpp
 friend SmoothInteger operator+(SmoothInteger a, const SmoothInteger& b);
@@ -236,115 +144,56 @@ friend SmoothFloat operator+(SmoothFloat a, const SmoothFloat& b);
 friend Signed<Base> operator+(Signed<Base> a, const Signed<Base>& b);  // both signed types
 ```
 
-Each is a **hidden friend**: a `friend` function defined inline inside the
-class body, found only via argument-dependent lookup on its own operand
-types. That's needed because the in-place building block it calls,
-`SmoothNumberBase::addMatchingInPlace()` (and, for signed types,
-`subtractMagnitudeInPlace()`), is `protected` — not part of the public
-API, since it mutates in place — and a plain free function couldn't reach
-a protected member, but a friend defined inside a derived class can,
-through an object of that derived type, per ordinary protected-access
-rules. `operator+` copies its left operand (`a`, taken by value — this is
-what the copy constructor mentioned above exists for), mutates the copy in
-place using that protected primitive, and returns it.
-
 **Representations must match.** `addMatchingInPlace()` throws
-`std::invalid_argument` unless `a.canonical() == b.canonical()` — there is
-no implicit reconciliation between two different representations the way
-`ensure()`'s `forEachSet`-based conversion provides elsewhere. In practice
-every freshly constructed number starts out (and, for now, stays)
-canonical on `Dynamic`, so two independently constructed numbers always
-match; the check exists for when that stops being universally true (e.g.
-if a future heuristic — or a future public API — ever picks a different
-representation for some numbers).
+`std::invalid_argument` unless `a.canonical() == b.canonical()` — there's
+no implicit reconciliation the way `ensure()` provides elsewhere. In
+practice every freshly constructed number starts out (and stays)
+canonical on `Dynamic`, so this only matters once representation choice
+becomes more dynamic.
 
-**Unsigned types'** `addMatchingInPlace()` (in `SmoothNumberBase`)
-dispatches straight to the canonical representation's `addInPlace(other)`
-— each representation adds the 1s and handles carries however is natural
-for its own storage:
-
-- Sparse and Dynamic have no more direct way to add a number than walking
-  `other`'s bits one at a time (captured up front via `forEachSet`, so this
-  is safe even when adding a number to itself) and carrying: adding a
-  second 1 into a cell that already holds one is the same as moving that
-  bit up to the next row (`2 * 2^i * 3^j = 2^(i+1) * 3^j`), so both share
-  the `addBitsWithCarry(dst, other)` helper (`representation_base.hpp`).
-- RowValues doesn't need explicit carry handling: each contribution just
-  adds onto its column's running total, and ordinary floating-point
-  addition already produces the correct combined value. When `other` is
-  *also* a `RowValuesRepresentation`, its columns already are the totals to
-  add, so this adds them directly, column by column — it doesn't even
-  decompose `other` into bits first just to reconstruct those same totals.
-  Only when `other` is some other representation does it fall back to
-  reading `other`'s bits via `forEachSet` and accumulating each one's `2^i`.
-- Scalar adds the two stored values directly when `other` is also a
-  `ScalarRepresentation`; otherwise it decomposes `other`'s bits via
-  `forEachSet`, throwing if any of them fall outside column 0.
+**Unsigned types'** `addMatchingInPlace()` dispatches to the canonical
+representation's `addInPlace(other)`: Sparse/Dynamic walk `other`'s bits
+and carry (moving a second 1 into an occupied cell up to the next row,
+via the shared `addBitsWithCarry()` helper); RowValues just adds column
+totals directly, needing no explicit carry handling at all; Scalar adds
+the two stored values directly, or decomposes `other`'s bits (throwing if
+any fall outside column 0).
 
 **Signed types** need actual signed arithmetic, since the bit grid is
 magnitude-only and the sign lives in `Signed<Base>`'s own flag:
-`Signed<Base>::operator+` combines magnitudes via `Base::addMatchingInPlace()`
-when both signs match, and otherwise subtracts the smaller magnitude from
-the larger and takes the larger operand's sign (a result of exactly zero
-is normalized back to non-negative). The subtraction step uses a second,
-protected primitive, `SmoothNumberBase::subtractMagnitudeInPlace()` (which
-enforces the same matching-representation rule), not exposed publicly
-since plain subtraction has no meaning for the two unsigned types.
-
-Unlike addition, that subtraction has no natural per-representation
-variation, so it isn't dispatched through `RepresentationBase` at all: it
-converts both operands to per-column totals via `forEachSet()`, subtracts
-column by column, and resolves any column that goes negative by borrowing
-from the next column up — one unit of `n_(j+1)` is worth exactly 3 units of
-`n_j`, since `3^(j+1) = 3 * 3^j` — before writing the result back through
-`setColumnValue()`. (Addition never needs this cross-column borrowing:
-overflow in a column only ever carries within that same column, since
-`2^i` doubles without ever needing to touch a neighboring column's power of
-3.)
+`Signed<Base>::operator+` combines magnitudes directly when signs match,
+and otherwise subtracts the smaller magnitude from the larger and takes
+the larger operand's sign (zero is normalized to non-negative), via a
+second protected primitive, `subtractMagnitudeInPlace()`. That
+subtraction has no natural per-representation variation, so instead of
+dispatching through `RepresentationBase` it converts both operands to
+per-column totals, subtracts column by column, and resolves any negative
+column by borrowing from the next one up (`3^(j+1) = 3 * 3^j`).
 
 ## Multiplication
 
-`operator*` gets exactly the same treatment as `operator+`: purely
-value-returning (no `multiply()`, no `operator*=`), no scalars, and the
-same hidden-friend/protected-`...MatchingInPlace()`/matching-representation
-machinery, all for the same reasons described under "Addition" — so this
-section only covers what's different: the math, and each representation's
-strategy for it.
+`operator*` gets the same treatment as `operator+` — value-returning,
+hidden-friend, matching-representation — so this section only covers what
+differs: `(2^i1*3^j1) * (2^i2*3^j2) = 2^(i1+i2) * 3^(j1+j2)`, so
+multiplying means pairing up every term of one operand with every term of
+the other and adding exponents.
+`SmoothNumberBase::multiplyMatchingInPlace()` dispatches to the canonical
+representation's `multiplyInPlace(other)`:
 
-`(2^i1 * 3^j1) * (2^i2 * 3^j2) = 2^(i1+i2) * 3^(j1+j2)`: multiplying two
-smooth numbers means pairing up *every* term of one with *every* term of
-the other and adding exponents. `SmoothNumberBase::multiplyMatchingInPlace()`
-dispatches to the canonical representation's `multiplyInPlace(other)`:
+- Sparse/Dynamic form every pairwise sum of exponents and carry each one
+  in, via the shared `multiplyBitsWithCarry()` helper (capturing both
+  operands' terms up front, so squaring is safe).
+- RowValues convolves column totals instead — the same operation as
+  multiplying two polynomials in the variable 3: the product's column
+  `j1 + j2` gets `n_j1 * n_j2` added in, for every pair of columns.
+- Scalar multiplies its stored value directly when `other` is also
+  Scalar; otherwise it throws unless every one of `other`'s columns is 0
+  — except when this Scalar's own value is exactly 0, since `0 * anything
+  = 0` regardless of shape.
 
-- Sparse and Dynamic have no more direct way to multiply than forming
-  every pairwise sum of exponents and carrying each one in — both share
-  the `multiplyBitsWithCarry(dst, a, b)` helper (`representation_base.hpp`),
-  which captures both operands' terms up front (so `x.multiplyInPlace(x)`,
-  squaring `x`, is safe) before resetting `dst` and carrying each pairwise
-  term in via `addSingleBitWithCarry()` — the same one-term carry step
-  `addBitsWithCarry()` also uses, extracted out so addition and
-  multiplication share it. Notably, this is the *same* strategy for both
-  Sparse and Dynamic: being a raw bit grid rather than a `std::set` doesn't
-  change anything about it, so neither needs to convert to the other (or
-  to anything else) just to multiply.
-- RowValues instead convolves column totals: this is the same operation as
-  multiplying two polynomials in the variable 3, or long multiplication in
-  base 3 (except a "digit" `n_j` can be any magnitude, not just `0..2`) —
-  the product's column `j1 + j2` gets `n_j1 * n_j2` added in, for every
-  pair of columns `(j1, j2)`. When `other` is also a `RowValuesRepresentation`
-  its columns are used directly; otherwise its column totals are first
-  computed via `forEachSet`.
-- Scalar multiplies its one stored value directly by `other`'s when
-  `other` is also a `ScalarRepresentation`; otherwise `other`'s column `j`
-  contributes a term at column `0 + j = j`, so this throws unless every
-  such `j` is `0` — except when this Scalar's own value is exactly `0`,
-  since `0 * anything` is `0` regardless of `other`'s shape, so that case
-  never throws.
-
-Signed multiplication is simpler than signed addition: there's no
-subtraction to worry about; the result's sign is just whether exactly one
-operand was negative (the usual sign-XOR rule), with a zero product
-normalized back to non-negative the same way a zero sum is.
+Signed multiplication is simpler than signed addition: no subtraction, the
+result's sign is just the usual sign-XOR rule, with a zero product
+normalized the same way a zero sum is.
 
 ## Transformation
 
@@ -360,27 +209,22 @@ public:
 };
 ```
 
-A `Transformation` (`include/smooth/transformation.hpp`) is any distinct
-unit of work that doesn't change a 3-smooth number's value: check whether
-it can fire at a given anchor `(i, j)`, apply it, and report which cells
-changed — its "landings," the only cells worth re-examining afterward for
-newly created opportunities. `Reduction` (see "Reduction"
-below) is the other half of the same idea: repeated application of one or
-more `Transformation`s until some condition is met.
+A `Transformation` is any distinct unit of work that doesn't change a
+3-smooth number's value: check whether it can fire at an anchor `(i, j)`,
+apply it, and report which cells changed — its "landings," the only cells
+worth re-examining afterward. `Reduction` (below) is the other half:
+repeated application of one or more `Transformation`s until some condition
+is met.
 
 This is deliberately the smallest interface that covers every
-transformation this library has, because "distinct unit of work" covers
-genuinely different shapes. Until this abstraction was pulled out, every
-transformation fit one very specific shape: a fixed list of input offsets
-that must all be `1` (cleared by applying), and a fixed list of output
-offsets that get carry-set to `1`. `OffsetTransformation` (below) is
-exactly that shape, kept as its own concrete class once it became clear
-it was a special case, not the general one — `TernaryCarryTransformation`
-(`reduction_zoo` below) is the case that forced the split:
-"subtract 3 from column `j`, add 1 to column `j+1`" has no fixed set of
-bit offsets at all, since its own precondition ("column `j` has more than
-one bit set") depends on an entire column's aggregate magnitude, not a
-handful of fixed cells.
+transformation here, because "distinct unit of work" covers genuinely
+different shapes: most transformations fit one very specific shape (a
+fixed list of input offsets, all `1`, cleared by applying; a fixed list of
+output offsets, carry-set to `1`) — `OffsetTransformation` (below) is
+exactly that shape. `TernaryCarryTransformation` (`reduction_zoo` below)
+is the case that doesn't fit it at all: "subtract 3 from column `j`, add 1
+to column `j+1`" has no fixed set of bit offsets, since its precondition
+depends on a whole column's aggregate magnitude, not a handful of cells.
 
 ### OffsetTransformation
 
@@ -398,139 +242,77 @@ n.printSparse();  // {(2, 1)}  -- still 12, just represented differently
 ```
 
 The same value can be held by more than one bit grid: since
-`2^i*3^j + 2^(i+1)*3^j = 2^i*3^j*(1+2) = 2^i*3^(j+1)`, the two bits at
-`(i, j)` and `(i+1, j)` can be traded for the single bit at `(i, j+1)`
-without changing `value()` at all. `OffsetTransformation`
-(`include/smooth/transformation.hpp`) implements `Transformation` with one
-such value-preserving trade, anchored at a specific `(i, j)`, built from
-two fixed lists of offsets (relative to that anchor):
+`2^i*3^j + 2^(i+1)*3^j = 2^i*3^(j+1)`, the two bits at `(i, j)` and
+`(i+1, j)` can be traded for the single bit at `(i, j+1)` without changing
+`value()`. `OffsetTransformation` implements `Transformation` with one
+such value-preserving trade, anchored at `(i, j)`, built from two fixed
+offset lists:
 
-- **input** offsets — each must currently hold a `1`. Applying the
-  transformation always clears every one of them back to `0`.
-- **output** offsets — each gets set to `1`. If a given output is already
-  occupied, that's not a problem: it ripple-carries up the row axis
-  (exactly the same one-term carry ordinary addition uses — see
-  `addSingleBitWithCarry()` in `representation_base.hpp`) until it lands on
-  a clear cell, rather than blocking the transformation.
+- **input** offsets — each must currently hold a `1`; applying always
+  clears them.
+- **output** offsets — each gets set to `1`, ripple-carrying up the row
+  axis (the same carry ordinary addition uses) if already occupied, rather
+  than blocking the transformation.
 
-Because an occupied output is never a reason to reject, `canApply()` only
-ever needs to check the inputs. `OffsetTransformation` also keeps its own
-templated `canApply()`/`apply()`/`applyAndReportLandings()`, over anything
-that looks like a bit grid — `bool get(int, int) const` and
-`set(int, int, bool)` — so the exact same object works directly on a
-`SmoothNumberBase` too (`get()`/`set()` there correctly invalidate every
-representation but the canonical one, same as any other `set()` call), not
-just a `RepresentationBase`:
-
-- `canApply(const SmoothNumberBase& n, int i, int j) const` — whether every
-  input offset currently holds a `1`.
-- `apply(SmoothNumberBase& n, int i, int j) const` — clears every input
-  offset, then carry-sets every output offset, in order. Precondition:
-  `canApply(n, i, j)`.
+So `canApply()` only ever needs to check the inputs. `OffsetTransformation`
+also keeps a templated `canApply()`/`apply()`/`applyAndReportLandings()`
+over anything that looks like a bit grid (`get(int,int)`/`set(int,int,bool)`),
+so the same object works directly on a `SmoothNumberBase` or a bare
+`RepresentationBase`.
 
 `SmoothNumberBase::applyTransformation(const OffsetTransformation& t, int i, int j, bool atomize = false)`
-is the usual way to use one directly on a number: it calls `canApply()`
-first, throwing `std::invalid_argument` if it doesn't hold, then `apply()`
-— against whichever representation is currently canonical directly (not
-through this class's own templated `get()`/`set()` above), invalidating
-the others once afterward instead of per bit. This is what lets a
-per-representation-specialized atom (see "Per-representation atom
-dispatch" below) actually reach its specialized behavior through this
-ordinary, everyday call. `atomize` (default `false`) is threaded straight
-through to `apply()`'s own `viaAtoms` parameter — see "Applying a
-transformation via its atoms" below.
+is the usual way to use one directly on a number: checks `canApply()`,
+throwing `std::invalid_argument` if it fails, then applies — directly
+against whichever representation is currently canonical (not through this
+class's own templated `get()`/`set()`), invalidating the others once
+afterward instead of per bit. This is what lets a per-representation-
+specialized atom (see "Per-representation atom dispatch" below) actually
+reach its specialized behavior through this everyday call. `atomize`
+(default `false`) is threaded through to `apply()`'s own `viaAtoms`
+parameter — see "Applying a transformation via its atoms" below.
 
 `OffsetTransformation` is deliberately **concrete, not itself an
-interface** — every fixed-offset transformation this library has fits
-this one shape, so there's no further virtual dispatch needed within it.
-Building a custom one is just handing its constructor the two offset
-lists directly:
+interface**. Building a custom one is just handing its constructor the two
+offset lists:
 
 ```cpp
 // 2^i*3^j + 2^(i+1)*3^j + 2^i*3^(j+1) = 2^i*3^j*6 = 2^(i+1)*3^(j+1)
 smooth::OffsetTransformation combineBothAxes({{0, 0}, {1, 0}, {0, 1}}, {{1, 1}});
 ```
 
-`inputs()`/`outputs()` hand back those two lists directly (as
-`const std::vector<std::pair<int, int>>&`) — enough to check a
-transformation's own well-formedness (that summing `2^i*3^j` over its
-inputs matches the same sum over its outputs, evaluated directly at
-`(i, j) = (0, 0)`) without ever constructing a `SmoothNumberBase` or
-calling `apply()` at all; `tests/test_smooth.cpp`'s
-`checkTransformationPreservesValue()` does exactly this, for every
-`OffsetTransformation` below. (`TernaryCarryTransformation` isn't checked
-this way — it has no fixed offset lists to sum — its value-preservation
-is a one-line algebraic identity instead; see its own section under
-"reduction_zoo" below.)
+`inputs()`/`outputs()` hand back those two lists directly — enough to
+check a transformation's own well-formedness (that summing `2^i*3^j` over
+inputs matches outputs) without ever calling `apply()`;
+`checkTransformationPreservesValue()` in the test suite does exactly this
+for every preset below.
 
-Presets are provided in `include/smooth/transformation_zoo/`, each just an
-`OffsetTransformation` constructed with a fixed pair of offset lists
-(`include/smooth/transformation_zoo.hpp` is a convenience header pulling in
-all of transformation_zoo/, mirroring `plan_zoo.hpp`/`representation_zoo.hpp`;
-`transformation.hpp` itself, and `smooth.hpp`, only give you
-`Transformation`/`OffsetTransformation` themselves, not these presets):
+Presets live in `include/smooth/transformation_zoo/`, each just an
+`OffsetTransformation` built from a fixed offset pair
+(`transformation_zoo.hpp` pulls in all of them):
 
-- `MergeTransformation` (`transformation_zoo/merge_transformation.hpp`) —
-  inputs `{(0, 0), (1, 0)}`, output `{(0, 1)}`: merges the two bits at
-  `(i, j)` and `(i+1, j)` into the one bit at `(i, j+1)`.
-- `SplitTransformation` (`transformation_zoo/split_transformation.hpp`) —
-  input `{(0, 1)}`, outputs `{(0, 0), (1, 0)}`: the exact reverse of
-  `MergeTransformation`.
-- `SpreadTransformation(int n)` (`transformation_zoo/spread_transformation.hpp`)
-  — inputs `{(0, 0), (0, n)}`, outputs `{(2, 0)} ∪ {(1, k) : 1 <= k <= n-1}`:
-  bridges the two bits at `(i, j)` and `(i, j+n)` — `n` columns apart —
-  into `(i+2, j)` plus a "staircase" of bits at `(i+1, j+1), (i+1, j+2),
-  ..., (i+1, j+n-1)`:
-  ```
-  2^i*3^j + 2^i*3^(j+n)
-    = 2^i*3^j * (1 + 3^n)
-    = 2^i*3^j * (4 + 2*(3 + 3^2 + ... + 3^(n-1)))
-    = 2^(i+2)*3^j + sum_{k=1}^{n-1} 2^(i+1)*3^(j+k)
-  ```
-  For `n = 1` the staircase is empty, so this reduces to exactly
-  `MergeTransformation` applied twice into the same cell: `(i, j)` and
-  `(i, j+1)` both land on `(i+2, j)`. The constructor throws
-  `std::invalid_argument` for `n < 1` — `n = 0` would need the single cell
-  `(i, j)` to independently hold two `1`s at once, which a bit grid can't
-  represent, and a negative `n` would put the second input at a column
-  *before* `j`, breaking the staircase's ascending order.
-- `CornerSplitTransformation` (`transformation_zoo/corner_split_transformation.hpp`)
-  — input `{(0, 0)}`, outputs `{(-1, 0), (0, -1), (-1, -1)}`: splits the
-  bit at `(i, j)` into its three corner neighbors:
-  ```
-  2^(i-1)*3^j + 2^i*3^(j-1) + 2^(i-1)*3^(j-1)
-    = 2^(i-1)*3^(j-1) * (3 + 2 + 1)
-    = 2^(i-1)*3^(j-1) * 6
-    = 2^i * 3^j
-  ```
-  All three outputs land at negative offsets from the anchor, so applying
-  it at `(i, j) = (0, 0)` requires a fractional type.
-- `RowSpreadTransformation(int n)` (`transformation_zoo/row_spread_transformation.hpp`)
-  — inputs `{(0, 0), (n, 0)}`, outputs `{(0, 1)} ∪ {(k, 0) : 1 <= k <= n-1}`:
-  the row-axis counterpart to `SpreadTransformation` — bridges the two bits
-  at `(i, j)` and `(i+n, j)` — `n` rows apart — into `(i, j+1)` plus a
-  staircase of bits at `(i+1, j), (i+2, j), ..., (i+n-1, j)`:
-  ```
-  2^i*3^j + 2^(i+n)*3^j
-    = 2^i*3^j * (1 + 2^n)
-    = 2^i*3^j * (3 + (2^n - 2))
-    = 2^i*3^(j+1) + sum_{k=1}^{n-1} 2^(i+k)*3^j
-  ```
-  For `n = 1` the staircase is empty, so this has exactly
-  `MergeTransformation`'s own input/output offsets. Throws
-  `std::invalid_argument` for `n < 1`, same reasoning as `SpreadTransformation`.
-- `TernaryCarryTransformation` (`transformation_zoo/ternary_carry_transformation.hpp`)
-  — the one preset here that implements `Transformation` directly, not
-  through `OffsetTransformation`; see "reduction_zoo" below for
-  what it does and why it doesn't fit the offset-list shape.
+- `MergeTransformation` — inputs `{(0,0),(1,0)}`, output `{(0,1)}`.
+- `SplitTransformation` — the exact reverse.
+- `SpreadTransformation(int n)` — bridges `(i,j)` and `(i,j+n)` into
+  `(i+2,j)` plus a staircase at `(i+1,j+1)..(i+1,j+n-1)`
+  (`2^i*3^j + 2^i*3^(j+n) = 2^(i+2)*3^j + sum_{k=1}^{n-1} 2^(i+1)*3^(j+k)`).
+  `n = 1` has an empty staircase, reducing to `MergeTransformation` applied
+  twice into the same cell. Throws for `n < 1`.
+- `CornerSplitTransformation` — input `{(0,0)}`, outputs
+  `{(-1,0),(0,-1),(-1,-1)}`
+  (`2^(i-1)*3^j + 2^i*3^(j-1) + 2^(i-1)*3^(j-1) = 2^i*3^j`). All three
+  outputs land at negative offsets, so anchoring at `(0,0)` requires a
+  fractional type.
+- `RowSpreadTransformation(int n)` — the row-axis counterpart to
+  `SpreadTransformation`: bridges `(i,j)` and `(i+n,j)` into `(i,j+1)`
+  plus a staircase at `(i+1,j)..(i+n-1,j)`. `n = 1` matches
+  `MergeTransformation` exactly. Throws for `n < 1`.
+- `TernaryCarryTransformation` — implements `Transformation` directly, not
+  through `OffsetTransformation`; see "reduction_zoo" below.
 
-Applying `MergeTransformation` and then `SplitTransformation` is always a
-round trip back to the original bit layout (even when one of them had to
-carry along the way — carrying is itself value-preserving, so a sequence
-of carries is too). Every offset-based preset works the same way for
-negative `i`/`j` on a fractional type (`SmoothFloat`/`SmoothSignedFloat`)
-as for non-negative ones — the underlying identities don't care about the
-sign of either exponent.
+Applying `MergeTransformation` then `SplitTransformation` is always a
+round trip back to the original layout, even through a carry. Every
+offset-based preset works the same way for negative `i`/`j` on a
+fractional type as for non-negative ones.
 
 ### AtomicTransformation and atomize()
 
@@ -545,63 +327,46 @@ for (const auto& app : atoms) {
 }
 ```
 
-Every `OffsetTransformation` this library has reduces to exactly two
-independent generating families, found by treating each transformation as
-the integer identity its inputs/outputs encode (`sum 2^i*3^j` over inputs
-equals the same sum over outputs) and searching for which ones are — and
-aren't — reachable from which others by composition:
+Every `OffsetTransformation` here reduces to exactly two independent
+generating families (found by treating each as the integer identity its
+inputs/outputs encode, and searching by BFS for which are/aren't reachable
+from which others by composition):
 
 - **Merge/Split**, encoding `2^i + 2^(i+1) = 2^i*3` ("1 + 2 = 3").
-- **CornerSplit** (and its unbuilt reverse, "corner-merge"), encoding
+- **CornerSplit** (and its unbuilt reverse), encoding
   `2^(i-1)*3^j + 2^i*3^(j-1) + 2^(i-1)*3^(j-1) = 2^i*3^j` ("1 + 2 + 3 = 6").
 
-Neither is reachable from the other (verified by BFS over reachable
-bit-configurations, both directions, tens of thousands of states with no
-path found — backed by a structural argument for why: a single `Split`
-fully vacates its source column, and getting back into it requires a
-fully-consuming `Merge`, so `CornerSplit`'s simultaneous two-column,
-three-bit output can never arise from `Merge`/`Split` alone). `MergeTransformation`,
-`SplitTransformation`, and `CornerSplitTransformation`
-(`transformation_zoo/`) are tagged as these two families' **atoms** by
-inheriting from `AtomicTransformation` (`include/smooth/atomic_transformation.hpp`)
-instead of `OffsetTransformation` directly — purely a label, with no
-behavior beyond `OffsetTransformation` itself.
+Neither is reachable from the other (a single `Split` fully vacates its
+source column, and getting back into it requires a fully-consuming
+`Merge`, so `CornerSplit`'s simultaneous two-column, three-bit output
+can't arise from `Merge`/`Split` alone). `MergeTransformation`,
+`SplitTransformation`, and `CornerSplitTransformation` are tagged as these
+families' **atoms** by inheriting from `AtomicTransformation`
+(`atomic_transformation.hpp`) instead of `OffsetTransformation` directly —
+purely a label, no added behavior.
 
-Every named `OffsetTransformation` — atom or not — has an `atomize(int i, int j) const`
-method returning `std::vector<AtomApplication>`, each one an atom
-(`std::shared_ptr<const AtomicTransformation>`) paired with the `(i, j)`
-anchor to apply it at, in order. For an atom itself, this is trivial: one
-`AtomApplication` holding a fresh instance of itself, at the same anchor.
-For the composites:
+Every named `OffsetTransformation` — atom or not — has an
+`atomize(int i, int j) const` returning `std::vector<AtomApplication>`,
+each an atom paired with the `(i, j)` anchor to apply it at. For an atom,
+this is trivial (itself, one step). For the composites:
 
-- `SpreadTransformation(n)::atomize()` — exactly `n` `SplitTransformation`
-  applications, walking the far input at `(i, j+n)` down one column at a
-  time: the *k*-th split turns whatever landed at `(i, j+k)` into
-  `(i, j+k-1)` and `(i+1, j+k-1)`, so after `n` of them the near copy has
-  carried twice into `(i+2, j)` and each intermediate step left exactly
-  the right bit behind at `(i+1, j+k)`. Pure Family A — no `CornerSplitTransformation`
-  needed.
-- `RowSpreadTransformation(n)::atomize()` — the hard case, since (per
-  above) it genuinely needs `CornerSplitTransformation`. `n = 1` is just
-  `MergeTransformation` itself; `n = 2` is `CornerSplit(i+2, j)` (which
-  leaves a near pair at `(i, j)`/`(i+1, j)` and a leftover pair at
-  `(i+1, j-1)`/`(i+2, j-1)`) followed by `Merge(i, j)` then
-  `Merge(i+1, j-1)`. For `n >= 3`, merging that leftover pair right away
-  would carry straight into `(i+1, j)` and undo the corner split — so
-  instead, each level corner-splits the leftover's own far cell first,
-  pushing the same problem one column further down, and only merges once
-  the level below has resolved its own collision. This costs `4n - 5`
-  atoms for `n >= 2` (`1` for `n = 1`) — linear in `n`, not the naive
-  exponential-looking recursion it started from — verified computationally
-  (a from-scratch Python simulation of the actual carry semantics, for
-  `n` up to 25 at random anchors) before being written into C++.
+- `SpreadTransformation(n)` — exactly `n` `SplitTransformation`
+  applications walking the far input down one column at a time. Pure
+  Family A — no `CornerSplitTransformation` needed.
+- `RowSpreadTransformation(n)` — the hard case, since it genuinely needs
+  `CornerSplitTransformation`. `n = 1` is `MergeTransformation` itself;
+  `n = 2` is `CornerSplit(i+2,j)` followed by two merges. For `n >= 3`,
+  merging the corner split's leftover pair right away would carry
+  straight back and undo the split, so each level corner-splits the
+  leftover's own far cell first, pushing the collision one column down.
+  Costs `4n - 5` atoms for `n >= 2` (`1` for `n = 1`) — linear, verified
+  computationally before being written into C++.
 
-`atomize()`'s correctness criterion is stronger than "preserves value"
-(every individual atom already guarantees that): applying a
-transformation directly, and applying its `atomize()`d sequence instead —
-to two copies of the same starting representation — must land on *exactly*
-the same set bits, carries and all. `tests/test_smooth.cpp`'s
-`checkAtomizeMatches()` verifies exactly this for every preset above.
+`atomize()`'s correctness criterion is stronger than "preserves value":
+applying a transformation directly, and applying its `atomize()`d
+sequence, to two copies of the same starting representation, must land on
+*exactly* the same set bits, carries and all —
+`checkAtomizeMatches()` in the test suite verifies this for every preset.
 
 ### Per-representation atom dispatch
 
@@ -620,48 +385,34 @@ smooth::RepresentationBase& scalarBase = scalar;
 smooth::MergeTransformation().applyAndReportLandings(scalarBase, 0, 0);  // throws std::invalid_argument
 ```
 
-An atom's `canApply()`/`applyAndReportLandings()` (`AtomicTransformation`,
-`include/smooth/atomic_transformation.hpp`) are specialized per
-representation, rather than going through the generic get()/set() bit-grid
-logic every other `OffsetTransformation` uses for everything:
+An atom's `canApply()`/`applyAndReportLandings()` (`AtomicTransformation`)
+are specialized per representation, rather than going through the generic
+get()/set() bit-grid logic every other `OffsetTransformation` uses:
 
-- Against a `RowValuesRepresentation`, applying an atom is ordinary
-  arithmetic on the affected column(s)' own magnitude — add or subtract
-  the net delta directly via `addToColumnValue()`, the same way
-  `TernaryCarryTransformation` already works — rather than clearing and
-  carry-setting bit by bit through `get()`/`set()`, which for RowValues
-  would mean repeatedly decoding and re-encoding the very same column's
-  number. Each atom has its own deltas: `MergeTransformation` subtracts
-  `3 * 2^i` from column `j` and adds `2^i` to column `j+1`;
-  `SplitTransformation` is the reverse; `CornerSplitTransformation` (which
-  touches two columns at once) subtracts `2^(i-1)` from column `j` and adds
-  `3 * 2^(i-1)` to column `j-1`.
-- Against a `ScalarRepresentation`, atoms don't apply at all — it holds the
-  whole number as one plain value with no independent per-`(i, j)`
-  structure to rewrite a handful of cells within — so both `canApply()` and
-  `applyAndReportLandings()` throw `std::invalid_argument` unconditionally.
-- Against anything else (Sparse, Dynamic, or some future representation),
-  the ordinary get()/set() bit-grid logic is exactly right, so both fall
-  back to it, unchanged from before this dispatch existed.
+- Against `RowValuesRepresentation`, applying an atom is ordinary
+  arithmetic on the affected column(s)' magnitude (`addToColumnValue()`,
+  the same style `TernaryCarryTransformation` uses) instead of clearing
+  and carry-setting bit by bit. `MergeTransformation` subtracts `3*2^i`
+  from column `j` and adds `2^i` to column `j+1`; `SplitTransformation` is
+  the reverse; `CornerSplitTransformation` (touching two columns at once)
+  subtracts `2^(i-1)` from column `j` and adds `3*2^(i-1)` to column `j-1`.
+- Against `ScalarRepresentation`, atoms don't apply at all — no
+  independent per-`(i,j)` structure to rewrite — so both throw
+  `std::invalid_argument` unconditionally.
+- Against anything else (Sparse, Dynamic), the ordinary get()/set() logic
+  is exactly right, unchanged from before this dispatch existed.
 
-`canApply()` itself isn't specialized per representation beyond the
-`ScalarRepresentation` check — `get()` is already exactly as cheap for
-RowValues as for any other representation (a single decode), so there's
-nothing to gain by special-casing it; only `applyAndReportLandings()`
-benefits from skipping the bit-by-bit dance.
+`canApply()` isn't specialized beyond the `ScalarRepresentation` check —
+`get()` is already just as cheap for RowValues as anywhere else.
 
 This dispatch only fires when an atom is called through an actual
-`RepresentationBase&` — a plain reference or pointer to that base class,
-the way `TransformationReduction`/`StaircaseReduction`/
-`TernaryFormReduction` and `SmoothNumberBase::applyTransformation()` (below)
-all already call things. Calling an atom's `canApply()`/
-`applyAndReportLandings()` directly on a *concrete* representation
-variable, or on a `SmoothNumberBase` (as ordinary `applyTransformation()`
-calls elsewhere in this library do), instead resolves to the inherited,
-generic `Bits`-templated overload (see `OffsetTransformation` above) —
-unaffected by any of this, and exactly why every existing atom usage
-throughout this library still behaves exactly as it did before this
-dispatch was added.
+`RepresentationBase&` — the way `TransformationReduction`/
+`StaircaseReduction`/`TernaryFormReduction` and
+`SmoothNumberBase::applyTransformation()` all already call things. Calling
+an atom's methods directly on a *concrete* representation variable, or on
+a `SmoothNumberBase`, instead resolves to the inherited generic
+`Bits`-templated overload — unaffected, and why every existing atom usage
+elsewhere still behaves exactly as before this dispatch was added.
 
 ### Applying a transformation via its atoms
 
@@ -675,29 +426,17 @@ n.applyTransformation(rowSpread, 0, 0, /*atomize=*/true);
 ```
 
 `OffsetTransformation::applyAndReportLandings(RepresentationBase& rep, int i, int j, bool viaAtoms)`
-(and the matching `apply()` overload) is the same as the three-argument
-version above, except that when `viaAtoms` is `true`, it first decomposes
-`*this` via `atomize()` and applies each resulting atom in sequence,
-instead of running this transformation's own input-clear/output-carry-set
-logic directly. Since every atom's own `applyAndReportLandings()` is
-specialized per representation (above), this is the hook for
-hyper-optimizing a composite transformation later: swap in a faster
-`atomize()`, or faster atoms, and every caller that opts in via
-`viaAtoms=true` gets it for free, with no change to `canApply()` or to
-this transformation's own direct (non-atomized) path. It's only meaningful
-against a `RepresentationBase` — each atom's own per-representation
-dispatch needs a concrete one to inspect — unlike the templated
-`Bits`-based `apply()`/`applyAndReportLandings()` this library has always
-had.
+(and the matching `apply()`) is the same as the three-argument version,
+except that when `viaAtoms` is `true`, it decomposes `*this` via
+`atomize()` and applies each atom in sequence instead of running this
+transformation's own direct logic. Since every atom's own
+`applyAndReportLandings()` is specialized per representation (above),
+this is the hook for hyper-optimizing a composite transformation later:
+swap in a faster `atomize()` or faster atoms, and every caller opting in
+via `viaAtoms=true` gets it for free.
 
 `SmoothNumberBase::applyTransformation()` takes the same `atomize` flag
-(defaulting to `false`), and — as part of this same rework — now applies
-`t` directly against whichever representation is currently canonical
-(rather than through this class's own `get()`/`set()`), invalidating the
-others once afterward instead of per bit. This is what lets a
-per-representation-specialized atom actually reach its specialized
-behavior through the ordinary, everyday `n.applyTransformation(t, i, j)`
-call — not just when called directly against a bare representation.
+(default `false`).
 
 ## Reduction
 
@@ -712,52 +451,29 @@ public:
 };
 ```
 
-Every reduction this library has lives in `reduction_zoo/` (below)
-and implements this interface one of two ways:
-`TransformationReduction`, the generic engine (greedily apply a
-family of `Transformation`s until none can fire anymore), directly; or,
-for `MergeReduction`/`BinaryFormReduction`/`TernaryCarryReduction`, by being a
-subclass of *that* — each just fixes its own `Transformation`(s), name,
-and bound as constructor arguments, adding no behavior of its own.
-`TernaryFormReduction` and `StaircaseReduction` are the exceptions: each
-needs its own bespoke search (which specific transformation to apply
-next, and at which anchor, depends on the current state in a way a fixed
-`Transformation` list can't express), so both implement `Reduction`
-directly instead (see their own sections below).
+Every reduction lives in `reduction_zoo/` (below) and implements this
+interface one of two ways: `TransformationReduction`, the generic engine
+(greedily apply a family of `Transformation`s until none can fire), or by
+being a subclass of *that* (`MergeReduction`/`BinaryFormReduction`/
+`TernaryCarryReduction`, each just fixing its own `Transformation`(s),
+name, and bound). `TernaryFormReduction` and `StaircaseReduction` are the
+exceptions: each needs its own bespoke search (which transformation to
+apply next, and where, depends on current state in a way a fixed list
+can't express), so both implement `Reduction` directly.
 
-This is what lets `Plan`'s `Reduce` blueprint node (see "Plan" below)
-hold a single `const Reduction*`, rather than being hardwired to
-one specific reduction implementation: a strategy's `buildBlueprint()` can
-splice in *any* reduction this library has — a named `reduction_zoo/`
-preset, or a bespoke `TransformationReduction` built on the spot —
-through the exact same `wrapWithReduction()` call, and `Plan` itself never
-has to know, or care, which one it got. `plan.hpp` doesn't even include
-`reduction_zoo/` at all — just `reduction.hpp`, the
-interface — since it never touches any concrete reduction directly.
-
-Every named reduction hardcodes its own `name()` — no constructor parameter
-for it, the same way `MergeTransformation`/`SplitTransformation` hardcode
-their own offsets, or `SparsePlan`/`MatrixPlan` hardcode their own
-`name()`. Only `TransformationReduction` itself takes one
-explicitly, since — like `OffsetTransformation`, whose raw offset-list
-constructor it's built from — it has no fixed identity of its own; it's
-the generic mechanism, not a preset.
+This is what lets `Plan`'s `Reduce` blueprint node (see "Plan" below) hold
+a single `const Reduction*` rather than being hardwired to one
+implementation. Every named reduction hardcodes its own `name()` — only
+`TransformationReduction` itself takes one explicitly, since it's the
+generic mechanism, not a preset.
 
 ## reduction_zoo
 
-`include/smooth/reduction_zoo/` holds every concrete
-`Reduction` this library has: `TransformationReduction`, the
-generic engine, alongside the named presets built from it
-(`MergeReduction`, `BinaryFormReduction`, `TernaryCarryReduction`) or
-implementing `Reduction` directly (`TernaryFormReduction` and
-`StaircaseReduction`, each of which needs its own bespoke search — see
-their own sections below). `TransformationReduction`
-lives here, rather than at the top level alongside `Reduction`,
-precisely because nothing outside this folder ever needs to name it
-directly — `Plan` only ever holds the `Reduction` a strategy
-produces (see "Reduction" above). `include/smooth/reduction_zoo.hpp`
-is a convenience header pulling in all six, mirroring `plan_zoo.hpp`/
-`transformation_zoo.hpp`/`representation_zoo.hpp`.
+`include/smooth/reduction_zoo/` holds every concrete `Reduction`:
+`TransformationReduction` plus the presets built from it (`MergeReduction`,
+`BinaryFormReduction`, `TernaryCarryReduction`) or implementing `Reduction`
+directly (`TernaryFormReduction`, `StaircaseReduction`).
+`reduction_zoo.hpp` pulls in all six.
 
 ### TransformationReduction
 
@@ -775,94 +491,37 @@ reduction.run(rep);
 rep.print();  // {(0, 1), (2, 1)}  -- down to 2 bits, still worth 15
 ```
 
-`TransformationReduction`
-(`include/smooth/reduction_zoo/transformation_reduction.hpp`)
-implements `Reduction` by greedily applying a small family of
-`Transformation`s across an entire `RepresentationBase` —
-`run(RepresentationBase& rep, metrics = nullptr)` — until none of them
-can fire anywhere anymore: a fixed point. It's the base class
-`MergeReduction`/`BinaryFormReduction`/`TernaryCarryReduction` (below) each
-subclass, configuring it with their own fixed `Transformation`(s). Nothing
-about this engine cares what *kind* of `Transformation` it's holding, or
-whether every transformation in the family is even the same kind — its
-list is a `vector<const Transformation*>`, so an `OffsetTransformation`
-and something built an entirely different way (like
-`TernaryCarryTransformation`) could even be mixed into the same reduction.
+Implements `Reduction` by greedily applying a family of `Transformation`s
+across a `RepresentationBase` until none can fire anywhere: a fixed point.
+Its list is a `vector<const Transformation*>`, so different kinds of
+`Transformation` can even be mixed into one reduction.
 
-Whether that fixed point is ever actually reached depends on the family.
-`{MergeTransformation}` always terminates on its own: every successful
-application strictly reduces the representation's total set-bit count (it
-clears at least as many bits — its inputs, plus however many occupied
-cells a carry rippled through — as it ever sets), and that count can't go
-negative. `{TernaryCarryTransformation}` also terminates on its own, for a
-different reason — see its own section below — since it doesn't shrink
-the bit count at all. But neither property is guaranteed just by being
-made of `Transformation`s — `{SplitTransformation}` alone is the exact
-reverse of a merge (it *grows* the bit count) and has no floor of its
-own: nothing about `SplitTransformation` knows column 0 is special, so
-splitting a bit that's already reached column 0 just produces column -1,
-then -2, forever. The optional trailing constructor parameter
-`allowed(int i, int j)` is for exactly this: it bounds the region a
-search is allowed to explore, fixed for that reduction's whole lifetime, so
-a family with no natural floor can still be made to terminate at a
-boundary the caller chooses. It's a constructor parameter rather than a
-`run()` parameter specifically so `run()`'s signature matches
-`Reduction`'s exactly, with nothing extra to pass at the call
-site. See `BinaryFormReduction` below for a real example.
+Whether that fixed point is reached depends on the family:
+`{MergeTransformation}` always terminates on its own (every application
+strictly reduces total set-bit count, which can't go negative);
+`{TernaryCarryTransformation}` also terminates, for a different reason
+(see its own section). But `{SplitTransformation}` alone has no floor —
+nothing about it knows column 0 is special, so it splits forever into
+negative columns. The optional trailing constructor parameter
+`allowed(int i, int j)` bounds the region a search may explore, fixed for
+the reduction's lifetime — see `BinaryFormReduction` below.
 
-The interesting part is doing this *without* rescanning the whole
-representation after every single application. A new opportunity for some
-transformation to fire can only ever appear at a cell some earlier
-application actually touched — each transformation's own
-`affectedAnchors(int i, int j)` says exactly which anchors a changed cell
-could newly affect, *for that transformation specifically* (for
-`OffsetTransformation` this is purely arithmetic — the anchor that would
-place the changed cell at one of its input offsets; `TernaryCarryTransformation`
-answers the same question in a completely different way — see its own
-section below). So `run()` seeds a worklist from `rep`'s own set bits (via
-`forEachSet()` — already just the actual `1`s, not a full grid scan), and
-after every application, only re-examines the anchors
-`applyAndReportLandings()`'s own return value says are worth another
-look, rather than looking anywhere else. If given a `Metrics`, it
-increments `transformations_applied` once per successful application
-(`Transformation` itself never touches `Metrics` at all, so this is the
-only place that count is available).
+This works without rescanning the whole representation after every
+application: each transformation's own `affectedAnchors(int i, int j)`
+says exactly which anchors a changed cell could newly affect, so `run()`
+seeds a worklist from `rep`'s own set bits and only re-examines what
+`applyAndReportLandings()` reports as changed. With a `Metrics`, it
+increments `transformations_applied` once per successful application.
 
 ### MergeReduction
 
-```cpp
-#include "smooth/reduction_zoo/merge_reduction.hpp"
-#include "smooth/representation_zoo.hpp"
-
-smooth::SparseRepresentation rep(/*allow_fractional=*/true);
-rep.setColumnValue(0, 15);  // 15 = 1111 binary -> 4 set bits
-
-smooth::MergeReduction merge;
-merge.run(rep);
-rep.print();  // {(0, 1), (2, 1)}  -- down to 2 bits, still worth 15
-```
-
-`MergeReduction` (`include/smooth/reduction_zoo/merge_reduction.hpp`)
-is a `TransformationReduction` subclass, configured with just
+A `TransformationReduction` subclass, configured with just
 `MergeTransformation` and the name `"merge"` — greedily combining every
-`(i, j)`/`(i+1, j)` pair of set bits it can find into `(i, j+1)`,
-repeating (since a merge's own carry can create new merge opportunities)
-until none are left. This is what `MergingSparsePlan` (see "plan_zoo"
-below) runs on both operands before every multiply. It adds no behavior
-of its own — `name()`/`run()` are simply inherited — so all there is to it
-is the constructor call, and what it passes the base class:
-`mergeTransformation()` returns a reference to a function-local static
-`MergeTransformation`, rather than an instance member, specifically so
-its address is safe to hand to the base class constructor — a plain
-instance member wouldn't be, since base classes are always fully
-constructed *before* any of a derived class's own members even begin, so
-`TransformationReduction({&merge_}, ...)` would be capturing the
-address of a `MergeReduction` member that doesn't exist yet. A
-function-local static sidesteps the ordering question entirely: it's
-guaranteed constructed (once, thread-safely) the first time
-`mergeTransformation()` is ever called, and since `MergeTransformation` is
-stateless once built, every `MergeReduction` sharing the one instance is no
-different from each having its own.
+`(i,j)`/`(i+1,j)` pair into `(i,j+1)` until none remain. This is what
+`MergingSparsePlan` (see "plan_zoo" below) runs on both operands before
+every multiply. Its `MergeTransformation` is a function-local static
+(rather than an instance member) since the base class constructor needs
+its address before this derived class has finished constructing.
 
 ### BinaryFormReduction
 
@@ -879,26 +538,13 @@ toBinary.run(*rep);
 rep->print();  // {(1, 0), (4, 0)}  -- 18 = 16 + 2, its ordinary binary form
 ```
 
-`BinaryFormReduction` (`include/smooth/reduction_zoo/binary_form_reduction.hpp`)
-repeatedly applies `SplitTransformation` — the reverse of
-`MergeTransformation`, splitting the bit at `(i, j+1)` into `(i, j)` and
-`(i+1, j)` — until every set bit lands in column 0, i.e. until the number
-is a plain sum of distinct powers of 2: its ordinary binary
-representation, just laid out one grid row per set bit instead of packed
-into a machine integer.
-
-This is exactly the family `TransformationReduction`'s own doc
-comment above warns about: `SplitTransformation` alone has no natural
-floor, so left to run unbounded it doesn't stop at column 0 — it keeps
-going, into column -1, -2, and so on, forever. `BinaryFormReduction` is a
-`TransformationReduction` subclass too, passing its base class
-constructor `allowed = [](int, int j){ return j >= 0; }`: every bit that
-starts above column 0 still gets split all the way down to it, and a bit
-already at column 0 is left alone, since producing it would require an
-anchor at column -1, which is disallowed. Like `MergeReduction` above, its
-`SplitTransformation` is a function-local static for the same reason —
-a plain instance member's address wouldn't be safe to pass to the base
-class constructor.
+Repeatedly applies `SplitTransformation` until every set bit lands in
+column 0 — the number's plain binary representation. Since
+`SplitTransformation` alone has no natural floor, this is a
+`TransformationReduction` bounded via `allowed = [](int, int j){ return j >= 0; }`:
+a bit above column 0 still splits all the way down to it, but one already
+at column 0 is left alone (producing it would need a disallowed anchor at
+column -1).
 
 ### TernaryCarryTransformation
 
@@ -916,63 +562,28 @@ rep.columnValue(0);                              // 6.0  (9 - 3)
 rep.columnValue(1);                              // 1.0  (0 + 1)
 ```
 
-`TernaryCarryTransformation` (`transformation_zoo/ternary_carry_transformation.hpp`)
-is anchored at column `j` (the row half of the anchor, `i`, is unused —
-always `0` by convention): while column `j`'s total, `n_j`
-(`RowValuesRepresentation`'s own per-column magnitude — see "Four concrete
-types" above), has more than one bit set, subtracts `3` from `n_j` and
-adds `1` to `n_(j+1)` — value-preserving, since `3 * 3^j = 3^(j+1)`.
-
+Anchored at column `j` (the row half of the anchor is unused): while
+column `j`'s magnitude `n_j` has more than one bit set, subtracts `3` from
+it and adds `1` to `n_(j+1)` — value-preserving since `3 * 3^j = 3^(j+1)`.
 This is the transformation that forced `Transformation` to become an
-interface in the first place: its precondition ("does column `j` have
-more than one bit set") depends on an entire column's aggregate
-magnitude, not a fixed, small set of grid cells, and applying it isn't
-"clear a fixed set of `1`s" either — it's an ordinary magnitude
-subtraction, which in general needs a borrow across bits that
-`OffsetTransformation` has no way to express. `RowValuesRepresentation`
-sidesteps the problem by already storing `n_j` as a single number rather
-than exploded bits, which is why `canApply()`/`applyAndReportLandings()`
-require one and throw `std::invalid_argument` otherwise.
+interface: its precondition depends on a whole column's magnitude, and
+applying it is an ordinary subtraction needing a borrow across bits that
+`OffsetTransformation` has no way to express — so it requires a
+`RowValuesRepresentation` and throws `std::invalid_argument` otherwise.
 
-Unlike an `OffsetTransformation`'s inputs (always fully cleared, so only
-the outputs are worth re-examining afterward), one application here only
-*decrements* column `j` — it may still have more than one bit set
-afterward, needing further applications at the same anchor. So
-`applyAndReportLandings()` reports column `j` itself as a landing, right
-alongside column `j+1`, unlike any `OffsetTransformation`.
-`affectedAnchors(i, j)` always answers `{(0, j)}`, regardless of `i` —
-any change anywhere in column `j` means column `j` is worth rechecking,
-no matter which row within it actually changed.
-
-This always terminates without ever going negative, run repeatedly at a
-fixed column: the descending sequence `n_j, n_j - 3, n_j - 6, ...` is
-confined to one residue class mod 3, and that class's smallest
-nonnegative member — 0, 1, or 2 — always has at most one bit set. So it's
-guaranteed to stop at or before reaching it, never below.
+One application only decrements column `j`, which may still need further
+applications at the same anchor, so `applyAndReportLandings()` reports
+column `j` itself as a landing alongside `j+1`; `affectedAnchors(i, j)`
+always answers `{(0, j)}` regardless of `i`. This terminates without ever
+going negative: the descending sequence `n_j, n_j - 3, n_j - 6, ...` is
+confined to one residue class mod 3, whose smallest nonnegative member (0,
+1, or 2) always has at most one bit set.
 
 ### TernaryCarryReduction
 
-```cpp
-#include "smooth/reduction_zoo/ternary_carry_reduction.hpp"
-#include "smooth/representation_zoo/row_values_representation.hpp"
-
-smooth::RowValuesRepresentation rep(/*allow_fractional=*/false);
-rep.setColumnValue(0, 9.0);  // 9 = 1001 binary, at column 0
-
-smooth::TernaryCarryReduction reduction;
-reduction.run(rep);
-rep.print();  // n[2] = 1  -- 9 = 1*3^2
-```
-
-`TernaryCarryReduction` (`include/smooth/reduction_zoo/ternary_carry_reduction.hpp`)
-is a `TransformationReduction` subclass, configured with just
-`TernaryCarryTransformation` and the name `"ternary_carry"` — run to a
-fixed point, same as `MergeReduction`/`BinaryFormReduction`, and built the
-same way (a function-local static `TernaryCarryTransformation`, for the
-same reason). Unlike `BinaryFormReduction`, it needs no `allowed` bound at
-all: `TernaryCarryTransformation`'s own `canApply()` is already
-self-limiting (a column with `<= 1` bit set simply stops being a
-candidate), so there's nothing external left to bound.
+A `TransformationReduction` subclass over just `TernaryCarryTransformation`,
+named `"ternary_carry"`. Needs no `allowed` bound — the transformation's own
+`canApply()` is already self-limiting.
 
 ### TernaryFormReduction
 
@@ -989,49 +600,30 @@ toTernary.run(*rep);
 rep->print();  // {(2, 0), (0, 2)}  -- 13 = 4*3^0 + 1*3^2
 ```
 
-`TernaryFormReduction` (`include/smooth/reduction_zoo/ternary_form_reduction.hpp`)
-reduces a number to a form where every column that has anything in it
-holds exactly one bit — i.e. every column's own magnitude (summing `2^i`
-over its set rows) is a single power of two, never an arbitrary sum of
-several. So long as some column `j` has more than one set bit, it takes
-that column's two *smallest* set rows `i1 < i2` and applies
-`RowSpreadTransformation(i2 - i1)` (`transformation_zoo/row_spread_transformation.hpp`)
-anchored at `(i1, j)` — folding them into a single bit one column over,
-plus (whenever `i2 - i1 > 1`) a staircase filling the gap between them,
-all still within column `j` — then repeats, until no column has more than
-one bit left.
+Reduces a number to a form where every column with anything in it holds
+exactly one bit. So long as some column `j` has more than one set bit,
+takes its two *smallest* set rows `i1 < i2` and applies
+`RowSpreadTransformation(i2 - i1)` anchored at `(i1, j)` — folding them
+into a single bit one column over, plus (when `i2 - i1 > 1`) a staircase
+filling the gap, all within column `j` — then repeats.
 
-Always resolving the *smallest* currently-offending column first (breaking
-ties within it by taking its two smallest rows) is what makes this
-terminate: once a column is driven down to at most one bit, nothing this
-reduction ever does can put a bit into a column lower than the one it's
-currently working on (`RowSpreadTransformation`'s own outputs never land
-below its anchor's column), so a resolved column stays resolved, and the
-"smallest offending column" only ever moves up — and within a single
-column, each application strictly decreases that column's own magnitude
-(replacing `2^i1 + 2^i2` with the staircase sum `2^i2 - 2^(i1+1)` is a net
-change of `-3 * 2^i1`, since `i1 >= 0`), so it can't be worked on forever
-either. Like `StaircaseReduction` below, candidate columns aren't confined
-to a small local neighborhood, so it implements `Reduction` directly and
-rescans all of `rep`'s set bits from scratch after every application,
-rather than fitting the "just configure `TransformationReduction`" mold
-`MergeReduction`/`BinaryFormReduction`/`TernaryCarryReduction` do.
+Always resolving the smallest offending column first is what makes this
+terminate: `RowSpreadTransformation`'s outputs never land below its
+anchor's column, so a resolved column stays resolved, and within one
+column each application strictly decreases its magnitude (by `3 * 2^i1`).
+Like `StaircaseReduction` below, it implements `Reduction` directly and
+rescans all set bits after every application, rather than fitting
+`TransformationReduction`'s mold.
 
 Unlike the two-phase `BinaryFormReduction` + `TernaryCarryReduction`
 pipeline this replaces, this works entirely through a bit-level
-`OffsetTransformation`, so it runs against *any* `RepresentationBase` —
-Sparse, Dynamic, RowValues, Scalar — with no special-casing and no upfront
-representation check at all. It also needs no separate "collapse into
-column 0 first" phase — but that does mean the result can now depend on
-the *starting* bit layout, not just the value, in a way the old pipeline's
-result never did: `BinaryFormReduction` used to erase any "head start" a
-number came in with by always collapsing it into column 0 first, so the
-same value always began its column-by-column reduction from the exact
-same place. This reduction never does that collapse, so two different
-starting layouts for the same value — say, 11 as its ordinary binary form
-(bits at rows 0, 1, 3 of column 0) versus 11 built directly as
-`5*3^0 + 2*3^1` (bits at `(0,0)`, `(2,0)`, `(1,1)`) — can settle on two
-different (but equally valid, single-bit-per-column) results.
+`OffsetTransformation`, so it runs against *any* `RepresentationBase` with
+no special-casing. It also needs no "collapse into column 0 first" phase —
+but that means the result can now depend on the *starting* bit layout, not
+just the value, unlike the old pipeline (which always erased any head
+start by collapsing to column 0 first): 11 as its ordinary binary form
+settles differently than 11 built directly as `5*3^0 + 2*3^1`, both being
+equally valid single-bit-per-column results.
 
 ### StaircaseReduction
 
@@ -1049,47 +641,24 @@ staircase.run(*rep);
 rep->print();  // {(1, 6), (2, 5), (3, 4), (4, 3), (7, 1)}
 ```
 
-So long as two distinct set bits `(i1, j1)` and `(i2, j2)` exist with
-`i2 >= i1` and `j2 >= j1` — i.e. `(i2, j2)` weakly dominates `(i1, j1)` in
-both coordinates — combines them:
+So long as two distinct set bits `(i1,j1)`/`(i2,j2)` exist with `i2 >= i1`
+and `j2 >= j1` (i.e. `(i2,j2)` weakly dominates `(i1,j1)`), combines them:
+`SpreadTransformation(j2-j1)` for a same-row pair, `RowSpreadTransformation(i2-i1)`
+for a same-column pair, or `CornerSplitTransformation` anchored at
+`(i2,j2)` for a genuine diagonal pair. The fixed point is an antichain
+under the product order — every 3-smooth number has such a "staircase"
+form.
 
-- `i1 == i2` (same row): `SpreadTransformation(j2 - j1)` anchored at
-  `(i1, j1)`.
-- `j1 == j2` (same column): `RowSpreadTransformation(i2 - i1)` anchored at
-  `(i1, j1)`.
-- otherwise (a genuine diagonal pair): `CornerSplitTransformation` anchored
-  at `(i2, j2)` — pulls the dominating bit one step toward `(i1, j1)`
-  without touching `(i1, j1)` itself.
-
-The fixed point — no such pair exists — is exactly an antichain under the
-product order: sorted by row, columns are strictly decreasing (at most one
-bit per row, at most one per column). Every 3-smooth number has such a
-"staircase" form.
-
-Termination isn't free: naively picking *any* dominating pair each step
-can run for tens of thousands of steps without converging (verified
-empirically before this was written). What works reliably — and is what
-`run()` does — is always picking the *first* dominating pair found while
-scanning the current set bits in sorted `(i, j)` order: for the smallest
-bit that has any dominating partner at all, its smallest (lexicographic)
-valid partner. `SpreadTransformation`'s and `RowSpreadTransformation`'s own
-staircases aren't automatically antichains either for `n >= 3` (their
-intermediate bits share a row/column with each other), so one dominating
-pair can take several steps to fully resolve — the 13-step example above
-is typical.
-
-Since candidate pairs aren't confined to a small local neighborhood the
-way a single `Transformation`'s own `affectedAnchors()` are,
-`TransformationReduction`'s worklist approach doesn't apply here — `run()`
-rescans all of `rep`'s set bits from scratch after every application,
-unlike every other reduction in this library.
-
-`CornerSplitTransformation` only ever fires here on a bit that strictly
-dominates some other existing (non-negative) bit in both coordinates, so
-its anchor is always at row `>= 1` and column `>= 1` — its outputs can
-never go negative. Starting from an all-non-negative representation (a
-plain `SmoothInteger`'s `Sparse`, say), `StaircaseReduction` never needs a
-fractional-capable one.
+Termination isn't free: naively picking *any* dominating pair can run for
+tens of thousands of steps. What works reliably is always picking the
+*first* dominating pair found while scanning set bits in sorted `(i, j)`
+order. Candidate pairs aren't confined to a small local neighborhood, so
+(like `TernaryFormReduction`) this rescans from scratch after every
+application rather than using `TransformationReduction`'s worklist.
+`CornerSplitTransformation` only ever fires here on a bit strictly
+dominating another non-negative bit, so its anchor is always at row/column
+`>= 1` — starting from an all-non-negative representation, this never
+needs a fractional-capable one.
 
 ## Metrics
 
@@ -1101,88 +670,38 @@ smooth::SmoothInteger n(metrics);  // every concrete type's one constructor
                                     // argument is an optional shared Metrics
 ```
 
-`smooth::Metrics` (`include/smooth/metrics.hpp`) is a small named-counter
-tracker:
+`smooth::Metrics` is a small named-counter tracker: `increment(name)` bumps
+a counter by name, `print()` prints every counter sorted by name. It's
+generic — any named event can be tallied. `SmoothNumberBase` increments
+`convert_<from>_to_<to>` on every real conversion; each representation
+also instruments its own internal work (below), sharing the same object
+since `SmoothNumberBase` constructs its representations with the same
+`Metrics` it was given.
 
-- `increment(const std::string& name)` — bump a counter by name (starting
-  from 0 the first time it's named).
-- `print(os = std::cout)` — print every counter's current value, one per
-  line, sorted by name.
+A number's `Metrics` is optional and *shared*, not copied — two numbers
+built with the same object tally onto the same counters, and copy/move
+carry the pointer along. **`a + b` keeps a's metrics**, falling back to
+b's only if a has none (the signed "different signs" branch has to
+capture this choice explicitly up front, since it otherwise builds its
+result out of a copy of `b`).
 
-It's deliberately generic — any named event can be tallied on it.
-`SmoothNumberBase` uses it to count representation conversions: every time
-`ensure()` actually converts (not when the target is already valid), it
-increments `convert_<from>_to_<to>`, e.g. `convert_dynamic_to_row_values`.
-Each representation also instruments its own internal work directly (see
-below), and since `SmoothNumberBase` constructs its four representations
-with the same `Metrics` it was given, those counters land on the same
-object automatically — no separate wiring needed.
+### Instrumentation counters
 
-A number's `Metrics` is optional (`nullptr` by default) and, when given, is
-*shared*, not copied: `hasMetrics()`, `metricsPtr()`, and `setMetricsPtr()`
-expose the underlying `std::shared_ptr<Metrics>`, so two numbers
-constructed with the same `Metrics` object tally onto the same counters.
-Copying or moving a number carries its `Metrics` pointer along (still
-shared with the original), consistent with everything else about
-`SmoothNumberBase`'s copy semantics.
+- **`carries`** — one per ripple-carry step, for Sparse/Dynamic (the two
+  raw-bit-grid representations sharing `addSingleBitWithCarry()`).
+- **`bit_operations`** — one per `(termA, termB)` pairing during a Sparse/
+  Dynamic multiply (an *n*-by-*m* multiplication is *n\*m* of these).
+- **`scalar_operations`** — one per plain arithmetic op for RowValues
+  (each `accumulate()` call; 2 per column pair in its convolution) and
+  Scalar (each `set()`/`addInPlace()`/`multiplyInPlace()` fast path).
+- **`bit_iterations`** — one per cell visited while looping, where "cell"
+  means whatever that representation actually stores: set coordinates for
+  Sparse, every allocated cell for Dynamic, one per column entry for
+  RowValues. Scalar has none — nothing to loop over.
 
-**`a + b` keeps a's metrics, unless a has none, in which case it falls back
-to b's (if b has any).** For the two unsigned types this falls out
-directly: `operator+` copies `a` (carrying `a`'s metrics along) and adds
-`b` into that copy without `addMatchingInPlace()` ever touching
-`metrics_`, so the copy still has whatever `a` had; only if that's
-`nullptr` does it adopt `b`'s. `Signed<Base>::operator+` has to be more
-deliberate about it: its "different signs, `|a| < |b|`" branch builds the
-result out of a copy of `b` (to get at `b`'s larger magnitude before
-subtracting), which would otherwise silently carry `b`'s metrics through
-regardless of what `a` had. So it captures the correct choice (`a`'s,
-falling back to `b`'s) once up front, before any branch runs, and stamps
-it onto the final result at the end, regardless of which branch ran.
-
-### Instrumentation counters: `carries`, `bit_operations`, `scalar_operations`, `bit_iterations`
-
-Beyond conversions, each `RepresentationBase` implementation instruments
-its own add/multiply/loop work directly, when constructed with a
-`Metrics` (each one now takes an optional `std::shared_ptr<Metrics>` as a
-trailing constructor argument, exactly like `SmoothNumberBase` and `Plan`):
-
-- **`carries`** — one per ripple-carry step. Adding a bit into a cell that's
-  already occupied moves that bit up to the next row instead
-  (`addSingleBitWithCarry` in `representation_base.hpp`); each such step,
-  for both `SparseRepresentation` and `DynamicMatrixRepresentation`
-  (the two raw-bit-grid representations that share this helper), counts one
-  carry.
-- **`bit_operations`** — one per `(termA, termB)` pairing during a
-  multiply, in `multiplyBitsWithCarry` (also shared by Sparse and
-  DynamicMatrix): an *n*-bit by *m*-bit multiplication pairs every term of
-  one with every term of the other, so it's *n\*m* bit operations.
-- **`scalar_operations`** — one per plain integer/float multiply or add,
-  for the two representations that do arithmetic on raw numbers rather
-  than bits: `RowValuesRepresentation` (each call to its shared
-  `accumulate()` helper — the core of `set()` and `addInPlace()` — is one
-  operation; its convolution-based `multiplyInPlace()` counts 2 per
-  column pair, one multiply and one add) and `ScalarRepresentation`
-  (`set()`'s `value_ += delta`, and `addInPlace()`/`multiplyInPlace()`'s
-  scalar-to-scalar fast paths, are each one operation).
-- **`bit_iterations`** — one per cell visited while looping over a
-  representation's contents, where "cell" means something different per
-  representation, matching what it actually stores: for
-  `SparseRepresentation`, one per coordinate in its `std::set` (i.e. only
-  the 1s — it has no notion of the 0s in between); for
-  `DynamicMatrixRepresentation`, one per cell of its currently allocated
-  capacity, 1s and 0s alike (in `value()`, `print()`, `forEachSet()`, and
-  `growToFit()`'s copy loop); for `RowValuesRepresentation`, one per
-  column entry (i.e. one per stored "row" total `n_j`, regardless of that
-  row's magnitude) in `value()`, `print()`, `forEachSet()`, and both loop
-  levels of `multiplyInPlace()`'s convolution. `ScalarRepresentation`
-  holds a single value with nothing to loop over, so it has no
-  `bit_iterations` at all.
-
-`setColumnValue()`/`setValue()` (encoding a fresh number directly into a
-representation) and the bit-decomposition loops inside `forEachSet()` for
-RowValues/Scalar (recovering individual bits from a stored total) are
-deliberately *not* instrumented — they're decoding/encoding a value, not
-looping over or arithmetically combining an existing one.
+Decoding/encoding a value directly (`setColumnValue()`/`setValue()`, and
+`forEachSet()`'s bit-decomposition for RowValues/Scalar) is deliberately
+not instrumented — it isn't looping over or combining an existing value.
 
 ## Signed types
 
@@ -1196,35 +715,18 @@ using SmoothSignedInteger = Signed<SmoothInteger>;
 using SmoothSignedFloat = Signed<SmoothFloat>;
 ```
 
-The `(i, j)` bit grid can only ever hold positive terms (`2^i * 3^j > 0`
-always), so a sign can't live in the grid itself — `Signed<Base>` adds it
-as a separate flag, sign-magnitude style, on top of whichever base type you
-give it:
+The bit grid can only hold positive terms, so `Signed<Base>` adds the sign
+as a separate flag, sign-magnitude style: `isNegative()`/`setNegative(bool)`/
+`negate()`; `value()` is `Base::value()` negated if the flag is set;
+`setValue()` splits the sign off first, then hands the magnitude to
+`Base::setValue()` — so a negative value no longer throws on a signed
+type. `operator+`/`operator*` are the signed versions described under
+"Addition"/"Multiplication" above.
 
-- `isNegative()` — whether the sign flag is set.
-- `setNegative(bool)` — set it directly.
-- `negate()` — flip it.
-- `value()` — `Base::value()`, negated if the sign flag is set.
-- `setValue(long long)` / `setValue(double)` — splits the sign off of the
-  input (`setNegative(v < 0)`), then hands the non-negative magnitude to
-  `Base::setValue()`, so a negative value no longer throws on a signed
-  type — it's encoded via the sign flag instead.
-- `operator+(Signed<Base>, const Signed<Base>&)` — proper, value-returning
-  signed addition; see "Addition" above.
-- `operator*(Signed<Base>, const Signed<Base>&)` — value-returning signed
-  multiplication (the sign-XOR rule); see "Multiplication" above.
-
-`set`/`get`/`clear`/`print*` are untouched — they still only ever see the
-magnitude. This is the "share logic where you can" part of the design: the
-sign behavior, and the "split the sign off before encoding" behavior for
-`setValue`, are each written exactly once, as a template over `Base`, and
-reused for both `SmoothSignedInteger` and `SmoothSignedFloat` rather than
-being duplicated in two separate classes. `Signed<Base>::value()` and
-`Signed<Base>::setValue()` intentionally *hide* rather than override
-`Base`'s versions (neither is virtual) — these types are always used by
-their own concrete name, never through a `SmoothNumberBase*`, so static
-hiding is enough, and it avoids paying for virtual dispatch for a feature
-only the signed types need.
+`set`/`get`/`clear`/`print*` are untouched — always the magnitude only.
+`Signed<Base>::value()`/`setValue()` intentionally *hide* (aren't virtual
+overrides of) `Base`'s versions — these types are always used by their own
+concrete name, never through a `SmoothNumberBase*`.
 
 ## Plan
 
@@ -1242,19 +744,15 @@ double result = smooth::DefaultPlan()
     .calculate();  // 3 * (4 + 2) = 18
 ```
 
-`smooth::Plan` (`include/smooth/plan.hpp`) is a fluent builder for an
-arithmetic expression over 3-smooth numbers. Building it produces a
-**declaration** — a pure, representation-agnostic record of exactly what
-was asked for (scalar/number leaves combined by add/multiply, nothing
-else); building never computes anything, and never touches a
-`RepresentationBase`. Compiling (the first call to `plan()`/`calculate()`)
-turns that declaration into a **blueprint**: the same tree, but with
-explicit `Ensure(target)` steps spliced in wherever a leaf needs to become
-a specific representation (or, for a strategy like `MergingSparsePlan` —
-see "plan_zoo" below — `Reduce` steps wherever a `Reduction`
-needs to run). The blueprint is what's actually executed — *and printed by
-`plan()`* — so every conversion (or reduction) a `Plan` performs shows up
-as a real, inspectable step, never hidden inside a virtual call:
+`smooth::Plan` is a fluent builder for an arithmetic expression over
+3-smooth numbers. Building it produces a **declaration** — a pure,
+representation-agnostic record of what was asked for; nothing is computed
+yet. Compiling (the first `plan()`/`calculate()`) turns that into a
+**blueprint**: the same tree with explicit `Ensure(target)` steps spliced
+in wherever a leaf needs a specific representation (or `Reduce` steps, for
+a strategy like `MergingSparsePlan`). The blueprint is what's executed
+*and printed by `plan()`*, so every conversion shows up as a real,
+inspectable step:
 
 ```cpp
 smooth::SparsePlan().scalar(1).plus().scalar(2).plan();
@@ -1266,178 +764,78 @@ smooth::SparsePlan().scalar(1).plus().scalar(2).plan();
 // = 3
 ```
 
-**`Plan` is an interface** — it owns all the shared tree-building/
-compiling machinery, but has no representation of its own to compute with,
-so it can't be constructed directly. A concrete subclass's *entire*
-strategy is one method, `buildBlueprint()`, which maps a declaration node
-to a blueprint node; `smooth::DefaultPlan` (also in `plan.hpp`, alongside
-`Plan` itself) is the simplest one — see "plan_zoo" below for others.
-Immediately after `buildBlueprint()` runs, `validateBlueprint()` (private,
-always run, never overridden) confirms that stripping every `Ensure` node
-back out of the blueprint yields the declaration's exact shape and leaf
-contents again — so a `buildBlueprint()` override can only ever *decorate*
-what's being computed, never change it. (Three toy, deliberately-broken
-`Plan` subclasses in `tests/test_smooth.cpp` exercise this directly: one
-that tampers with a leaf's value, one that swaps in the wrong shape
-entirely, and one that produces a malformed `Ensure` node — all three are
-confirmed to throw.)
+**`Plan` is an interface** with no representation of its own to compute
+with. A concrete subclass's entire strategy is one method,
+`buildBlueprint()`; `DefaultPlan` is the simplest one (see "plan_zoo"
+below for others). Immediately after it runs, `validateBlueprint()`
+(private, always run) confirms that stripping every `Ensure` node back out
+yields the declaration's exact shape again — so an override can only
+*decorate*, never change, what's being computed.
 
-- `scalar(double)` — a leaf. Throws `std::invalid_argument` for a negative
-  value: every `RepresentationBase` is magnitude-only, and a negative
-  value would otherwise infinite-loop the first time something tries to
-  decompose it into bits — so this is the one place a raw literal enters
-  the system, and the one place that gets checked. Nothing is built yet at
-  this point — just the raw value, recorded in the declaration.
-- `number(const T&)` — a leaf holding an existing `SmoothNumberBase`-derived
-  object's value, snapshotted immediately (via `scalar(n.value())`, so it's
-  subject to the same non-negative restriction). Templated specifically so
-  `T::value()` resolves at `T`'s own concrete type — required for a signed
-  `T`, whose `value()` intentionally hides (isn't a virtual override of)
-  `SmoothNumberBase::value()`; calling it through a `SmoothNumberBase&`
-  would silently read the unsigned magnitude instead of throwing for a
-  negative value.
-- `numberVia(SmoothNumberBase&)` — keeps a live reference to `n` (which
-  must outlive `calculate()`/`plan()`) instead. Compiling always wraps a
-  `numberVia()` leaf in `Ensure(target)` too (see `wrapLeavesWithEnsure()`
-  below), and executing that `Ensure` step calls `n`'s own
-  `SmoothNumberBase::representationAs(target)` directly — a genuine
-  `ensure()`-driven conversion through `n`'s own internal representation
-  cache, not a value-then-rebuild round trip — so `n`'s own `Metrics` (if
-  it has any) sees the resulting `convert_<canonical>_to_<target>`
-  counter.
-- `plus()` / `times()` — wraps whatever's been built so far at the current
-  nesting level into a new operator node, as its left side, and expects the
-  next thing built to become its right side. Without any `left()`/`right()`
-  grouping, this makes a plain chain **left-associative**, like a simple
-  calculator: `scalar(3).times().scalar(4).plus().scalar(2)` computes
-  `(3 * 4) + 2 = 14`, since each operator wraps the *entire* accumulated
-  result so far, not just the value immediately before it.
-- `left()` / `right()` — open and close a nested group, the way `(` and `)`
-  do. `left()` always starts a fresh, independent sub-expression; `right()`
-  always finishes the most recently opened one and plugs its completed
-  value into whichever slot is open one level up. Which slot that is — a
-  pending operator's still-empty right side, or the top-level result — is
-  just whatever's actually open there; `left()`/`right()` name the bracket
-  pair, not a side of the parent operator (which is why, in the example
-  above, `left()` is what opens the group that ends up as `times()`'s
-  right-hand operand). This is what makes `3 * (4 + 2)` possible at all —
-  without it, the plain left-associative chain would give `(3 * 4) + 2`
-  instead.
-- `calculate()` — the computed result, as a `double` (the final blueprint
-  step's representation's own `value()`).
-- `plan(os = std::cout)` — prints the compiled blueprint as a tree, e.g.
-  (for `smooth::DefaultPlan()` and the example above, `3 * (4 + 2)`):
-  ```
-  multiply
-  ├─ ensure(scalar)
-  │  └─ scalar: 3
-  └─ add
-     ├─ ensure(scalar)
-     │  └─ scalar: 4
-     └─ ensure(scalar)
-        └─ scalar: 2
-  = 18
-  ```
-  (Every leaf gets an `Ensure` step, even `DefaultPlan`'s own `Ensure(Scalar)`
-  — there's no special-cased "no conversion needed" leaf kind; a strategy
-  that has nothing to convert just names its own representation as the
-  target, same as everyone else. A `numberVia()` leaf's `Ensure` step has
-  no separate child to show — there's no meaningful "unconverted" form of
-  an existing number the way a raw literal naturally becomes Scalar — so
-  it prints as one combined line, e.g. `ensure(sparse): 3`.)
+- `scalar(double)` — a leaf; throws `std::invalid_argument` for a negative
+  value (every representation is magnitude-only).
+- `number(const T&)` — a leaf snapshotting an existing number's value
+  immediately. Templated so `T::value()` resolves at `T`'s own concrete
+  type, required for a signed `T` whose `value()` hides rather than
+  overrides `SmoothNumberBase::value()`.
+- `numberVia(SmoothNumberBase&)` — keeps a live reference instead (which
+  must outlive `calculate()`/`plan()`); its `Ensure` step calls `n`'s own
+  `representationAs(target)` directly, a genuine conversion through `n`'s
+  own cache, so `n`'s `Metrics` sees the result.
+- `plus()`/`times()` — wraps everything built so far as the new operator's
+  left side. Without grouping, a chain is **left-associative**.
+- `left()`/`right()` — open/close a nested group, like `(`/`)`. This is
+  what makes `3 * (4 + 2)` possible at all.
+- `calculate()` — the result, as a `double`.
+- `plan(os = std::cout)` — prints the compiled blueprint as a tree (every
+  leaf gets an `Ensure` step, even `DefaultPlan`'s own).
 
-`buildBlueprint(const Node& declaration) const` (`protected`, pure virtual)
-is the one hook every concrete `Plan` overrides — see "plan_zoo" below;
-each override is one line, built on:
+`buildBlueprint(const Node&) const` (`protected`, pure virtual) is the one
+hook every concrete `Plan` overrides, typically built entirely on
+`wrapLeavesWithEnsure(declaration, target)` (`protected`, shared) — walks
+the declaration wrapping every leaf in `Ensure{target}`.
 
-- `wrapLeavesWithEnsure(const Node& declaration, Representation target) const`
-  (`protected`, shared, non-virtual) — walks `declaration`, wrapping every
-  leaf (`scalar()`/`number()` or `numberVia()` alike) in `Ensure{target}`.
-  This is typically a `buildBlueprint()` override's *entire* body; a
-  strategy that wants something more unusual (pick a representation
-  per-node, insert some other kind of step, ...) writes its own
-  `buildBlueprint()` from scratch instead — `Ensure` is not the only
-  `Node::Kind` a `buildBlueprint()` override could ever introduce, just
-  the only one anything currently does.
+Combining two already-converted representations (`Add`/`Multiply`
+execution) just clones the left operand and calls its own
+`addInPlace()`/`multiplyInPlace()` — one shared implementation, since
+those are already virtual over any `RepresentationBase`.
 
-Combining two already-converted representations (executing an `Add`/
-`Multiply` blueprint node — private, not overridden by anything) just
-clones the left operand and calls its own `addInPlace()`/
-`multiplyInPlace()` with the right one — since those are already virtual
-and polymorphic over any `RepresentationBase`, this one implementation,
-shared by every `Plan` variant, is all "combine two representations" ever
-needs; no per-strategy override exists for it, or could usefully need one.
-
-`name() const` (public, pure virtual) identifies which strategy is in use
-("scalar" for `DefaultPlan`; "sparse"/"matrix"/"row_values" for the
-`plan_zoo` subclasses) and drives the `convert_to_<name>` metrics counter
-(incremented once per `Ensure` step) — it's independent of the `Ensure`
-step's own printed label (`representationLabel()`, an internal, `Plan`-
-private mapping from `SmoothNumberBase::Representation` to a lowercase
-name), which is why `MatrixPlan`'s tree says `ensure(dynamic)` even though
-`name()` is `"matrix"` — see "plan_zoo" below for why those two differ.
+`name()` (public, pure virtual) identifies the strategy and drives the
+`convert_to_<name>` counter — independent of the `Ensure` step's own
+printed label, which is why `MatrixPlan`'s tree says `ensure(dynamic)`
+even though `name()` is `"matrix"`.
 
 Calling something out of order (two values with no operator between them,
-an operator with nothing built yet, an unmatched `left()`/`right()`,
-`calculate()`/`plan()` on an incomplete expression) throws
-`std::invalid_argument`.
+an unmatched `left()`/`right()`, etc.) throws `std::invalid_argument`.
 
-Like every concrete `SmoothNumberBase`-derived type, `Plan`'s constructor
-takes an optional shared `std::shared_ptr<Metrics>`
-(`DefaultPlan(metrics)`/`DefaultPlan()`, `hasMetrics()`, `metricsPtr()` —
-see "Metrics" above). A `Metrics` shared between a `Plan` and the numbers
-that feed it (via `number()` or `numberVia()` — the latter via
-`setMetricsPtr()`, since a `numberVia()` argument isn't constructed by the
-`Plan`) tallies both under the same counters: `convert_to_<name()>`/`add`/
-`multiply` from compiling itself, whatever representation-level work
-executing the blueprint does (an `Ensure` step's result is always
-constructed with — or, for a `numberVia()` leaf's clone, re-pointed via
-`RepresentationBase::setMetricsPtr()` at — this `Plan`'s own `Metrics`, so
-this is true even for a forced conversion, not just a `scalar()`/`number()`
-one), and, for `numberVia()` specifically, the fed-in number's own
-`convert_<canonical>_to_<target>` counter too — a different one per plan
-kind (e.g. `convert_dynamic_to_sparse` for `SparsePlan`,
-`convert_dynamic_to_row_values` for `RowValuesPlan`, or
-`convert_dynamic_to_scalar` for `DefaultPlan`) — except `MatrixPlan`, whose
-target (`Dynamic`) is already every fresh number's canonical
-representation, so nothing there ever needs converting.
+Like every concrete type, `Plan` takes an optional shared `Metrics`. A
+`Metrics` shared between a `Plan` and the numbers feeding it (via
+`number()`/`numberVia()`) tallies both under the same counters:
+`convert_to_<name()>`/`add`/`multiply` from compiling, whatever
+representation-level work executing produces, and — for `numberVia()` —
+the fed-in number's own `convert_<canonical>_to_<target>` counter too
+(except `MatrixPlan`, whose target is already every fresh number's
+canonical representation).
 
 ## plan_zoo
 
-`include/smooth/plan_zoo/` holds `Plan` subclasses, each implementing
-`name()`/`buildBlueprint()` to route through a specific `RepresentationBase`
-instead of `DefaultPlan`'s `ScalarRepresentation` — nothing else about
-`Plan` changes; building, `plan()`, `calculate()`, combining, `Metrics`, and
-error-handling are all inherited as-is. `include/smooth/plan_zoo.hpp` is a
-convenience header pulling in all of them, mirroring `smooth.hpp`. For now
-there are four, with more meant to follow as this library explores which
-representation — and which reductions — are actually fastest for what.
-Three of the four are as simple as strategies get: each one's
-`buildBlueprint()` is exactly
+`include/smooth/plan_zoo/` holds `Plan` subclasses, each just routing
+`buildBlueprint()` through a different `RepresentationBase`
+(`plan_zoo.hpp` pulls in all of them). Three are exactly
 `return wrapLeavesWithEnsure(declaration, Representation::X);`:
 
-- `SparsePlan` (`name()` → `"sparse"`) — `Representation::Sparse` →
-  `SparseRepresentation`.
-- `MatrixPlan` (`name()` → `"matrix"`) — `Representation::Dynamic` →
-  `DynamicMatrixRepresentation`, called "matrix" here since that's what
-  this library calls its grid-shaped representation now that the old
-  fixed-size `MatrixRepresentation` has been superseded by it (hence
-  `name()` and the `Ensure` step's printed label disagreeing — `"matrix"`
-  vs. `"dynamic"` — for this one variant only).
-- `RowValuesPlan` (`name()` → `"row_values"`) — `Representation::RowValues`
-  → `RowValuesRepresentation`.
+- `SparsePlan` (`"sparse"`) → `SparseRepresentation`.
+- `MatrixPlan` (`"matrix"`) → `DynamicMatrixRepresentation` (called
+  "matrix" for historical reasons — `name()` and the printed `Ensure`
+  label disagree for this one variant only).
+- `RowValuesPlan` (`"row_values"`) → `RowValuesRepresentation`.
 
-The fourth, `MergingSparsePlan` (`name()` → `"merging_sparse"`), builds on
-`SparsePlan` rather than reimplementing `wrapLeavesWithEnsure` from
-scratch: it calls `SparsePlan::buildBlueprint()` first, then walks the
-result and wraps both operands of every `Multiply` node (however deeply
-nested) in a `Reduce` step running `MergeReduction` (see
-"reduction_zoo" above) — greedily coalescing each operand's set
-bits before the multiply actually runs, since `multiplyBitsWithCarry`'s
-cost is one `bit_operation`
-per pair of set bits, so fewer bits in means a cheaper multiply. `Add`
-nodes are left untouched, since addition has no such pairwise blowup to
-shrink:
+The fourth, `MergingSparsePlan` (`"merging_sparse"`), builds on
+`SparsePlan`: it calls `SparsePlan::buildBlueprint()` first, then wraps
+both operands of every `Multiply` node (however deeply nested) in a
+`Reduce` step running `MergeReduction` — coalescing set bits before the
+multiply, since a Sparse/Dynamic multiply costs one `bit_operation` per
+pair of set bits. `Add` nodes are left untouched:
 
 ```cpp
 #include "smooth/plan_zoo.hpp"
@@ -1458,63 +856,21 @@ metrics->print();
 // transformations_applied = ...   <- however many merges it took
 ```
 
-Because every `numberVia()` leaf's `Ensure` step genuinely calls
-`n.representationAs(target)` (see "Plan" above), each of these three
-genuinely converts a fed-in number into its own representation — no
-special-cased "always convert" variant is needed:
+Each `numberVia()` leaf's `Ensure` step genuinely calls
+`n.representationAs(target)`, so each of these four genuinely converts a
+fed-in number into its own representation:
 
 ```cpp
-#include "smooth/plan_zoo.hpp"
-
-auto metrics = std::make_shared<smooth::Metrics>();
 smooth::SparsePlan p(metrics);
-smooth::SmoothInteger a, b;
-a.setMetricsPtr(metrics);
-b.setMetricsPtr(metrics);
-a.setValue(3LL);
-b.setValue(4LL);
-p.numberVia(a).plus().numberVia(b).calculate();  // 7
+p.numberVia(a).plus().numberVia(b).calculate();
 metrics->print();
-// add = 1
-// bit_iterations = 4
 // convert_dynamic_to_sparse = 2   <- one per fed-in number
-// convert_to_sparse = 2
 ```
 
-Feeding the exact same two numbers into a `RowValuesPlan` instead forces
-each through `RowValues` (`convert_dynamic_to_row_values`) rather than
-`Sparse` — same numbers, same expression, different real conversion,
-depending entirely on which `Plan` is asking. `MatrixPlan` is the one
-exception: its target (`Dynamic`) is already every fresh number's
-canonical representation, so `numberVia()` there never triggers a
-conversion counter at all — there's nothing to convert.
-
-```cpp
-smooth::SparsePlan p;
-p.scalar(3).times().left().scalar(4).plus().scalar(2).right();
-p.plan();
-// multiply
-// ├─ ensure(sparse)
-// │  └─ scalar: 3
-// └─ add
-//    ├─ ensure(sparse)
-//    │  └─ scalar: 4
-//    └─ ensure(sparse)
-//       └─ scalar: 2
-// = 18
-```
-
-Every representation is magnitude-only (`RepresentationBase` can never hold
-a negative value — the same reason `SmoothNumberBase::setValue()` rejects
-a negative value for the two unsigned types), so a negative `scalar()` leaf
-throws `std::invalid_argument` — this restriction now lives once, centrally,
-in `Plan::scalar()` itself (see "Plan" above), so it applies uniformly to
-`DefaultPlan` and to all four of these. `DefaultPlan` and all four of
-these — and `Plan` itself — share a common base pointer:
-`std::unique_ptr<Plan>` holding any of them dispatches
-`name()`/`calculate()`/etc. virtually and destructs safely, since `Plan`
-has a virtual destructor (and, being an interface, can't be instantiated
-directly).
+Every representation is magnitude-only, so a negative `scalar()` leaf
+throws `std::invalid_argument` — enforced centrally in `Plan::scalar()`.
+`DefaultPlan` and all four of these share a common base pointer
+(`std::unique_ptr<Plan>`), dispatching virtually and destructing safely.
 
 ## Building the demo and tests
 
@@ -1525,232 +881,30 @@ cmake --build build
 ./build/smooth_tests   # or: cd build && ctest --output-on-failure
 ```
 
-`src/demo.cpp` shows constructing a `SmoothInteger`, setting bits, printing
-it, reading its value, using `setBounds()` as an optional guardrail, a
-`SmoothFloat` with fractional terms, `SmoothSignedInteger` /
-`SmoothSignedFloat` negation, converting plain numbers via `setValue()`
-(including a negative value on a signed type), value-returning `operator+`
-and `operator*` for both a plain and a signed case, viewing a number
-through Dynamic/Sparse/RowValues plus `printScalar()` throwing on a number
-with a multi-column term, using `DynamicMatrixRepresentation`,
-`SparseRepresentation`, `RowValuesRepresentation`, and
-`ScalarRepresentation` directly (since a `SmoothNumberBase`'s canonical
-representation always starts out, and for now stays, Dynamic) to run each
-representation's own `addInPlace()`/`multiplyInPlace()` strategy, including
-a `Sparse` carry (for both addition and a carry-colliding multiplication),
-a `RowValues` convolution, and Scalar's own throw for a non-column-0 term,
-attaching a `Metrics` to a number to show its conversion counters and the
-`a + b` metrics-inheritance rule, comparing the `carries`/`bit_operations`/
-`scalar_operations`/`bit_iterations` counters a single add-then-multiply
-produces on Sparse, DynamicMatrix, and RowValues directly, and building a
-`DefaultPlan` (the confirmed
-`3 * (4 + 2)` example, an unbracketed left-associative chain, and
-`number()` correctly throwing for a negative signed operand rather than
-silently reading its unsigned magnitude) and printing it, including a
-`Metrics` shared between a `Plan` and a `SmoothInteger` it reads via
-`number()`, tallying both under the same counters; and, from
-`plan_zoo`, `SparsePlan`/`MatrixPlan`/`RowValuesPlan` all computing the
-same expression (each `plan()`-printed under its own `name()`), plus one
-used polymorphically through a `Plan*`; `numberVia()` against the same
-three real `SmoothInteger`s fed into `SparsePlan` and then `RowValuesPlan`,
-showing each one forcing a different real conversion
-(`convert_dynamic_to_sparse` vs. `convert_dynamic_to_row_values`) for the
-exact same numbers, alongside the rest of each run's `Metrics`;
-`MergeTransformation`/`SplitTransformation`, applied and reversed on the
-same number; a merge that has to carry because its output bit is already
-occupied (12 + 12 carrying to 24); a custom `OffsetTransformation` built
-directly from its own offset lists, combining bits across both axes at
-once; `SpreadTransformation(4)` bridging two bits 4 columns apart into
-`(i+2, j)` plus a 3-bit staircase; `CornerSplitTransformation` splitting a
-bit into its three corner neighbors (on a fractional type, anchored at
-`(0, 0)`); `RowSpreadTransformation(4)` bridging two bits 4 rows apart
-into `(i, j+1)` plus a 3-bit row staircase; a `TransformationReduction`
-running just `MergeTransformation` to fixed point over a number with
-several independent merge opportunities and one collision-triggered
-cascade, with a `Metrics` attached to show `transformations_applied`; and,
-from `plan_zoo`, `MergingSparsePlan` computing the same expressions as
-`SparsePlan`, with `plan()` showing each `Multiply` node's operands wrapped
-in `reduce(merge)` while `Add` nodes are left bare, and a side-by-side
-`bit_operations` comparison against plain `SparsePlan` for the same
-multiplication; `BinaryFormReduction` reducing 18 (a single bit at
-`(1, 2)`) down to its binary form (bits at `(1, 0)` and `(4, 0)`, i.e.
-`16 + 2`), with a `Metrics` attached to show how many splits it took; and
-`TernaryFormReduction` reducing 13 (not itself a single term, run directly
-against a Sparse representation) down to two single-bit columns, `(2, 0)`
-and `(0, 2)`, with a `Metrics` attached to show how many
-`RowSpreadTransformation` steps it took; and, directly,
-`TernaryCarryTransformation`/`TernaryCarryReduction` reducing 9 (built
-straight into column 0 via `RowValuesRepresentation::setColumnValue()`)
-down to a single bit at column 2 -- the same result `TernaryFormReduction`
-gets for 9, via column magnitudes directly instead of
-`RowSpreadTransformation`; and `StaircaseReduction` combining two bits — `(1, 1)` and
-`(4, 5)`, a genuine diagonal pair — into the five-bit antichain
-`{(1,6), (2,5), (3,4), (4,3), (7,1)}` over 13 steps, with a `Metrics`
-attached to show the count; `RowSpreadTransformation(6).atomize(0, 0)`
-printed out atom-by-atom (`CornerSplit`/`Merge`, each with its own anchor),
-then applied both directly and via that atomized sequence to confirm they
-land on exactly the same representation; `MergeTransformation` applied to a
-`RowValuesRepresentation` through an explicit `RepresentationBase&` to show
-its column-arithmetic dispatch (`n[0]`/`n[1]` before and after), and the
-same call against a `ScalarRepresentation` throwing; and
-`n.applyTransformation(rowSpread, 0, 0, /*atomize=*/true)` reaching the
-same result as applying `rowSpread` directly.
+`src/demo.cpp` is a quick tour of the library's main pieces -- basic
+set/get/clear/value, `SmoothFloat`'s negative indices, signed types and
+`setValue()`, addition/multiplication, the four representations,
+`Plan`/`plan_zoo`, a `Transformation`, and a `Reduction` -- not exhaustive
+coverage; that's what the test suite is for.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
-suite (no test framework linked in — see `CMakeLists.txt`) covering all of
-the above: bounds/fractional restrictions, `setValue()`, signed
-sign-handling, agreement across Dynamic/Sparse/RowValues plus
-`printScalar()`'s success/throw cases, each `RepresentationBase`
-implementation exercised directly (including `clone()` independence,
-`Sparse`'s addition and multiplication carries, `RowValues`'s convolution,
-and `ScalarRepresentation`'s column-0 restriction, including its `0 *
-anything` exemption), value-returning unsigned and signed addition
-(same-sign, both differing-sign directions, the zero tie, and the
-cross-column/mixed-radix borrow case — and that neither operand is ever
-mutated), value-returning unsigned and signed multiplication (including
-the sign-XOR rule and a zero product's sign normalization), that both
-addition and multiplication require matching representations, `Metrics`
-counters (including that redundant conversions aren't double-counted, and
-the `a + b` metrics-inheritance rule — notably that the signed swap branch
-still keeps a's metrics), the `carries`/`bit_operations`/
-`scalar_operations`/`bit_iterations` counters pinned down independently
-against each representation directly (a single and a multi-step carry
-chain, an *n*-by-*m* bit-operation count, each representation's own
-notion of a "cell" for `bit_iterations`, and both `scalar_operations`
-sources for RowValues and Scalar), copy/move semantics,
-`MergeTransformation`/`SplitTransformation`/`SpreadTransformation`/
-`CornerSplitTransformation`/`RowSpreadTransformation` (each direction's
-`canApply()` correctly rejecting a missing input bit,
-`applyTransformation()` throwing in that case, that an already-occupied
-output bit doesn't block `canApply()` at all — it carries instead,
-including a case where *both* of `SplitTransformation`'s outputs are
-occupied and carry in sequence, still preserving the total value — a
-merge-then-split round trip, that a different representation correctly
-reflects the new layout after a merge, a custom `OffsetTransformation`
-built directly from its own input/output offset lists,
-`SpreadTransformation(1)`'s empty-staircase special case and
-`SpreadTransformation(4)`'s full 3-bit staircase, `SpreadTransformation`'s
-constructor throwing for `n < 1`, `CornerSplitTransformation` applied at
-`(0, 0)` on a fractional type (all three outputs landing at negative
-indices), `RowSpreadTransformation(1)`'s offsets matching
-`MergeTransformation`'s own exactly, `RowSpreadTransformation(4)`'s full
-3-bit row staircase, `RowSpreadTransformation`'s constructor throwing for
-`n < 1`, that both `Merge`/`SplitTransformation` work the same way for
-negative indices on a fractional type, and
-`checkTransformationPreservesValue()` — confirming, directly from each
-`OffsetTransformation`'s own `inputs()`/`outputs()` and independent of
-ever calling `apply()`, that every offset-based transformation this
-library has is actually value-preserving), `TernaryCarryTransformation`
-(that `canApply()`/`applyAndReportLandings()` both throw
-`std::invalid_argument` against anything but a `RowValuesRepresentation`,
-`canApply()` correctly distinguishing a single-bit column from a
-multi-bit one, that one application both subtracts 3 from column `j` and
-adds 1 to column `j+1` while preserving `value()`, that its landings
-report *both* columns — unlike any `OffsetTransformation` — and that
-`affectedAnchors()` always answers `(0, j)` regardless of which row
-within the column actually changed), `TransformationReduction` (a
-single merge, two independent merges applied in one `run()`, a
-collision-triggered cascade, a fully-packed number where every bit
-eventually merges, the `transformations_applied` counter, and a no-op
-case confirming an already-fixed-point number is left untouched),
-`BinaryFormReduction` (a single split with no carry, an already-binary
-number left untouched, a carry-cascade case confirming 18 converges to
-exactly its true binary form — bits at rows 1 and 4, nowhere else — the
-`transformations_applied` counter, and value preservation, plus the
-column-0-only guarantee, checked across a range of representative numbers
-including 0), `TernaryCarryReduction` (`name()`, a no-op on an
-already-single-bit column, 9 reducing to a single bit at column 2 with the
-exact `transformations_applied` count checked — the same result
-`TernaryFormReduction` gets for 9 — and that it throws
-`std::invalid_argument` for a non-`RowValuesRepresentation`, same as the
-transformation it's built from), `TernaryFormReduction` (`name()`, run
-directly against Sparse representations throughout: a number already a
-single bit needing zero steps, 9 draining down to a single bit at column 2
-— matching its own single-term sparse form exactly, with the exact
-`transformations_applied` count checked — 13 landing on two single-bit
-columns instead of collapsing to one, that the result can now depend on
-the *starting* bit layout and not just the value (11 built via
-`SmoothInteger::setValue()`, i.e. ordinary binary form, settling on a
-different single-bit-per-column split than the same 11 built directly as
-`5*3^0 + 2*3^1` — both checked exactly, along with their differing step
-counts), value preservation and the single-bit-per-column guarantee
-checked across a range of representative numbers, and that it runs — with
-the same result — directly against RowValues and Dynamic representations
-too, not just Sparse), `StaircaseReduction` (`name()`, a same-row pair resolving via
-`SpreadTransformation` in exactly one step, a same-column pair via
-`RowSpreadTransformation` — both a single-step case and a wider gap whose
-own multi-bit staircase needs further steps to settle — a diagonal pair
-via `CornerSplitTransformation`, a no-op on an already-antichain
-representation, the longer 13-step cascade landing on its exact expected
-antichain, value preservation and the antichain property checked across a
-range of representative numbers, and that it never needs a
-fractional-capable representation starting from all-non-negative bits),
-`atomize()` (`MergeTransformation`/`SplitTransformation`/
-`CornerSplitTransformation` each atomizing to exactly one atom, themselves;
-`SpreadTransformation(n)` atomizing to exactly `n` `SplitTransformation`
-applications for `n` from 1 to 8, checked to use no other atom type;
-`RowSpreadTransformation(n)` atomizing to exactly `1` atom for `n = 1` and
-`4n - 5` for `n` from 1 to 20, with `n = 1`'s single atom confirmed to be a
-`MergeTransformation` specifically; `checkAtomizeMatches()` — applying a
-transformation directly and applying its `atomize()`d sequence to two
-copies of the same starting representation and confirming they land on
-exactly the same set bits, not just the same value — checked across every
-preset above plus a case with unrelated background bits present, to rule
-out `atomize()` implicitly assuming an otherwise-empty grid; and that every
-atomized step is actually `canApply()`-valid when its turn comes), atom
-representation dispatch (each of `MergeTransformation`/`SplitTransformation`/
-`CornerSplitTransformation`'s `canApply()`/`applyAndReportLandings()`
-checked directly against a `RowValuesRepresentation` — via an explicit
-`RepresentationBase&`, the only way the dispatch actually fires — including
-a carry case confirming RowValues just adds the delta with no explicit
-carry chase; all three throwing `std::invalid_argument` against a
-`ScalarRepresentation`; that Sparse is unaffected; `RowSpreadTransformation`
-applied directly vs. via `applyAndReportLandings(..., viaAtoms=true)`
-matching exactly on both Sparse and RowValues; `SmoothNumberBase::
-applyTransformation(..., atomize=true)` end to end, including that it still
-throws when `canApply()` is false; and that a plain `OffsetTransformation`
-with no `atomize()` override throws), and `DefaultPlan`
-(the confirmed example, unbracketed left-associative chaining, that
-`number()` throws for a negative signed operand instead of silently
-reading its unsigned magnitude — proving `T::value()` really is resolved
-at `T`'s own static type — nested `left()`/`right()` groups two levels
-deep, `plan()`'s tree rendering, every usage-error case including a
-negative `scalar()` leaf, and its own `Metrics` support — one counter per
-compiled step plus `ScalarRepresentation`'s own `scalar_operations`,
-memoized compilation, and propagation to a `SmoothNumber` sharing the same
-`Metrics`), and `plan_zoo` (checked generically against
-`SparsePlan`/`MatrixPlan`/`RowValuesPlan`: `name()`, that each computes
-`3 * (4 + 2) = 18` via its own representation, that `plan()` shows the
-`Ensure` step it forces above each leaf, that a negative leaf throws
-immediately at `scalar()`, its `Metrics` counter name, that `DefaultPlan`'s
-`name()` is unaffected, and polymorphic dispatch/destruction through a
-`Plan*`), `MergingSparsePlan` (`name()`, correctness against both an
-add-inside-multiply and a squared expression, `plan()`'s exact printed
-tree confirming `reduce(merge)` wraps only `Multiply` operands and never
-an `Add` node, a `bit_operations`/`transformations_applied` comparison
-against plain `SparsePlan` for the same multiplication, and that a nested
-`Multiply` gets its own inner `Reduce` wrapping too), `Reduction`
-polymorphism (a `SparsePlan` subclass that wraps every leaf in a
-`BinaryFormReduction` instead of `MergeReduction`, confirming `Plan`'s
-`Reduce` mechanism — `wrapWithReduction()`, holding a plain
-`const Reduction*` — genuinely doesn't care which concrete reduction
-it's given: it computes the right value, and `plan()` prints
-`reduce(binary_form)`), `validateBlueprint()` (three deliberately broken `Plan`
-subclasses — one that tampers with a leaf's value, one that swaps in the
-wrong declaration shape, one that produces a malformed `Ensure` node — each
-confirmed to throw, plus a normal, correct `buildBlueprint()` confirmed
-unaffected), and `valueAs()`/`representationAs()`/`numberVia()` (that
-`valueAs()` converts exactly once, not once per call; that `SparsePlan`
-forces each of 3 fed-in numbers through Sparse exactly once via
-`numberVia()`, computing correctly, with the forced clone's own
-`carries`/`bit_operations` correctly landing under the `Plan`'s `Metrics`
-too — not silently lost; that a `scalar()`-only expression, or the
-non-`numberVia()` leaves in one that mixes both kinds, never touch
-`convert_dynamic_to_sparse`; and that
-`DefaultPlan`/`RowValuesPlan`/`MatrixPlan` each force `numberVia()` leaves
-through their own distinct target representation — or, for `MatrixPlan`
-specifically, need no conversion at all). It builds as a second
-executable, `smooth_tests`, runnable directly or via `ctest`.
+suite (no test framework linked in — see `CMakeLists.txt`) that exercises
+every class and behavior described above directly: each representation's
+own `get`/`set`/`addInPlace`/`multiplyInPlace`/`clone` strategy; unsigned
+and signed addition/multiplication (matching-sign, differing-sign, zero,
+and cross-column borrow cases); every counter under "Metrics" pinned down
+independently per representation; every `transformation_zoo` preset's
+`canApply()`/`applyAndReportLandings()`/value-preservation, including
+carry and negative-index cases; `atomize()` for every preset (exact atom
+counts, and that applying directly vs. via the atomized sequence lands on
+identical bits); the per-representation atom dispatch (RowValues
+arithmetic, the `ScalarRepresentation` throw, Sparse left unaffected) and
+the `viaAtoms`/`atomize=true` apply path end to end; every `reduction_zoo`
+preset (termination, value preservation, exact step counts where
+meaningful, and error cases); `Plan`, every `plan_zoo` strategy, and
+`validateBlueprint()`'s tamper-detection (via three deliberately broken
+`Plan` subclasses). It builds as a second executable, `smooth_tests`,
+runnable directly or via `ctest`.
 
 ## Profiles: measuring the counters
 
@@ -1761,56 +915,29 @@ cmake --build build
 ./build/smooth_profiles some/path.db # or an explicit database path
 ```
 
-`include/smooth/profiles.hpp` defines a fixed set of named `Profile`s —
-each just a `name` and a `run(Plan&) -> double` function written directly
-in terms of `Plan`'s own builder methods
-(`scalar()`/`number()`/`numberVia()`/`plus()`/`times()`/`left()`/
-`right()`/`calculate()`). Because every concrete `Plan` shares that exact
-interface, the same `run()` works unchanged whether the `Plan&` it's given
-is bound to a `DefaultPlan`, `SparsePlan`, `MatrixPlan`, or
-`RowValuesPlan` — it's the same expression, measured identically across
-every representation. `run()` calls `calculate()` itself (rather than
-leaving that to the caller) so a profile that constructs its own
-`SmoothInteger`s for `numberVia()` can keep them alive for exactly as long
-as they're needed, entirely within its own local scope.
+`src/profile_runner.cpp` (the `smooth_profiles` executable) defines a
+fixed set of named `Profile`s, each a `name` and a `run(Plan&) -> double`
+written purely in terms of `Plan`'s own builder methods — so the same
+`run()` works unchanged whether it's bound to a `DefaultPlan`,
+`SparsePlan`, `MatrixPlan`, or `RowValuesPlan`, measuring the same
+expression identically across every representation.
 
-The profiles are meant to look like ordinary, everyday arithmetic — sums
-and (price × quantity)-style products, not edge cases (no zeros,
-negatives, or single-leaf expressions) — ranging from `two_number_sum`
-and `two_number_product` (2 numbers) up through `weighted_basket` and
-`nested_score_totals` (6-8 numbers, mixing both operators and, for
-`nested_score_totals`, two levels of nested `left()`/`right()` groups) to
-`ten_day_totals` (10 numbers, the upper end of "typical" this project is
-using to see how the counters scale). Two more —
-`converted_number_sum` and `converted_price_quantity_plus_shipping` — use
-`numberVia()` against real `SmoothInteger` objects instead of `scalar()`,
-sharing each `Plan`'s `Metrics` (via `setMetricsPtr()`) so that, since
-every `Plan` forces a `numberVia()` leaf through its own real conversion
-(see "Plan" above), each number's own `convert_dynamic_to_<target>`
-counter lands in the same row too — a different one per plan kind.
+The profiles look like ordinary everyday arithmetic (sums, price×quantity
+products), ranging from 2-number expressions up through `ten_day_totals`
+(10 numbers). Two of them use `numberVia()` against real `SmoothInteger`
+objects instead of `scalar()`, so each number's own conversion counter
+lands under the same `Metrics` row too.
 
-`src/profile_runner.cpp` (the `smooth_profiles` executable) runs every
-(plan kind, profile) combination — `scalar`/`sparse`/`matrix`/
-`row_values` × every `Profile` — against a SQLite database, skipping any
-combination already present so re-running only does work for newly added
-plan kinds or profiles. Each row records the plan kind, the profile name,
-the computed result, and one column per counter a `Plan`-driven run can
-currently produce: `convert_to_scalar`/`convert_to_sparse`/
-`convert_to_matrix`/`convert_to_row_values` (one of these per `Ensure`
-step, incremented while compiling the blueprint), `add`, `multiply`,
-`carries`, `bit_operations`, `scalar_operations`, `bit_iterations` (the
-representation-level counters — see "Metrics"), and
-`convert_dynamic_to_sparse`/`convert_dynamic_to_row_values`/
-`convert_dynamic_to_scalar` (the `SmoothNumberBase`-level
-`convert_<X>_to_<Y>` counters reachable this way: every `numberVia()`
-leaf's `Ensure` step forces its number through `SmoothNumberBase::ensure()`,
-via `representationAs()`, always starting from `Dynamic`, since there's no
-public way to make anything else canonical; `MatrixPlan`'s own target *is*
-`Dynamic`, so `convert_dynamic_to_dynamic` can't exist and isn't a column).
+The same file runs every (plan kind, profile) combination against a
+SQLite database, skipping anything already present. Each row records the
+plan kind, profile name, computed result, and one column per counter a
+`Plan`-driven run can produce (`convert_to_<X>`, `add`, `multiply`, the
+representation-level counters from "Metrics", and each
+`convert_dynamic_to_<X>`).
 
-The set of columns is fixed on purpose: **when a counter is added, removed,
-or renamed, delete the database file and let it be recreated from
+**The set of columns is fixed on purpose: when a counter is added,
+removed, or renamed, delete the database file and let it be recreated from
 scratch**, rather than migrating it in place. `smooth_profiles` checks the
 database's actual columns against what the current build expects on every
-run and refuses to proceed (with that same instruction) if they don't
-match, so a stale database is a hard error, not silently-wrong data.
+run and refuses to proceed if they don't match, so a stale database is a
+hard error, not silently-wrong data.

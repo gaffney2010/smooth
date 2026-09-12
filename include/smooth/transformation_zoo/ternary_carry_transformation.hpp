@@ -10,40 +10,29 @@
 
 namespace smooth {
 
-// Anchored at column j (the row half of the anchor, i, is unused --
-// always 0 by convention): while column j's total, n_j
-// (RowValuesRepresentation's own per-column magnitude -- see
-// row_values_representation.hpp), has more than one bit set, subtracts 3
-// from n_j and adds 1 to n_(j+1) -- value-preserving, since
-// 3 * 3^j = 3^(j+1).
+// Anchored at column j (the row half of the anchor, i, is unused, always
+// 0 by convention): while column j's total, n_j (RowValuesRepresentation's
+// per-column magnitude), has more than one bit set, subtracts 3 from n_j
+// and adds 1 to n_(j+1) -- value-preserving since 3 * 3^j = 3^(j+1).
 //
-// This is a Transformation (transformation.hpp) that isn't an
-// OffsetTransformation: its precondition ("does column j have more than
-// one bit set") depends on an entire column's aggregate magnitude, not a
-// fixed, small set of grid cells, and applying it doesn't clear a fixed
-// set of 1s either -- it's an ordinary magnitude subtraction, which in
-// general needs a borrow across bits that OffsetTransformation has no way
-// to express. RowValuesRepresentation sidesteps the problem by already
-// storing n_j as a single number rather than exploded bits, which is why
-// canApply()/applyAndReportLandings() below require one and throw
+// This is a Transformation that isn't an OffsetTransformation: its
+// precondition depends on a whole column's aggregate magnitude, and
+// applying it is an ordinary subtraction needing a borrow across bits
+// that OffsetTransformation has no way to express. RowValuesRepresentation
+// sidesteps this by storing n_j as a single number, which is why
+// canApply()/applyAndReportLandings() require one and throw
 // std::invalid_argument otherwise.
 //
-// Unlike an OffsetTransformation's inputs (always fully cleared, so only
-// the outputs are worth re-examining afterward -- see
-// OffsetTransformation::applyAndReportLandings()), one application here
-// only *decrements* column j -- it may still have more than one bit set
-// afterward, needing further applications at the same anchor. So
-// applyAndReportLandings() reports column j itself as a landing, right
-// alongside column j+1, unlike any OffsetTransformation.
+// One application only decrements column j -- it may still need further
+// applications at the same anchor -- so applyAndReportLandings() reports
+// column j itself as a landing alongside column j+1, unlike any
+// OffsetTransformation.
 //
-// This always terminates without ever going negative, run repeatedly at
-// a fixed column: the descending sequence n_j, n_j - 3, n_j - 6, ... is
-// confined to one residue class mod 3, and that class's smallest
-// nonnegative member -- 0, 1, or 2 -- always has popcount <= 1. So it's
-// guaranteed to stop at or before reaching it, never below -- see
-// TernaryCarryReduction (reduction_zoo/ternary_carry_reduction.hpp), which
-// runs this to a fixed point the same way MergeReduction runs
-// MergeTransformation, needing no bound at all.
+// This always terminates without going negative: the descending sequence
+// n_j, n_j - 3, n_j - 6, ... is confined to one residue class mod 3,
+// whose smallest nonnegative member (0, 1, or 2) always has popcount <= 1
+// -- see TernaryCarryReduction, which runs this to a fixed point with no
+// bound needed.
 class TernaryCarryTransformation : public Transformation {
 public:
     bool canApply(const RepresentationBase& rep, int /*i*/, int j) const override {
@@ -58,9 +47,8 @@ public:
         return {{0, j}, {0, j + 1}};
     }
 
-    // Any change anywhere in column j means column j -- the only anchor
-    // this transformation ever cares about -- is worth rechecking, no
-    // matter which row within it actually changed.
+    // Any change anywhere in column j means column j is worth rechecking,
+    // no matter which row within it actually changed.
     std::vector<std::pair<int, int>> affectedAnchors(int /*i*/, int j) const override { return {{0, j}}; }
 
 private:

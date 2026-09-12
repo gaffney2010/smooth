@@ -15,47 +15,34 @@ namespace smooth {
 
 // Reduces a number to a form where every column j that has anything in it
 // holds exactly one bit -- i.e. every column's own magnitude (summing 2^i
-// over its set rows) is a single power of two, never an arbitrary sum of
-// several.
+// over its set rows) is a single power of two, never an arbitrary sum.
 //
-// So long as some column has more than one set bit, this takes that
-// column's two *smallest* set rows i1 < i2 and applies
-// RowSpreadTransformation(i2 - i1) (transformation_zoo/row_spread_transformation.hpp)
+// So long as some column has more than one set bit, this takes its two
+// *smallest* set rows i1 < i2 and applies RowSpreadTransformation(i2-i1)
 // anchored at (i1, j) -- folding them into a single bit one column over,
-// plus (whenever i2 - i1 > 1) a staircase filling the gap between them,
-// all still within column j -- then repeats, until no column has more
-// than one bit left.
+// plus (when i2-i1 > 1) a staircase filling the gap, all within column j
+// -- then repeats.
 //
-// Always resolving the *smallest* currently-offending column first
-// (breaking ties within it by taking its two smallest rows) is what makes
-// this terminate. Within a single application: replacing 2^i1 + 2^i2 with
-// the staircase sum 2^(i1+1) + ... + 2^(i2-1) = 2^i2 - 2^(i1+1) changes
-// column j's own magnitude by exactly -(2^i1 + 2^(i1+1)) = -3 * 2^i1 -- a
-// strict decrease, since i1 >= 0 -- so a column being worked on can't be
-// touched forever. And once a column is driven down to at most one bit,
-// nothing this reduction ever does can put a bit into a column lower than
-// the one it's currently working on (RowSpreadTransformation's own outputs
-// never land below its anchor's column), so a resolved column stays
-// resolved and the "smallest offending column" only ever moves up.
+// Always resolving the smallest currently-offending column first (ties
+// broken by its two smallest rows) is what makes this terminate: within
+// one application, column j's magnitude decreases by exactly 3 * 2^i1 (a
+// strict decrease, since i1 >= 0); and once a column is driven to at most
+// one bit, nothing this reduction does can put a bit below the column
+// it's currently working on, so a resolved column stays resolved.
 //
 // Unlike the two-phase pipeline this replaces (BinaryFormReduction
-// collapsing everything into column 0, then TernaryCarryReduction working
-// directly with RowValuesRepresentation's per-column magnitudes -- see
-// transformation_zoo/ternary_carry_transformation.hpp), this works
+// collapsing into column 0, then TernaryCarryReduction working with
+// RowValuesRepresentation's per-column magnitudes directly), this works
 // entirely through a bit-level OffsetTransformation, so it runs against
-// *any* RepresentationBase -- Sparse, Dynamic, RowValues, Scalar -- with
-// no special-casing and no upfront representation check at all. It also
-// needs no separate "collapse into column 0 first" phase: a bit that
-// starts in whatever column already either satisfies the one-bit-per-
-// column property or gets carried rightward from wherever it is, and (like
-// the old pipeline) the final result only ever depends on the number's
-// value, never on how it started out distributed across columns.
+// *any* RepresentationBase with no special-casing at all. It also needs
+// no "collapse into column 0 first" phase -- but that means the result
+// can now depend on the *starting* bit layout, not just the value, unlike
+// the old pipeline (which always erased any head start first).
 //
-// Like StaircaseReduction (staircase_reduction.hpp), candidate columns
-// aren't confined to a small local neighborhood the way a single
-// Transformation's own affectedAnchors() are, so this rescans all of
-// `rep`'s set bits from scratch after every application, rather than using
-// TransformationReduction's worklist approach.
+// Like StaircaseReduction, candidate columns aren't confined to a small
+// local neighborhood, so this rescans all of `rep`'s set bits from
+// scratch after every application, rather than using
+// TransformationReduction's worklist.
 class TernaryFormReduction : public Reduction {
 public:
     const std::string& name() const override {

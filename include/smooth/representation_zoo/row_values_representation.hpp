@@ -24,10 +24,8 @@ public:
         : fractional_(allow_fractional), metrics_(std::move(metrics)) {}
 
     // Individual bits are recovered from n_j by dividing out 2^i and
-    // checking parity. This is exact for the row ranges this class is
-    // meant for, since every n_j is an exact sum of distinct powers of two,
-    // but it is floating-point-based and could get unreliable at very
-    // large row counts.
+    // checking parity -- exact for the row ranges this class is meant
+    // for, though floating-point-based and unreliable at very large rows.
     bool get(int i, int j) const override {
         auto it = values_.find(j);
         double n = (it == values_.end()) ? 0.0 : it->second;
@@ -48,8 +46,8 @@ public:
     void reset() override { values_.clear(); }
 
     // Each n_j already sums its row's contribution, so this is a single
-    // pass over the (typically few) columns that have anything set, rather
-    // than a full grid walk, with no per-bit decoding needed.
+    // pass over the (typically few) columns with anything set, no
+    // per-bit decoding needed.
     double value() const override {
         double total = 0.0;
         for (const auto& col : values_) {
@@ -74,9 +72,8 @@ public:
     }
 
     // Decodes each n_j back into individual (i, j) bits: the integer part
-    // via ordinary bit shifting, and -- when fractional terms are allowed
-    // -- the fractional part via repeated doubling, the standard way to
-    // read off a binary fraction's digits.
+    // via bit shifting, the fractional part (when allowed) via repeated
+    // doubling.
     void forEachSet(const std::function<void(int, int)>& fn) const override {
         for (const auto& col : values_) {
             bumpIteration();
@@ -101,11 +98,10 @@ public:
         }
     }
 
-    // Storage here already *is* n_j per column, so setting one is a direct
-    // O(1), exact assignment -- no bit decomposition, and none of the
-    // accumulated floating-point error the default (RepresentationBase's
-    // bit-by-bit set() loop) would introduce by adding/subtracting powers
-    // of two one at a time.
+    // Storage here already *is* n_j per column, so setting one is a
+    // direct O(1), exact assignment -- no bit decomposition, and none of
+    // the accumulated floating-point error a bit-by-bit set() loop would
+    // introduce.
     void setColumnValue(int j, double n) override {
         if (n == 0.0) {
             values_.erase(j);
@@ -114,25 +110,19 @@ public:
         }
     }
 
-    // Reads column j's current n_j (0.0 if that column has nothing set).
-    // Not part of RepresentationBase -- no other representation stores a
-    // whole column's magnitude as a single number to read back -- so this
-    // is RowValuesRepresentation-specific, same as columnValue()'s write
-    // counterpart below. TernaryCarryTransformation
-    // (transformation_zoo/ternary_carry_transformation.hpp) is the one
-    // caller: it works directly with each column's magnitude rather than
-    // decomposing it into individual bits.
+    // Reads column j's current n_j (0.0 if nothing's set there). Not part
+    // of RepresentationBase -- RowValuesRepresentation-specific, same as
+    // its write counterpart below. TernaryCarryTransformation and the
+    // atoms (atomic_transformation.hpp) are the callers that work
+    // directly with column magnitudes rather than individual bits.
     double columnValue(int j) const {
         auto it = values_.find(j);
         return it == values_.end() ? 0.0 : it->second;
     }
 
     // Adds delta onto column j's total -- unlike setColumnValue() above,
-    // this has no "column must start at zero" precondition, since it's
-    // just accumulate() (already used internally by set()/addInPlace())
-    // exposed publicly for TernaryCarryTransformation, which needs to
-    // adjust two columns' totals directly (subtract 3 from one, add 1 to
-    // the next) without decomposing either into individual bits.
+    // no "must start at zero" precondition, since it's just accumulate()
+    // exposed publicly.
     void addToColumnValue(int j, double delta) { accumulate(j, delta); }
 
     std::unique_ptr<RepresentationBase> clone() const override {
@@ -143,23 +133,16 @@ public:
 
     // Doesn't need explicit carry handling: each contribution just adds
     // onto its column's running total, and ordinary floating-point
-    // addition already produces the correct combined value (e.g. two
-    // contributions of 2^i at the same (i, j) simply sum to 2^(i+1),
-    // exactly as if a carry had been handled explicitly).
+    // addition already produces the correct combined value.
     //
     // When `other` is also a RowValuesRepresentation, its columns already
-    // *are* the n_j totals we want to add -- so this adds them directly,
-    // column by column, with no need to decompose either side into
-    // individual bits at all (not even to reconstruct `other`'s). Only
-    // when `other` is some other representation (Sparse, Dynamic) does
-    // this fall back to reading its bits via forEachSet() and accumulating
-    // each one's 2^i.
+    // *are* the n_j totals to add, so this adds them directly, column by
+    // column. Otherwise falls back to reading other's bits via
+    // forEachSet().
     void addInPlace(const RepresentationBase& other) override {
         if (const auto* rowValues = dynamic_cast<const RowValuesRepresentation*>(&other)) {
-            // Snapshot first (not strictly required here, since we only
-            // ever update -- never insert or erase -- an already-visited
-            // column, but this keeps the safety argument the same as the
-            // fallback below regardless of aliasing).
+            // Snapshot first -- keeps the safety argument the same as the
+            // fallback below regardless of aliasing.
             std::vector<std::pair<int, double>> columns(rowValues->values_.begin(), rowValues->values_.end());
             for (const auto& col : columns) {
                 accumulate(col.first, col.second);
@@ -174,16 +157,11 @@ public:
         }
     }
 
-    // Convolves this's column totals with other's: since value() =
-    // sum_j n_j * 3^j, multiplying two of these together is exactly
-    // multiplying two polynomials in the variable 3 (or long
-    // multiplication in base 3, if you allow a "digit" n_j to be any
-    // magnitude rather than just 0..2) -- the product's column j1+j2 gets
-    // n_j1 * n_j2 added in, for every pair of columns (j1, j2). Building
-    // the whole result in a fresh map first (rather than writing into
-    // values_ as the pairs are found) is what makes this safe even when
-    // `other` is `*this` (squaring): `otherTotals` is captured as an
-    // independent snapshot before values_ is touched at all.
+    // Convolves this's column totals with other's -- multiplying two
+    // polynomials in the variable 3: the product's column j1+j2 gets
+    // n_j1 * n_j2 added in, for every pair of columns. Building the whole
+    // result in a fresh map first is what makes this safe even when
+    // `other` is `*this` (squaring).
     void multiplyInPlace(const RepresentationBase& other) override {
         std::map<int, double> otherTotals;
         if (const auto* rowValues = dynamic_cast<const RowValuesRepresentation*>(&other)) {
@@ -212,10 +190,9 @@ public:
     }
 
 private:
-    // Adds delta onto column j's total, dropping the entry if that brings
-    // it back to exactly zero (keeping the invariant that values_ only
-    // ever holds nonzero columns). This one addition is the "scalar_
-    // operations" primitive that set() and addInPlace() both go through.
+    // Adds delta onto column j's total, dropping the entry if it returns
+    // to exactly zero. The "scalar_operations" primitive set()/
+    // addInPlace() both go through.
     void accumulate(int j, double delta) {
         if (metrics_) metrics_->increment("scalar_operations");
         double updated = values_[j] + delta;

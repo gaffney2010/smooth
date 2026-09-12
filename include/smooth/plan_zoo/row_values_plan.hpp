@@ -10,14 +10,9 @@
 namespace smooth {
 
 // A Plan whose blueprint wraps every leaf in Ensure(RowValues) -- so every
-// scalar()/number()/numberVia() leaf ends up as a RowValuesRepresentation,
-// and combine() (inherited, unchanged, from Plan) runs its own
-// addInPlace()/multiplyInPlace() (direct column-total accumulation for
-// addition, and convolution -- long multiplication in base 3 -- for
-// multiplication, see representation_zoo/row_values_representation.hpp). buildBlueprint() is
-// the entire strategy -- see plan.hpp's wrapLeavesWithEnsure() for what it
-// does. Everything else (building, plan(), calculate(), combine(),
-// Metrics, error-handling) is inherited as-is.
+// leaf ends up a RowValuesRepresentation, and combine() runs its
+// addInPlace()/multiplyInPlace() (direct column-total accumulation, and
+// base-3 convolution, respectively).
 class RowValuesPlan : public Plan {
 public:
     // See SparsePlan's constructor for why this is spelled out explicitly

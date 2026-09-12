@@ -16,43 +16,30 @@
 namespace smooth {
 
 // So long as there exist two distinct set bits (i1, j1) and (i2, j2) with
-// i2 >= i1 and j2 >= j1 -- i.e. (i2, j2) weakly dominates (i1, j1) in both
-// coordinates -- combines them:
-//
-// - i1 == i2 (same row): SpreadTransformation(j2 - j1) anchored at
-//   (i1, j1) -- the two bits are n columns apart in one row.
-// - j1 == j2 (same column): RowSpreadTransformation(i2 - i1) anchored at
-//   (i1, j1) -- the row-axis counterpart, n rows apart in one column.
-// - otherwise (a genuine diagonal pair): CornerSplitTransformation
-//   anchored at (i2, j2) -- pulls the dominating bit one step toward
-//   (i1, j1) without touching (i1, j1) itself.
+// i2 >= i1 and j2 >= j1 (i.e. (i2, j2) weakly dominates (i1, j1)),
+// combines them: SpreadTransformation(j2-j1) anchored at (i1,j1) for a
+// same-row pair; RowSpreadTransformation(i2-i1) anchored at (i1,j1) for a
+// same-column pair; otherwise CornerSplitTransformation anchored at
+// (i2,j2), pulling the dominating bit one step toward (i1,j1).
 //
 // The fixed point -- no such pair exists -- is exactly an antichain under
-// the product order: sorted by row, columns are strictly decreasing (at
-// most one bit per row, at most one per column). Every 3-smooth number has
-// such a "staircase" form.
+// the product order. Every 3-smooth number has such a "staircase" form.
 //
 // Termination isn't free: naively picking *any* dominating pair each step
-// can run for tens of thousands of steps without converging (verified
-// empirically before writing this). What works reliably -- and is what
-// run() below does -- is always picking the *first* dominating pair found
-// while scanning the current set bits in sorted (i, j) order: for the
-// smallest bit that has any dominating partner at all, its smallest
-// (lexicographic) valid partner. Every application strictly reduces
-// *something* about this canonical scan order, in practice converging in
+// can run for tens of thousands of steps without converging. What works
+// reliably is always picking the *first* dominating pair found while
+// scanning set bits in sorted (i, j) order -- in practice converging in
 // well under a hundred steps even for a few dozen starting bits.
 //
-// Since candidate pairs aren't confined to a small local neighborhood the
-// way a single Transformation's own affectedAnchors() are,
+// Since candidate pairs aren't confined to a small local neighborhood,
 // TransformationReduction's worklist approach doesn't apply here -- this
-// rescans all of `rep`'s set bits from scratch after every application,
-// unlike every other reduction in this library.
+// rescans all of `rep`'s set bits from scratch after every application.
 //
 // CornerSplitTransformation only ever fires here on a bit that strictly
-// dominates some other existing (non-negative) bit in both coordinates,
-// so its anchor is always at row >= 1 and column >= 1 -- its outputs can
-// never go negative. Starting from an all-non-negative representation,
-// this reduction never needs a fractional-capable one.
+// dominates some other non-negative bit, so its anchor is always at row
+// >= 1 and column >= 1 -- its outputs can never go negative. Starting
+// from an all-non-negative representation, this never needs a
+// fractional-capable one.
 class StaircaseReduction : public Reduction {
 public:
     const std::string& name() const override {

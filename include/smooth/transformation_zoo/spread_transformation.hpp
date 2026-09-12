@@ -25,23 +25,19 @@ namespace smooth {
 // (i, j) and (i, j+1) both feed straight into (i+2, j).
 //
 // n must be at least 1 -- the constructor throws std::invalid_argument
-// otherwise, since n = 0 would make both inputs the same cell (needing it
-// to independently hold two 1s at once, which a bit grid can't represent)
-// and a negative n would put the second input at a column *before* j,
-// breaking the staircase's ascending order.
+// otherwise, since n = 0 would need one cell to independently hold two 1s
+// at once, and a negative n would break the staircase's ascending order.
 class SpreadTransformation : public OffsetTransformation {
 public:
     explicit SpreadTransformation(int n) : OffsetTransformation(inputOffsets(n), outputOffsets(n)), n_(n) {}
 
     // n sequential SplitTransformation applications, walking the far
-    // input at (i, j+n) down one column at a time -- the k-th split turns
+    // input at (i, j+n) down one column at a time: the k-th split turns
     // whatever landed at (i, j+k) into (i, j+k-1) and (i+1, j+k-1), so
-    // after n of them the near copy has reached (i+2, j) [two Splits'
-    // worth of carrying at column j] and each intermediate step left
-    // behind exactly one bit at (i+1, j+k), 1 <= k <= n-1: precisely
-    // SpreadTransformation's own output shape. Pure Family A (Merge/
-    // Split) -- no CornerSplitTransformation needed here, unlike
-    // RowSpreadTransformation's atomize() (row_spread_transformation.hpp).
+    // after n of them the near copy has reached (i+2, j) and each
+    // intermediate step left one bit at (i+1, j+k). Pure Family A -- no
+    // CornerSplitTransformation needed here, unlike
+    // RowSpreadTransformation's atomize().
     std::vector<AtomApplication> atomize(int i, int j) const override {
         std::vector<AtomApplication> atoms;
         atoms.reserve(n_);
