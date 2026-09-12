@@ -74,6 +74,12 @@ public:
             std::sort(rows.begin(), rows.end());
             int i1 = rows[0];
             int i2 = rows[1];
+            // Not viaAtoms=true: RowSpreadTransformation::atomize()'s
+            // hardcoded intermediate steps aren't safe against arbitrary
+            // background bits in its scratch columns (j-1, j-2) -- confirmed
+            // to silently break value preservation when one collides. See
+            // its own class comment; needs a fix there before this can
+            // atomize too.
             RowSpreadTransformation(i2 - i1).applyAndReportLandings(rep, i1, offending->first);
             if (metrics) metrics->increment("transformations_applied");
         }

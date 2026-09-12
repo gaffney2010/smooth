@@ -105,6 +105,7 @@ public:
     }
 
     void setMetricsPtr(std::shared_ptr<Metrics> metrics) override { metrics_ = std::move(metrics); }
+    std::shared_ptr<Metrics> metricsPtr() const override { return metrics_; }
 
     // Defers to the shared helper, same reasoning as setColumnValue().
     void addInPlace(const RepresentationBase& other) override { addBitsWithCarry(*this, other, metrics_); }

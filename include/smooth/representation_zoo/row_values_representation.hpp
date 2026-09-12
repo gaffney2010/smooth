@@ -130,6 +130,7 @@ public:
     }
 
     void setMetricsPtr(std::shared_ptr<Metrics> metrics) override { metrics_ = std::move(metrics); }
+    std::shared_ptr<Metrics> metricsPtr() const override { return metrics_; }
 
     // Doesn't need explicit carry handling: each contribution just adds
     // onto its column's running total, and ordinary floating-point

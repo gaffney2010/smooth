@@ -42,6 +42,17 @@ namespace smooth {
 //
 // canApply() isn't specialized beyond the Scalar check -- get() is
 // already just as cheap for RowValues as anywhere else.
+//
+// Every successful application -- whichever of the three dispatch paths
+// above actually ran -- increments "atomic_transforms" on `rep`'s own
+// Metrics (RepresentationBase::metricsPtr()), if it has one. This is the
+// one place that counter is incremented: whether an atom got here
+// directly (a bare MergeTransformation/SplitTransformation/
+// CornerSplitTransformation application, e.g. from MergeReduction or
+// BinaryFormReduction) or via some composite OffsetTransformation's own
+// atomize() decomposition (OffsetTransformation::applyAndReportLandings()'s
+// `viaAtoms` overload, just below), it's still exactly one atom applying
+// itself once, so one counter increment either way.
 class AtomicTransformation : public OffsetTransformation {
 public:
     using OffsetTransformation::OffsetTransformation;
@@ -56,6 +67,7 @@ public:
 
     std::vector<std::pair<int, int>> applyAndReportLandings(RepresentationBase& rep, int i, int j) const override {
         requireNotScalar(rep);
+        if (auto metrics = rep.metricsPtr()) metrics->increment("atomic_transforms");
         if (auto* rowValues = dynamic_cast<RowValuesRepresentation*>(&rep)) {
             return applyRowValuesAndReportLandings(*rowValues, i, j);
         }

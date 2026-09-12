@@ -1281,6 +1281,113 @@ void testAtomRepresentationDispatch() {
 }
 
 // ---------------------------------------------------------------------
+// "atomic_transforms": counted in exactly one place --
+// AtomicTransformation::applyAndReportLandings() (atomic_transformation.
+// hpp) -- so every successful application of one of the two generating
+// families (Merge/Split/CornerSplit) counts, however it was reached,
+// while anything that isn't one of those three never does.
+// ---------------------------------------------------------------------
+void testAtomicTransformsMetric() {
+    // A direct atom application against Sparse, through a
+    // RepresentationBase& (needed to reach the specialized override
+    // rather than OffsetTransformation's own template path -- see
+    // AtomicTransformation's class comment).
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SparseRepresentation concrete(/*allow_fractional=*/true, metrics);
+        concrete.set(0, 0, true);
+        concrete.set(1, 0, true);
+        RepresentationBase& rep = concrete;
+        MergeTransformation().applyAndReportLandings(rep, 0, 0);
+        check(metrics->get("atomic_transforms") == 1, "a direct MergeTransformation application counts once");
+    }
+
+    // All three atoms count -- Merge, Split, and CornerSplit alike.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SparseRepresentation concrete(/*allow_fractional=*/true, metrics);
+        concrete.set(0, 1, true);  // 3, splittable at (0, 0)
+        RepresentationBase& rep = concrete;
+        SplitTransformation().applyAndReportLandings(rep, 0, 0);
+        check(metrics->get("atomic_transforms") == 1, "a direct SplitTransformation application counts once");
+    }
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SparseRepresentation concrete(/*allow_fractional=*/true, metrics);
+        concrete.set(1, 1, true);  // 6, corner-splittable at (1, 1)
+        RepresentationBase& rep = concrete;
+        CornerSplitTransformation().applyAndReportLandings(rep, 1, 1);
+        check(metrics->get("atomic_transforms") == 1, "a direct CornerSplitTransformation application counts once");
+    }
+
+    // Against ScalarRepresentation, every atom throws before doing
+    // anything -- so the counter never moves.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        ScalarRepresentation concrete(/*allow_fractional=*/true, metrics);
+        concrete.setColumnValue(0, 3.0);
+        RepresentationBase& rep = concrete;
+        checkThrows([&] { MergeTransformation().applyAndReportLandings(rep, 0, 0); },
+                    "MergeTransformation on ScalarRepresentation still throws with atomic_transforms wired up");
+        check(metrics->get("atomic_transforms") == 0,
+              "...and, since it threw, never counted as an atomic transform");
+    }
+
+    // A composite OffsetTransformation (not itself an atom) applied
+    // directly doesn't count at all -- only when it's applied *through*
+    // its own atomize() decomposition (applyTransformation(..., atomize=
+    // true)) does each underlying atom count, once per atom.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SmoothInteger n(metrics);
+        n.set(0, 0);   // 1
+        n.set(6, 0);   // 64
+        n.applyTransformation(RowSpreadTransformation(6), 0, 0, /*atomize=*/false);
+        checkNear(n.value(), 65.0, "RowSpreadTransformation(6) applied directly still preserves value(): 65");
+        check(metrics->get("atomic_transforms") == 0,
+              "RowSpreadTransformation isn't itself an atom, so applying it directly counts nothing");
+    }
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SmoothInteger n(metrics);
+        n.set(0, 0);
+        n.set(6, 0);
+        RowSpreadTransformation rowSpread(6);
+        std::size_t atomCount = rowSpread.atomize(0, 0).size();
+        n.applyTransformation(rowSpread, 0, 0, /*atomize=*/true);
+        checkNear(n.value(), 65.0, "RowSpreadTransformation(6) applied via atomize() still preserves value(): 65");
+        check(static_cast<std::size_t>(metrics->get("atomic_transforms")) == atomCount,
+              "...but applied via atomize(), one atomic_transforms increment lands per atom in the decomposition");
+    }
+
+    // TernaryCarryTransformation implements Transformation directly (not
+    // through AtomicTransformation), so TernaryCarryReduction does real
+    // work -- transformations_applied moves -- without ever touching
+    // atomic_transforms.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        RowValuesRepresentation rep(/*allow_fractional=*/false, metrics);
+        rep.setColumnValue(0, 9.0);
+        TernaryCarryReduction().run(rep, metrics);
+        check(metrics->get("transformations_applied") > 0 && metrics->get("atomic_transforms") == 0,
+              "TernaryCarryReduction does real, counted work without ever counting an atomic transform");
+    }
+
+    // MergeReduction, by contrast, is nothing but atom applications --
+    // every transformations_applied step is a MergeTransformation
+    // application, so the two counters match exactly.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SparseRepresentation rep(/*allow_fractional=*/true, metrics);
+        rep.setColumnValue(0, 15.0);
+        MergeReduction().run(rep, metrics);
+        check(metrics->get("atomic_transforms") == metrics->get("transformations_applied") &&
+                  metrics->get("atomic_transforms") > 0,
+              "MergeReduction's steps are all atom applications, so atomic_transforms == transformations_applied");
+    }
+}
+
+// ---------------------------------------------------------------------
 // TransformationReduction: greedily applies a family of
 // Transformations across an entire representation until none of them can
 // fire anywhere anymore, using a worklist seeded from the representation's
@@ -1872,7 +1979,8 @@ void testMetrics() {
                   "bit_iterations = 24\n"
                   "convert_dynamic_to_row_values = 1\n"
                   "convert_dynamic_to_sparse = 1\n"
-                  "scalar_operations = 2\n",
+                  "scalar_operations = 2\n"
+                  "total_converts = 2\n",
               "each representation conversion is counted once, redundant prints don't recount");
 
         n.set(2, 2);              // invalidates sparse/row_values again
@@ -1883,7 +1991,8 @@ void testMetrics() {
                   "bit_iterations = 51\n"
                   "convert_dynamic_to_row_values = 1\n"
                   "convert_dynamic_to_sparse = 2\n"
-                  "scalar_operations = 2\n",
+                  "scalar_operations = 2\n"
+                  "total_converts = 3\n",
               "re-converting after invalidation increments the counter again");
     }
 
@@ -2076,6 +2185,64 @@ void testInstrumentationCounters() {
 }
 
 // ---------------------------------------------------------------------
+// "total_converts": the aggregate of every convert_<from>_to_<to>
+// (SmoothNumberBase::ensure(), smooth_number_base.hpp) and every
+// convert_to_<name()> that corresponds to a genuine bit-replay conversion
+// rather than just an Ensure step running (Plan::compileBlueprintNode(),
+// plan.hpp) -- one increment per actual conversion, regardless of which
+// of the two mechanisms performed it, and never double-counted when a
+// Plan and a numberVia()'d number share one Metrics.
+// ---------------------------------------------------------------------
+void testTotalConvertsMetric() {
+    // SmoothNumberBase::ensure(): matches the sum of the specific
+    // convert_<from>_to_<to> counters it also produces.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SmoothInteger n(metrics);
+        n.set(1, 0);
+        n.set(0, 2);
+        std::ostringstream discard;
+        n.printSparse(discard);     // dynamic -> sparse: 1 conversion
+        n.printRowValues(discard);  // dynamic -> row_values: 1 conversion
+        n.printSparse(discard);     // already valid: no new conversion
+        check(metrics->get("total_converts") == 2,
+              "total_converts matches the 2 genuine conversions (a redundant third print doesn't recount)");
+    }
+
+    // Plan::compileBlueprintNode(): a scalar()-only expression has no
+    // SmoothNumberBase of its own, so every Ensure step here is where
+    // total_converts gets counted -- one per leaf.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SparsePlan(metrics).scalar(3).times().left().scalar(4).plus().scalar(2).right().calculate();
+        check(metrics->get("total_converts") == 3,
+              "total_converts counts each of a scalar-only SparsePlan expression's 3 Ensure(sparse) leaves");
+    }
+
+    // numberVia(): the real conversion happens inside the fed-in number's
+    // own ensure() (via representationAs()), so total_converts is bumped
+    // there -- once per number actually converted, not once per Ensure
+    // node the Plan itself compiles (which would double it, since
+    // convert_to_sparse also fires once per leaf here).
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SparsePlan p(metrics);
+        SmoothInteger a, b, c;
+        a.setMetricsPtr(metrics);
+        b.setMetricsPtr(metrics);
+        c.setMetricsPtr(metrics);
+        a.setValue(3LL);
+        b.setValue(4LL);
+        c.setValue(2LL);
+        checkNear(p.numberVia(a).times().left().numberVia(b).plus().numberVia(c).right().calculate(), 18.0,
+                  "SparsePlan via numberVia(): 3 * (4 + 2) = 18");
+        check(metrics->get("convert_to_sparse") == 3, "convert_to_sparse still counts all 3 Ensure(sparse) leaves");
+        check(metrics->get("total_converts") == 3,
+              "...but total_converts counts the 3 real numberVia() conversions once each, not twice");
+    }
+}
+
+// ---------------------------------------------------------------------
 // Plan: the fluent arithmetic expression builder. These tests check the
 // tree-building mechanics (left()/right() as an open/close bracket pair,
 // default left-associative chaining without them), number()'s use of
@@ -2195,7 +2362,7 @@ void testPlan() {
             "DefaultPlan(metrics) still computes correctly");
         std::ostringstream out;
         metrics->print(out);
-        check(out.str() == "add = 1\nconvert_to_scalar = 3\nmultiply = 1\nscalar_operations = 6\n",
+        check(out.str() == "add = 1\nconvert_to_scalar = 3\nmultiply = 1\nscalar_operations = 6\ntotal_converts = 3\n",
               "DefaultPlan(metrics) increments one counter per compiled step, plus ScalarRepresentation's own "
               "scalar_operations: each Ensure(scalar) step walks its leaf's bits into a fresh Scalar rep (one "
               "set() per bit -- 2 for 3's two bits, 1 each for 4 and 2's single bit) and combine()'s add/multiply "
@@ -2211,7 +2378,7 @@ void testPlan() {
         p.plan(discard);
         std::ostringstream out;
         metrics->print(out);
-        check(out.str() == "add = 1\nconvert_to_scalar = 2\nscalar_operations = 3\n",
+        check(out.str() == "add = 1\nconvert_to_scalar = 2\nscalar_operations = 3\ntotal_converts = 2\n",
               "DefaultPlan compiling only happens once: calculate() then plan() doesn't recount");
     }
     {
@@ -2232,7 +2399,8 @@ void testPlan() {
                   "bit_iterations = 5\n"
                   "convert_dynamic_to_sparse = 1\n"
                   "convert_to_scalar = 2\n"
-                  "scalar_operations = 3\n",
+                  "scalar_operations = 3\n"
+                  "total_converts = 3\n",
               "a Plan and a SmoothNumber sharing one Metrics tally onto the same counters");
     }
 }
@@ -2362,10 +2530,13 @@ void testPlanZoo() {
     // forEachSet()/set(), from convertLeaf() -- see plan.hpp) and combining
     // two single-bit leaves (1 + 2), so the exact counters differ per
     // variant.
-    checkPlanZooVariant<SparsePlan>("sparse", "sparse", "add = 1\nbit_iterations = 3\nconvert_to_sparse = 2\n");
-    checkPlanZooVariant<MatrixPlan>("matrix", "dynamic", "add = 1\nbit_iterations = 5\nconvert_to_matrix = 2\n");
-    checkPlanZooVariant<RowValuesPlan>(
-        "row_values", "row_values", "add = 1\nbit_iterations = 1\nconvert_to_row_values = 2\nscalar_operations = 3\n");
+    checkPlanZooVariant<SparsePlan>("sparse", "sparse",
+                                     "add = 1\nbit_iterations = 3\nconvert_to_sparse = 2\ntotal_converts = 2\n");
+    checkPlanZooVariant<MatrixPlan>("matrix", "dynamic",
+                                     "add = 1\nbit_iterations = 5\nconvert_to_matrix = 2\ntotal_converts = 2\n");
+    checkPlanZooVariant<RowValuesPlan>("row_values", "row_values",
+                                        "add = 1\nbit_iterations = 1\nconvert_to_row_values = 2\n"
+                                        "scalar_operations = 3\ntotal_converts = 2\n");
 
     // DefaultPlan itself is unaffected by any of this.
     check(DefaultPlan().name() == "scalar", "DefaultPlan's name() is still \"scalar\"");
@@ -2850,6 +3021,7 @@ int main() {
     testTransformation();
     testAtomize();
     testAtomRepresentationDispatch();
+    testAtomicTransformsMetric();
     testTransformationReduction();
     testBinaryFormReduction();
     testTernaryCarryTransformation();
@@ -2858,6 +3030,7 @@ int main() {
     testStaircaseReduction();
     testMetrics();
     testInstrumentationCounters();
+    testTotalConvertsMetric();
     testPlan();
     testPlanZoo();
     testMergingSparsePlan();

@@ -473,7 +473,11 @@ private:
                 if (node.child->kind == Node::Kind::NumberLeaf) {
                     // A genuine conversion through the number's own cache
                     // (representationAs()); re-pointed at this Plan's own
-                    // Metrics before anything downstream touches it.
+                    // Metrics before anything downstream touches it. Its
+                    // own ensure() (smooth_number_base.hpp) already counts
+                    // "total_converts" itself -- against whichever Metrics
+                    // that number carries, shared with this Plan's or not
+                    // -- so it isn't repeated here too.
                     std::unique_ptr<RepresentationBase> rep =
                         node.child->numberSource->representationAs(node.ensureTarget);
                     rep->setMetricsPtr(metrics_);
@@ -484,8 +488,13 @@ private:
                     steps_.push_back(std::move(step));
                     return steps_.size() - 1;
                 }
+                // A scalar()/compound leaf has no SmoothNumberBase of its
+                // own to have already counted this, so -- unlike the
+                // NumberLeaf branch above -- this is where "total_converts"
+                // gets counted for it.
                 std::size_t childStep = compileBlueprintNode(*node.child);
                 std::unique_ptr<RepresentationBase> rep = makeEmptyRepresentation(node.ensureTarget, metrics_);
+                if (metrics_) metrics_->increment("total_converts");
                 steps_[childStep].rep->forEachSet([&rep](int i, int j) { rep->set(i, j, true); });
                 Step step;
                 step.kind = Step::Kind::Ensure;

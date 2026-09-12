@@ -89,6 +89,7 @@ public:
     }
 
     void setMetricsPtr(std::shared_ptr<Metrics> metrics) override { metrics_ = std::move(metrics); }
+    std::shared_ptr<Metrics> metricsPtr() const override { return metrics_; }
 
     // When `other` is also Scalar, a direct addition -- no bit
     // decomposition needed. Otherwise falls back to reading other's bits

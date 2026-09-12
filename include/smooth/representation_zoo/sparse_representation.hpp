@@ -75,6 +75,7 @@ public:
     }
 
     void setMetricsPtr(std::shared_ptr<Metrics> metrics) override { metrics_ = std::move(metrics); }
+    std::shared_ptr<Metrics> metricsPtr() const override { return metrics_; }
 
     // No more direct way to add than walking other's bits and carrying, so
     // this defers to the shared helper.

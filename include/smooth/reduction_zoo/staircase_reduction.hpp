@@ -81,12 +81,21 @@ public:
 
             const auto& [i1, j1] = first;
             const auto& [i2, j2] = second;
+            // Not viaAtoms=true for Spread/RowSpread: their atomize()'s
+            // hardcoded intermediate steps aren't safe against arbitrary
+            // background bits sitting in the scratch cells that script
+            // walks through -- confirmed to silently break value
+            // preservation when one collides. See each one's own class
+            // comment; needs a fix there before either can atomize here.
+            // CornerSplitTransformation has no such scratch (it's already
+            // one of the two atom families), so atomizing it is a safe
+            // no-op.
             if (i1 == i2) {
                 SpreadTransformation(j2 - j1).applyAndReportLandings(rep, i1, j1);
             } else if (j1 == j2) {
                 RowSpreadTransformation(i2 - i1).applyAndReportLandings(rep, i1, j1);
             } else {
-                CornerSplitTransformation().applyAndReportLandings(rep, i2, j2);
+                CornerSplitTransformation().applyAndReportLandings(rep, i2, j2, /*viaAtoms=*/true);
             }
             if (metrics) metrics->increment("transformations_applied");
         }

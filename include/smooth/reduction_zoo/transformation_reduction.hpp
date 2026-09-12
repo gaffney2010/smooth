@@ -109,13 +109,40 @@ public:
             if (!transformation.canApply(rep, i, j)) continue;  // stale -- an earlier step consumed an input
 
             if (metrics) metrics->increment("transformations_applied");
-            for (const auto& landing : transformation.applyAndReportLandings(rep, i, j)) {
+            for (const auto& landing : applyAtomized(transformation, rep, i, j)) {
                 enqueueCandidatesAt(landing.first, landing.second);
             }
         }
     }
 
 private:
+    // Always applies via the atomized path (OffsetTransformation's
+    // `viaAtoms` overload) when `t` is one, so a composite transformation
+    // always dispatches through whichever representation-specialized atoms
+    // it decomposes into rather than its own generic direct logic.
+    // TernaryCarryTransformation -- the one Transformation this library has
+    // that isn't an OffsetTransformation -- has no atomize() to speak of,
+    // so it just runs through the ordinary virtual call.
+    //
+    // Only safe for transformations whose atomize() is genuinely
+    // background-independent -- true of every atom (Merge/Split/
+    // CornerSplit, whose atomize() is just themselves) but NOT of
+    // SpreadTransformation/RowSpreadTransformation: their hardcoded
+    // intermediate steps assume specific scratch cells are exactly as
+    // their derivation expects, which arbitrary background bits can
+    // violate (confirmed to silently break value preservation -- see
+    // StaircaseReduction's own comment). Every transformation any preset
+    // in this file currently uses is one of the safe atoms, so this always
+    // atomizing is fine today; don't add Spread/RowSpread to a
+    // TransformationReduction without fixing their atomize() first.
+    static std::vector<std::pair<int, int>> applyAtomized(const Transformation& t, RepresentationBase& rep, int i,
+                                                            int j) {
+        if (const auto* offset = dynamic_cast<const OffsetTransformation*>(&t)) {
+            return offset->applyAndReportLandings(rep, i, j, /*viaAtoms=*/true);
+        }
+        return t.applyAndReportLandings(rep, i, j);
+    }
+
     std::vector<const Transformation*> transformations_;
     std::string name_;
     std::function<bool(int, int)> allowed_;

@@ -333,10 +333,16 @@ private:
     // Brings `target` up to date by enumerating the canonical
     // representation's bits and replaying each into `target`, unless
     // `target` is already valid (canonical is always considered up to
-    // date).
+    // date). Every actual conversion -- through here, whichever specific
+    // convert_<from>_to_<to> counter it lands under -- also bumps the one
+    // aggregate "total_converts" counter (Plan::compileBlueprintNode()'s
+    // Ensure case, plan.hpp, does the same for the conversions it performs
+    // directly, so the two together cover every conversion this library
+    // ever does).
     void ensure(Representation target) {
         if (target == canonical_ || isValid(target)) return;
         if (metrics_) {
+            metrics_->increment("total_converts");
             metrics_->increment(std::string("convert_") + representationName(canonical_) + "_to_" +
                                  representationName(target));
         }

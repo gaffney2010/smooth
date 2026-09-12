@@ -66,6 +66,18 @@ public:
     // Plan's own instead, so its counters land in the same place.
     virtual void setMetricsPtr(std::shared_ptr<Metrics> metrics) = 0;
 
+    // The read-only counterpart to setMetricsPtr() above, or nullptr if
+    // none was ever given. Exposed so code that only has a
+    // RepresentationBase& to work with -- not the concrete number or Plan
+    // that attached the Metrics in the first place -- can still tally
+    // against it. AtomicTransformation::applyAndReportLandings()
+    // (atomic_transformation.hpp) is the one caller today: every atomic
+    // transform funnels through there regardless of which representation
+    // or reduction triggered it, so that's where "atomic_transforms" is
+    // counted, reading the Metrics straight off `rep` rather than needing
+    // one threaded through the whole Transformation interface.
+    virtual std::shared_ptr<Metrics> metricsPtr() const = 0;
+
     // Adds `other`'s bits into this representation in place. Adding a
     // second 1 into an occupied (i, j) is the same as moving that bit up
     // to (i+1, j) (2 * 2^i * 3^j = 2^(i+1) * 3^j), so carries only ever

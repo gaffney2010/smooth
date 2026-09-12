@@ -207,7 +207,19 @@ std::vector<Profile> allProfiles() {
 // convert_<representation>_to_<representation> counters belong to a
 // fed-in SmoothNumberBase itself, always starting from Dynamic -- so
 // convert_dynamic_to_<X> is reachable for every X except Dynamic (which
-// MatrixPlan targets, needing no conversion at all).
+// MatrixPlan targets, needing no conversion at all). total_converts is
+// the aggregate of every one of those (smooth_number_base.hpp/plan.hpp).
+//
+// transformations_applied/atomic_transforms are 0 for every plan kind
+// that never runs a Reduce step (scalar/sparse/matrix/row_values below);
+// the reduction-augmented strategies (merging_sparse and friends) are the
+// ones that actually drive them, always via the atomized apply path (see
+// TransformationReduction::applyAtomized() and the direct
+// applyAndReportLandings(..., /*viaAtoms=*/true) calls in
+// staircase_reduction.hpp/ternary_form_reduction.hpp) so every reduction
+// here always dispatches through whichever representation-specialized
+// atoms a transformation decomposes into, never its own generic direct
+// logic.
 const std::vector<std::string>& counterColumns() {
     static const std::vector<std::string> columns = {
         "convert_to_scalar",
@@ -217,12 +229,15 @@ const std::vector<std::string>& counterColumns() {
         "convert_dynamic_to_sparse",
         "convert_dynamic_to_row_values",
         "convert_dynamic_to_scalar",
+        "total_converts",
         "add",
         "multiply",
         "carries",
         "bit_operations",
         "scalar_operations",
         "bit_iterations",
+        "transformations_applied",
+        "atomic_transforms",
     };
     return columns;
 }
@@ -239,6 +254,14 @@ const std::vector<PlanKind>& planKinds() {
         {"matrix", [](std::shared_ptr<Metrics> m) { return std::make_unique<MatrixPlan>(std::move(m)); }},
         {"row_values",
          [](std::shared_ptr<Metrics> m) { return std::make_unique<RowValuesPlan>(std::move(m)); }},
+        {"merging_sparse",
+         [](std::shared_ptr<Metrics> m) { return std::make_unique<MergingSparsePlan>(std::move(m)); }},
+        {"size_adaptive_sparse",
+         [](std::shared_ptr<Metrics> m) { return std::make_unique<SizeAdaptiveSparsePlan>(std::move(m)); }},
+        {"ternary_form_sparse",
+         [](std::shared_ptr<Metrics> m) { return std::make_unique<TernaryFormSparsePlan>(std::move(m)); }},
+        {"representation_aware",
+         [](std::shared_ptr<Metrics> m) { return std::make_unique<RepresentationAwarePlan>(std::move(m)); }},
     };
     return kinds;
 }
