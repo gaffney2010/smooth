@@ -616,10 +616,11 @@ family of `Transformation`s until none can fire anymore), directly; or,
 for `MergeReduction`/`BinaryFormReduction`/`TernaryCarryReduction`, by being a
 subclass of *that* — each just fixes its own `Transformation`(s), name,
 and bound as constructor arguments, adding no behavior of its own.
-`TernaryFormReduction` is the exception: it doesn't run a single search at
-all, but two in sequence (see its own section below), so it implements
-`Reduction` directly instead, composing `BinaryFormReduction` and
-`TernaryCarryReduction`.
+`TernaryFormReduction` and `StaircaseReduction` are the exceptions: each
+needs its own bespoke search (which specific transformation to apply
+next, and at which anchor, depends on the current state in a way a fixed
+`Transformation` list can't express), so both implement `Reduction`
+directly instead (see their own sections below).
 
 This is what lets `Plan`'s `Reduce` blueprint node (see "Plan" below)
 hold a single `const Reduction*`, rather than being hardwired to
@@ -645,9 +646,9 @@ the generic mechanism, not a preset.
 `Reduction` this library has: `TransformationReduction`, the
 generic engine, alongside the named presets built from it
 (`MergeReduction`, `BinaryFormReduction`, `TernaryCarryReduction`) or
-implementing `Reduction` directly (`TernaryFormReduction`, composing more
-than one together; `StaircaseReduction`, which needs its own bespoke
-search — see its own section below). `TransformationReduction`
+implementing `Reduction` directly (`TernaryFormReduction` and
+`StaircaseReduction`, each of which needs its own bespoke search — see
+their own sections below). `TransformationReduction`
 lives here, rather than at the top level alongside `Reduction`,
 precisely because nothing outside this folder ever needs to name it
 directly — `Plan` only ever holds the `Reduction` a strategy
@@ -878,36 +879,56 @@ candidate), so there's nothing external left to bound.
 
 smooth::SmoothInteger n;
 n.setValue(13LL);  // 13 = 2^2 + 3^2, not itself a single term
-auto rep = n.representationAs(smooth::SmoothInteger::Representation::RowValues);
+auto rep = n.representationAs(smooth::SmoothInteger::Representation::Sparse);
 
 smooth::TernaryFormReduction toTernary;
 toTernary.run(*rep);
-rep->print();  // n[0] = 4, n[2] = 1  -- 13 = 4*3^0 + 1*3^2
+rep->print();  // {(2, 0), (0, 2)}  -- 13 = 4*3^0 + 1*3^2
 ```
 
 `TernaryFormReduction` (`include/smooth/reduction_zoo/ternary_form_reduction.hpp`)
-reduces a number to a form where every nonzero column holds exactly one
-bit — i.e. every nonzero `n_j` is a single power of two, never an
-arbitrary magnitude. Two phases, run in sequence: first `BinaryFormReduction`
-(collapsing whatever column layout the number started with down into
-column 0's `n_0`, so the final result only ever depends on the number's
-value, never on how it got there), then `TernaryCarryReduction` (working
-column by column from there, exactly as described above). Since it runs
-two separate fixed-point searches rather than one, it doesn't fit the
-"just configure `TransformationReduction`" mold `MergeReduction`/
-`BinaryFormReduction`/`TernaryCarryReduction` do — it implements
-`Reduction` directly, holding a `BinaryFormReduction` and a
-`TernaryCarryReduction` as members and running them one after the other.
+reduces a number to a form where every column that has anything in it
+holds exactly one bit — i.e. every column's own magnitude (summing `2^i`
+over its set rows) is a single power of two, never an arbitrary sum of
+several. So long as some column `j` has more than one set bit, it takes
+that column's two *smallest* set rows `i1 < i2` and applies
+`RowSpreadTransformation(i2 - i1)` (`transformation_zoo/row_spread_transformation.hpp`)
+anchored at `(i1, j)` — folding them into a single bit one column over,
+plus (whenever `i2 - i1 > 1`) a staircase filling the gap between them,
+all still within column `j` — then repeats, until no column has more than
+one bit left.
 
-`run()` also checks and throws `std::invalid_argument` immediately,
-unconditionally, if `rep` isn't a `RowValuesRepresentation` — rather than
-relying on `TernaryCarryTransformation`'s own (otherwise equivalent) check
-ever actually being reached. If `rep` happens to be empty,
-`BinaryFormReduction`'s reduction is a silent no-op regardless of
-representation kind, and `TernaryCarryReduction`'s worklist would never
-examine a single candidate — so without this upfront check, calling
-`run()` against the wrong kind of representation could easily fail to
-throw at all, purely by chance of what's currently in it.
+Always resolving the *smallest* currently-offending column first (breaking
+ties within it by taking its two smallest rows) is what makes this
+terminate: once a column is driven down to at most one bit, nothing this
+reduction ever does can put a bit into a column lower than the one it's
+currently working on (`RowSpreadTransformation`'s own outputs never land
+below its anchor's column), so a resolved column stays resolved, and the
+"smallest offending column" only ever moves up — and within a single
+column, each application strictly decreases that column's own magnitude
+(replacing `2^i1 + 2^i2` with the staircase sum `2^i2 - 2^(i1+1)` is a net
+change of `-3 * 2^i1`, since `i1 >= 0`), so it can't be worked on forever
+either. Like `StaircaseReduction` below, candidate columns aren't confined
+to a small local neighborhood, so it implements `Reduction` directly and
+rescans all of `rep`'s set bits from scratch after every application,
+rather than fitting the "just configure `TransformationReduction`" mold
+`MergeReduction`/`BinaryFormReduction`/`TernaryCarryReduction` do.
+
+Unlike the two-phase `BinaryFormReduction` + `TernaryCarryReduction`
+pipeline this replaces, this works entirely through a bit-level
+`OffsetTransformation`, so it runs against *any* `RepresentationBase` —
+Sparse, Dynamic, RowValues, Scalar — with no special-casing and no upfront
+representation check at all. It also needs no separate "collapse into
+column 0 first" phase — but that does mean the result can now depend on
+the *starting* bit layout, not just the value, in a way the old pipeline's
+result never did: `BinaryFormReduction` used to erase any "head start" a
+number came in with by always collapsing it into column 0 first, so the
+same value always began its column-by-column reduction from the exact
+same place. This reduction never does that collapse, so two different
+starting layouts for the same value — say, 11 as its ordinary binary form
+(bits at rows 0, 1, 3 of column 0) versus 11 built directly as
+`5*3^0 + 2*3^1` (bits at `(0,0)`, `(2,0)`, `(1,1)`) — can settle on two
+different (but equally valid, single-bit-per-column) results.
 
 ### StaircaseReduction
 
@@ -1451,14 +1472,15 @@ in `reduce(merge)` while `Add` nodes are left bare, and a side-by-side
 multiplication; `BinaryFormReduction` reducing 18 (a single bit at
 `(1, 2)`) down to its binary form (bits at `(1, 0)` and `(4, 0)`, i.e.
 `16 + 2`), with a `Metrics` attached to show how many splits it took; and
-`TernaryFormReduction` reducing 13 (not itself a single term) down to two
-single-bit columns, `n[0] = 4` and `n[2] = 1`, with a `Metrics` attached
-to show how many subtract-3/add-1 steps it took; and, directly,
+`TernaryFormReduction` reducing 13 (not itself a single term, run directly
+against a Sparse representation) down to two single-bit columns, `(2, 0)`
+and `(0, 2)`, with a `Metrics` attached to show how many
+`RowSpreadTransformation` steps it took; and, directly,
 `TernaryCarryTransformation`/`TernaryCarryReduction` reducing 9 (built
-straight into column 0 via `RowValuesRepresentation::setColumnValue()`,
-skipping `BinaryFormReduction` entirely) down to a single bit at column 2 --
-the same result `TernaryFormReduction` gets for 9 via its full two-phase
-pipeline; and `StaircaseReduction` combining two bits — `(1, 1)` and
+straight into column 0 via `RowValuesRepresentation::setColumnValue()`)
+down to a single bit at column 2 -- the same result `TernaryFormReduction`
+gets for 9, via column magnitudes directly instead of
+`RowSpreadTransformation`; and `StaircaseReduction` combining two bits — `(1, 1)` and
 `(4, 5)`, a genuine diagonal pair — into the five-bit antichain
 `{(1,6), (2,5), (3,4), (4,3), (7,1)}` over 13 steps, with a `Metrics`
 attached to show the count; and `RowSpreadTransformation(6).atomize(0, 0)`
@@ -1533,18 +1555,20 @@ already-single-bit column, 9 reducing to a single bit at column 2 with the
 exact `transformations_applied` count checked — the same result
 `TernaryFormReduction` gets for 9 — and that it throws
 `std::invalid_argument` for a non-`RowValuesRepresentation`, same as the
-transformation it's built from), `TernaryFormReduction` (a number already a
-single bit left untouched past `BinaryFormReduction`'s own no-op, 9 draining
-fully out of columns 0 and 1 to land as a single bit at column 2 —
-matching its own single-term sparse form exactly — with the exact
-`transformations_applied` count checked, 13 landing on two single-bit
-columns instead of collapsing to one, that the result only depends on the
-total value and not the starting column layout — built directly via
-`setColumnValue()` rather than `SmoothInteger::setValue()` — value
-preservation and the single-bit-per-column guarantee checked across a
-range of representative numbers, and that running it against anything
-other than a `RowValuesRepresentation` throws `std::invalid_argument`),
-`StaircaseReduction` (`name()`, a same-row pair resolving via
+transformation it's built from), `TernaryFormReduction` (`name()`, run
+directly against Sparse representations throughout: a number already a
+single bit needing zero steps, 9 draining down to a single bit at column 2
+— matching its own single-term sparse form exactly, with the exact
+`transformations_applied` count checked — 13 landing on two single-bit
+columns instead of collapsing to one, that the result can now depend on
+the *starting* bit layout and not just the value (11 built via
+`SmoothInteger::setValue()`, i.e. ordinary binary form, settling on a
+different single-bit-per-column split than the same 11 built directly as
+`5*3^0 + 2*3^1` — both checked exactly, along with their differing step
+counts), value preservation and the single-bit-per-column guarantee
+checked across a range of representative numbers, and that it runs — with
+the same result — directly against RowValues and Dynamic representations
+too, not just Sparse), `StaircaseReduction` (`name()`, a same-row pair resolving via
 `SpreadTransformation` in exactly one step, a same-column pair via
 `RowSpreadTransformation` — both a single-step case and a wider gap whose
 own multi-bit staircase needs further steps to settle — a diagonal pair

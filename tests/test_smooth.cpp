@@ -1388,47 +1388,57 @@ void testTernaryCarryReduction() {
 }
 
 // ---------------------------------------------------------------------
-// TernaryFormReduction: BinaryFormReduction followed by TernaryCarryReduction,
-// so every nonzero column of a RowValuesRepresentation ends up holding a
-// single power of two.
+// TernaryFormReduction: so long as some column has more than one set bit,
+// applies RowSpreadTransformation to that column's two smallest set rows,
+// folding them one column over (plus a same-column staircase filling the
+// gap between them, when there is one) -- until every column holds at
+// most one bit. Runs directly against any RepresentationBase, no
+// RowValuesRepresentation (or any other special-casing) required.
 // ---------------------------------------------------------------------
-void testTernaryFormReduction() {
-    auto isSingleBit = [](double n) {
-        long long w = static_cast<long long>(std::llround(n));
-        return (w & (w - 1)) == 0;  // true for 0 and every power of two
-    };
+namespace {
+bool isSingleBitPerColumn(RepresentationBase& rep) {
+    std::map<int, int> countByColumn;
+    rep.forEachSet([&countByColumn](int, int j) { ++countByColumn[j]; });
+    for (const auto& col : countByColumn) {
+        if (col.second > 1) return false;
+    }
+    return true;
+}
+}  // namespace
 
+void testTernaryFormReduction() {
     TernaryFormReduction reduction;
 
-    // Already a single bit, no factor of 3 to redistribute at all: a
-    // no-op past the initial (also no-op) BinaryFormReduction pass.
+    check(reduction.name() == "ternary_form", "TernaryFormReduction::name() is \"ternary_form\"");
+
+    // Already a single bit, no factor of 3 to redistribute at all: a no-op.
     {
         SmoothInteger n;
         n.setValue(4LL);
-        auto rep = n.representationAs(SmoothInteger::Representation::RowValues);
-        reduction.run(*rep);
-        auto* rv = dynamic_cast<RowValuesRepresentation*>(rep.get());
+        auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
+        auto metrics = std::make_shared<Metrics>();
+        reduction.run(*rep, metrics);
         checkNear(rep->value(), 4.0, "TernaryFormReduction::run() preserves value(): still 4");
-        check(rv->columnValue(0) == 4.0, "4 is already a single bit -- column 0 is untouched");
+        check(rep->get(2, 0), "4 is already a single bit -- (2, 0) is untouched");
+        check(metrics->get("transformations_applied") == 0, "4 needs zero steps -- already in ternary form");
     }
 
-    // 9 = 1001 binary (2 bits) at column 0: needs exactly 3 subtract-3
-    // steps to drain column 0 (9 -> 6 -> 3 -> 0), carrying 3 into column 1
-    // (still 2 bits, 011), which itself needs one more step (3 -> 0),
-    // carrying 1 into column 2 -- landing on 9 = 1 * 3^2 exactly, matching
-    // its own single-term sparse form.
+    // 9 = 1001 binary (bits at rows 0, 3) at column 0: the two smallest
+    // rows (0, 3) fold via RowSpreadTransformation(3) into (0, 1) plus a
+    // staircase at (1, 0), (2, 0) -- still 2 bits in column 0 -- which
+    // itself folds via RowSpreadTransformation(1) (i.e. exactly a Merge)
+    // into (1, 1); column 1 now holds (0, 1) and (1, 1), which folds the
+    // same way into (0, 2) -- landing on 9 = 1 * 3^2 exactly, matching its
+    // own single-term sparse form, after 3 steps total.
     {
         SmoothInteger n;
         n.setValue(9LL);
-        auto rep = n.representationAs(SmoothInteger::Representation::RowValues);
+        auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
         auto metrics = std::make_shared<Metrics>();
         reduction.run(*rep, metrics);
-        auto* rv = dynamic_cast<RowValuesRepresentation*>(rep.get());
         checkNear(rep->value(), 9.0, "TernaryFormReduction::run() preserves value(): still 9");
-        check(rv->columnValue(0) == 0.0 && rv->columnValue(1) == 0.0 && rv->columnValue(2) == 1.0,
-              "9 = 1 * 3^2: columns 0 and 1 empty out entirely, column 2 ends at 1");
-        check(metrics->get("transformations_applied") == 4,
-              "9 needs 4 subtract-3/add-1 steps total (3 draining column 0, 1 draining column 1)");
+        check(rep->get(0, 2) && isSingleBitPerColumn(*rep), "9 = 1 * 3^2: a single surviving bit");
+        check(metrics->get("transformations_applied") == 3, "9 needs 3 RowSpreadTransformation steps");
     }
 
     // 13 = 2^2 + 3^2 doesn't collapse to a single term: two columns end up
@@ -1436,66 +1446,74 @@ void testTernaryFormReduction() {
     {
         SmoothInteger n;
         n.setValue(13LL);
-        auto rep = n.representationAs(SmoothInteger::Representation::RowValues);
+        auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
         reduction.run(*rep);
-        auto* rv = dynamic_cast<RowValuesRepresentation*>(rep.get());
         checkNear(rep->value(), 13.0, "TernaryFormReduction::run() preserves value(): still 13");
-        check(rv->columnValue(0) == 4.0 && rv->columnValue(2) == 1.0 && rv->columnValue(1) == 0.0,
+        check(rep->get(2, 0) && rep->get(0, 2) && isSingleBitPerColumn(*rep),
               "13 = 4 * 3^0 + 1 * 3^2: two surviving columns, each a single bit");
     }
 
-    // The result only ever depends on the total value, never on the
-    // starting column layout: build 11 (= 5*3^0 + 2*3^1) directly via
-    // setColumnValue() rather than SmoothInteger's own column-0-only
-    // setValue(), confirming BinaryFormReduction's initial pass really does
-    // collapse an arbitrary starting layout before the column-by-column
-    // reduction begins.
+    // Unlike the old BinaryFormReduction-first pipeline, the result can
+    // now depend on the starting bit layout, not just the value -- there's
+    // no "collapse into column 0 first" pass to erase it. 11 built via
+    // SmoothInteger::setValue() (binary form: bits at rows 0, 1, 3, all in
+    // column 0) reduces differently than the same value 11 built directly
+    // as 5*3^0 + 2*3^1 (bits at (0, 0), (2, 0), (1, 1)) -- both are valid
+    // single-bit-per-column decompositions of 11, just different ones.
     {
-        RowValuesRepresentation rep(/*allow_fractional=*/false);
-        rep.setColumnValue(0, 5.0);
-        rep.setColumnValue(1, 2.0);
-        checkNear(rep.value(), 11.0, "before: 5*3^0 + 2*3^1 = 11");
-        reduction.run(rep);
-        checkNear(rep.value(), 11.0, "TernaryFormReduction::run() preserves value(): still 11");
-        bool allSingle = true;
-        rep.forEachSet([&](int, int j) {
-            if (!isSingleBit(rep.columnValue(j))) allSingle = false;
-        });
-        check(allSingle, "every surviving column is a single bit, regardless of the starting layout");
+        SmoothInteger n;
+        n.setValue(11LL);
+        auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
+        auto metrics = std::make_shared<Metrics>();
+        reduction.run(*rep, metrics);
+        checkNear(rep->value(), 11.0, "TernaryFormReduction::run() preserves value(): still 11 (binary start)");
+        check(rep->get(0, 1) && rep->get(3, 0) && isSingleBitPerColumn(*rep),
+              "11 from binary form (bits at rows 0,1,3 in column 0) settles at (0,1)/(3,0)");
+        check(metrics->get("transformations_applied") == 1, "11 from binary form needs exactly 1 step");
+    }
+    {
+        SmoothFloat n;
+        n.set(0, 0);  // 1
+        n.set(2, 0);  // 4       -- 5 = 1 + 4
+        n.set(1, 1);  // 2*3 = 6 -- together, 5*3^0 + 2*3^1 = 11
+        auto rep = n.representationAs(SmoothFloat::Representation::Sparse);
+        auto metrics = std::make_shared<Metrics>();
+        reduction.run(*rep, metrics);
+        checkNear(rep->value(), 11.0, "TernaryFormReduction::run() preserves value(): still 11 (spread-out start)");
+        check(rep->get(0, 2) && rep->get(1, 0) && isSingleBitPerColumn(*rep),
+              "11 built already spread across columns settles at (0,2)/(1,0) -- a different, still-valid split");
+        check(metrics->get("transformations_applied") == 2, "11 built already spread across columns needs 2 steps");
     }
 
-    // Every surviving column really does end up a single bit (power of two
-    // or absent), and the value is preserved, across a range of numbers.
+    // Every surviving column really does end up a single bit (or absent),
+    // and the value is preserved, across a range of representative
+    // numbers -- run directly on Sparse, with no RowValuesRepresentation
+    // conversion anywhere in sight.
     {
         for (long long v : {0LL, 1LL, 2LL, 3LL, 7LL, 100LL, 12345LL}) {
             SmoothInteger n;
             n.setValue(v);
-            auto rep = n.representationAs(SmoothInteger::Representation::RowValues);
+            auto rep = n.representationAs(SmoothInteger::Representation::Sparse);
             reduction.run(*rep);
-            auto* rv = dynamic_cast<RowValuesRepresentation*>(rep.get());
             check(rep->value() == static_cast<double>(v), "value is preserved for v=" + std::to_string(v));
-            bool allSingle = true;
-            rep->forEachSet([&](int, int j) {
-                if (!isSingleBit(rv->columnValue(j))) allSingle = false;
-            });
-            check(allSingle, "every surviving column is a single bit for v=" + std::to_string(v));
+            check(isSingleBitPerColumn(*rep), "every surviving column is a single bit for v=" + std::to_string(v));
         }
     }
 
-    // Running it against anything other than a RowValuesRepresentation is
-    // a usage error -- there's no way to subtract 3 from an arbitrary
-    // column's magnitude without decomposing it into individual bits
-    // first, which this reduction deliberately doesn't do.
+    // Also runs directly against RowValues and Dynamic representations --
+    // there's nothing RowValuesRepresentation-specific left to require.
     {
-        SparseRepresentation rep(/*allow_fractional=*/true);
-        rep.set(0, 0, true);
-        bool threw = false;
-        try {
-            reduction.run(rep);
-        } catch (const std::invalid_argument&) {
-            threw = true;
-        }
-        check(threw, "TernaryFormReduction::run() throws std::invalid_argument for a non-RowValuesRepresentation");
+        SmoothInteger n;
+        n.setValue(9LL);
+        auto rowValuesRep = n.representationAs(SmoothInteger::Representation::RowValues);
+        reduction.run(*rowValuesRep);
+        check(rowValuesRep->value() == 9.0 && isSingleBitPerColumn(*rowValuesRep),
+              "TernaryFormReduction runs directly against a RowValuesRepresentation, same result");
+
+        auto dynamicRep = n.representationAs(SmoothInteger::Representation::Dynamic);
+        reduction.run(*dynamicRep);
+        check(dynamicRep->value() == 9.0 && isSingleBitPerColumn(*dynamicRep),
+              "TernaryFormReduction runs directly against a DynamicRepresentation, same result");
     }
 }
 

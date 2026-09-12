@@ -1,46 +1,61 @@
 #pragma once
 
+#include <algorithm>
+#include <map>
 #include <memory>
-#include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "smooth/metrics.hpp"
 #include "smooth/reduction.hpp"
-#include "smooth/reduction_zoo/binary_form_reduction.hpp"
-#include "smooth/reduction_zoo/ternary_carry_reduction.hpp"
 #include "smooth/representation_base.hpp"
-#include "smooth/representation_zoo/row_values_representation.hpp"
+#include "smooth/transformation_zoo/row_spread_transformation.hpp"
 
 namespace smooth {
 
 // Reduces a number to a form where every column j that has anything in it
-// holds exactly one bit -- i.e. every nonzero n_j (RowValuesRepresentation's
-// own per-column total, see row_values_representation.hpp) is a single
-// power of two, not an arbitrary magnitude.
+// holds exactly one bit -- i.e. every column's own magnitude (summing 2^i
+// over its set rows) is a single power of two, never an arbitrary sum of
+// several.
 //
-// Two phases, run in sequence: first BinaryFormReduction, which collapses
-// the whole number down into column 0's n_0 -- discarding whatever column
-// layout it started with, so the final result only ever depends on the
-// number's value, never on how it got there -- then TernaryCarryReduction,
-// which works column by column from there, subtracting 3 from a column
-// and adding 1 to the next wherever a column still has more than one bit
-// set, until none do. See TernaryCarryTransformation
-// (transformation_zoo/ternary_carry_transformation.hpp) for the actual
-// unit of work each step of the second phase performs, and its own class
-// comment for why it's a Transformation but not an OffsetTransformation,
-// and why the whole reduction is guaranteed to terminate.
+// So long as some column has more than one set bit, this takes that
+// column's two *smallest* set rows i1 < i2 and applies
+// RowSpreadTransformation(i2 - i1) (transformation_zoo/row_spread_transformation.hpp)
+// anchored at (i1, j) -- folding them into a single bit one column over,
+// plus (whenever i2 - i1 > 1) a staircase filling the gap between them,
+// all still within column j -- then repeats, until no column has more
+// than one bit left.
 //
-// This can only be done directly on a RowValuesRepresentation -- see
-// TernaryCarryTransformation's own class comment for why -- so run()
-// checks and throws std::invalid_argument immediately, unconditionally,
-// rather than relying on TernaryCarryTransformation's own (otherwise
-// equivalent) check ever actually being reached: if `rep` happens to have
-// nothing set in it yet, BinaryFormReduction's own reduction is a silent
-// no-op regardless of representation kind, and TernaryCarryReduction's
-// worklist would never examine a single candidate -- so without this
-// upfront check, calling run() against the wrong kind of representation
-// could easily fail to throw at all, purely by chance of what's currently
-// in it.
+// Always resolving the *smallest* currently-offending column first
+// (breaking ties within it by taking its two smallest rows) is what makes
+// this terminate. Within a single application: replacing 2^i1 + 2^i2 with
+// the staircase sum 2^(i1+1) + ... + 2^(i2-1) = 2^i2 - 2^(i1+1) changes
+// column j's own magnitude by exactly -(2^i1 + 2^(i1+1)) = -3 * 2^i1 -- a
+// strict decrease, since i1 >= 0 -- so a column being worked on can't be
+// touched forever. And once a column is driven down to at most one bit,
+// nothing this reduction ever does can put a bit into a column lower than
+// the one it's currently working on (RowSpreadTransformation's own outputs
+// never land below its anchor's column), so a resolved column stays
+// resolved and the "smallest offending column" only ever moves up.
+//
+// Unlike the two-phase pipeline this replaces (BinaryFormReduction
+// collapsing everything into column 0, then TernaryCarryReduction working
+// directly with RowValuesRepresentation's per-column magnitudes -- see
+// transformation_zoo/ternary_carry_transformation.hpp), this works
+// entirely through a bit-level OffsetTransformation, so it runs against
+// *any* RepresentationBase -- Sparse, Dynamic, RowValues, Scalar -- with
+// no special-casing and no upfront representation check at all. It also
+// needs no separate "collapse into column 0 first" phase: a bit that
+// starts in whatever column already either satisfies the one-bit-per-
+// column property or gets carried rightward from wherever it is, and (like
+// the old pipeline) the final result only ever depends on the number's
+// value, never on how it started out distributed across columns.
+//
+// Like StaircaseReduction (staircase_reduction.hpp), candidate columns
+// aren't confined to a small local neighborhood the way a single
+// Transformation's own affectedAnchors() are, so this rescans all of
+// `rep`'s set bits from scratch after every application, rather than using
+// TransformationReduction's worklist approach.
 class TernaryFormReduction : public Reduction {
 public:
     const std::string& name() const override {
@@ -49,16 +64,22 @@ public:
     }
 
     void run(RepresentationBase& rep, const std::shared_ptr<Metrics>& metrics = nullptr) const override {
-        if (!dynamic_cast<RowValuesRepresentation*>(&rep)) {
-            throw std::invalid_argument("TernaryFormReduction::run() requires a RowValuesRepresentation");
-        }
-        binaryForm_.run(rep, metrics);
-        ternaryCarry_.run(rep, metrics);
-    }
+        while (true) {
+            std::map<int, std::vector<int>> rowsByColumn;
+            rep.forEachSet([&rowsByColumn](int i, int j) { rowsByColumn[j].push_back(i); });
 
-private:
-    BinaryFormReduction binaryForm_;
-    TernaryCarryReduction ternaryCarry_;
+            auto offending = rowsByColumn.begin();
+            while (offending != rowsByColumn.end() && offending->second.size() <= 1) ++offending;
+            if (offending == rowsByColumn.end()) return;  // fixed point: <= 1 bit per column
+
+            std::vector<int>& rows = offending->second;
+            std::sort(rows.begin(), rows.end());
+            int i1 = rows[0];
+            int i2 = rows[1];
+            RowSpreadTransformation(i2 - i1).applyAndReportLandings(rep, i1, offending->first);
+            if (metrics) metrics->increment("transformations_applied");
+        }
+    }
 };
 
 }  // namespace smooth

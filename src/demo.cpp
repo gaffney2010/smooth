@@ -647,37 +647,37 @@ int main() {
               << binaryMetrics->get("transformations_applied") << " splits\n";
 
     // --- TernaryFormReduction -------------------------------------------------
-    // First runs BinaryFormReduction (collapsing whatever column layout the
-    // number started with down into column 0), then works column by column:
-    // so long as a column's total has more than one bit, subtracts 3 from
-    // it and adds 1 to the next column -- value-preserving, since
-    // 3 * 3^j = 3^(j+1) -- until that column is a single bit (or empty),
-    // then moves to the next. This can only run on a RowValuesRepresentation
-    // directly, since "subtract 3" needs each column's magnitude as one
-    // number, not individual bits with no borrow-subtraction of their own.
+    // So long as some column has more than one set bit, applies
+    // RowSpreadTransformation to that column's two smallest set rows,
+    // folding them one column over (plus a same-column staircase filling
+    // the gap between them, when there is one) -- until every column holds
+    // at most one bit. Runs directly against any RepresentationBase (Sparse
+    // here) -- no RowValuesRepresentation, or any other special-casing,
+    // required.
     std::cout << "\n--- TernaryFormReduction ---\n";
     smooth::SmoothInteger toTernary;
     toTernary.setValue(13LL);  // 13 = 2^2 + 3^2, not itself a single term
     std::cout << "before: value = " << toTernary.value() << "\n";
-    auto ternaryRep = toTernary.representationAs(smooth::SmoothInteger::Representation::RowValues);
+    auto ternaryRep = toTernary.representationAs(smooth::SmoothInteger::Representation::Sparse);
     smooth::TernaryFormReduction ternaryReduction;
     auto ternaryMetrics = std::make_shared<smooth::Metrics>();
     ternaryReduction.run(*ternaryRep, ternaryMetrics);
     std::cout << "after: value = " << ternaryRep->value() << "\n";
     ternaryRep->print(std::cout);
     std::cout << "13 = 4*3^0 + 1*3^2, reached after " << ternaryMetrics->get("transformations_applied")
-              << " subtract-3/add-1 steps\n";
+              << " RowSpreadTransformation steps\n";
 
     // --- TernaryCarryTransformation / TernaryCarryReduction --------------------
-    // The Transformation (not OffsetTransformation) TernaryFormReduction's
-    // second phase is actually built from: anchored at column j, while n_j
-    // has more than one bit set, subtracts 3 from n_j and adds 1 to
-    // n_(j+1). Its precondition depends on a whole column's magnitude, not
-    // a handful of fixed bit offsets, so it implements Transformation
-    // directly rather than going through OffsetTransformation.
-    // TernaryCarryReduction runs it to a fixed point, needing no `allowed`
-    // bound the way BinaryFormReduction does -- its own canApply() is
-    // already self-limiting.
+    // The magnitude-based counterpart to TernaryFormReduction above:
+    // anchored at column j, while n_j (RowValuesRepresentation's own
+    // per-column magnitude) has more than one bit set, subtracts 3 from
+    // n_j and adds 1 to n_(j+1). Its precondition depends on a whole
+    // column's magnitude, not a handful of fixed bit offsets, so it
+    // implements Transformation directly rather than going through
+    // OffsetTransformation, and (unlike TernaryFormReduction) can only run
+    // on a RowValuesRepresentation. TernaryCarryReduction runs it to a
+    // fixed point, needing no `allowed` bound the way BinaryFormReduction
+    // does -- its own canApply() is already self-limiting.
     std::cout << "\n--- TernaryCarryTransformation / TernaryCarryReduction ---\n";
     smooth::RowValuesRepresentation carryRep(/*allow_fractional=*/false);
     carryRep.setColumnValue(0, 9.0);  // 9 = 1001 binary, at column 0
@@ -689,8 +689,8 @@ int main() {
     std::cout << "after: value = " << carryRep.value() << ", ";
     carryRep.print(std::cout);
     std::cout << "9 = 1*3^2, reached after " << carryMetrics->get("transformations_applied")
-              << " subtract-3/add-1 steps -- same result as BinaryFormReduction + TernaryCarryReduction together "
-                 "(see TernaryFormReduction above), starting directly from column 0 instead\n";
+              << " subtract-3/add-1 steps -- same result TernaryFormReduction gets for 9, via column magnitudes "
+                 "directly instead of RowSpreadTransformation\n";
 
     // --- StaircaseReduction ---------------------------------------------------
     // So long as two set bits (i1, j1)/(i2, j2) exist with i2 >= i1 and
