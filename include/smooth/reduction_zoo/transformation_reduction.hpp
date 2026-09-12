@@ -49,14 +49,26 @@ namespace smooth {
 // changed cell could newly affect. So run() seeds a worklist from the
 // representation's own set bits, and after every application, only
 // re-examines what affectedAnchors() says is worth another look.
+//
+// `slack`, if nonzero, stops short of the fixed point: the worklist is
+// exactly "candidates not yet known to be unfireable", so stopping once
+// its size drops to `slack` (rather than 0) leaves that many still
+// outstanding. They aren't necessarily all genuine -- some may turn out
+// stale (canApply() would say no) -- so `slack` is an upper bound on how
+// much reducing is left undone, not an exact count.
 class TransformationReduction : public Reduction {
 public:
     // `name` is purely cosmetic -- what Plan shows for a Reduce step, e.g.
     // "reduce(merge)". `allowed`, if given, bounds every anchor this
     // reduction will ever try, e.g. `[](int, int j){ return j >= 0; }`.
+    // `slack`, if given, stops run() once at most that many candidates
+    // remain queued -- see the class comment above.
     TransformationReduction(std::vector<const Transformation*> transformations, std::string name,
-                             std::function<bool(int, int)> allowed = nullptr)
-        : transformations_(std::move(transformations)), name_(std::move(name)), allowed_(std::move(allowed)) {}
+                             std::function<bool(int, int)> allowed = nullptr, std::size_t slack = 0)
+        : transformations_(std::move(transformations)),
+          name_(std::move(name)),
+          allowed_(std::move(allowed)),
+          slack_(slack) {}
 
     const std::string& name() const override { return name_; }
 
@@ -87,7 +99,7 @@ public:
 
         rep.forEachSet([&](int i, int j) { enqueueCandidatesAt(i, j); });
 
-        while (!worklist.empty()) {
+        while (worklist.size() > slack_) {
             Candidate candidate = worklist.back();
             worklist.pop_back();
             queued.erase(candidate);
@@ -107,6 +119,7 @@ private:
     std::vector<const Transformation*> transformations_;
     std::string name_;
     std::function<bool(int, int)> allowed_;
+    std::size_t slack_;
 };
 
 }  // namespace smooth

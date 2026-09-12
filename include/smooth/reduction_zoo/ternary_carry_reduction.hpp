@@ -23,7 +23,10 @@ namespace smooth {
 // representation.
 class TernaryCarryReduction : public TransformationReduction {
 public:
-    TernaryCarryReduction() : TransformationReduction({&ternaryCarryTransformation()}, "ternary_carry") {}
+    // `slack`, if given, is passed straight through to TransformationReduction
+    // -- see its own class comment.
+    explicit TernaryCarryReduction(std::size_t slack = 0)
+        : TransformationReduction({&ternaryCarryTransformation()}, "ternary_carry", nullptr, slack) {}
 
 private:
     static const TernaryCarryTransformation& ternaryCarryTransformation() {

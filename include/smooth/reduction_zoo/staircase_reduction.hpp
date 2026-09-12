@@ -40,8 +40,16 @@ namespace smooth {
 // >= 1 and column >= 1 -- its outputs can never go negative. Starting
 // from an all-non-negative representation, this never needs a
 // fractional-capable one.
+//
+// `slack`, if nonzero, stops short of the fixed point: once at most
+// `slack` dominating pairs remain among the current set bits, run()
+// returns rather than resolving the rest. Counting every pair costs the
+// same O(bits^2) scan either way (see above), so `slack` == 0 isn't any
+// cheaper than finding just the first pair.
 class StaircaseReduction : public Reduction {
 public:
+    explicit StaircaseReduction(std::size_t slack = 0) : slack_(slack) {}
+
     const std::string& name() const override {
         static const std::string kName = "staircase";
         return kName;
@@ -55,17 +63,21 @@ public:
 
             std::pair<int, int> first{}, second{};
             bool found = false;
-            for (std::size_t a = 0; a < bits.size() && !found; ++a) {
-                for (std::size_t b = 0; b < bits.size() && !found; ++b) {
+            std::size_t dominatingPairs = 0;
+            for (std::size_t a = 0; a < bits.size(); ++a) {
+                for (std::size_t b = 0; b < bits.size(); ++b) {
                     if (a == b) continue;
                     if (bits[b].first >= bits[a].first && bits[b].second >= bits[a].second) {
-                        first = bits[a];
-                        second = bits[b];
-                        found = true;
+                        ++dominatingPairs;
+                        if (!found) {
+                            first = bits[a];
+                            second = bits[b];
+                            found = true;
+                        }
                     }
                 }
             }
-            if (!found) return;  // fixed point: an antichain
+            if (dominatingPairs <= slack_) return;  // <= slack dominating pairs left
 
             const auto& [i1, j1] = first;
             const auto& [i2, j2] = second;
@@ -79,6 +91,9 @@ public:
             if (metrics) metrics->increment("transformations_applied");
         }
     }
+
+private:
+    std::size_t slack_;
 };
 
 }  // namespace smooth

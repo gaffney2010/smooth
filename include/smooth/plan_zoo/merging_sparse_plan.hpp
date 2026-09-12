@@ -29,25 +29,10 @@ public:
 
 protected:
     std::unique_ptr<Node> buildBlueprint(const Node& declaration) const override {
-        return wrapMultiplyOperandsWithReduction(SparsePlan::buildBlueprint(declaration));
+        return wrapMultiplyOperandsWithReduction(SparsePlan::buildBlueprint(declaration), reduction_);
     }
 
 private:
-    // Walks an already-built blueprint, wrapping both operands of every
-    // Multiply node (however deeply nested) in a Reduce node running
-    // reduction_. Add nodes are left alone.
-    std::unique_ptr<Node> wrapMultiplyOperandsWithReduction(std::unique_ptr<Node> node) const {
-        if (node->kind == Node::Kind::Add || node->kind == Node::Kind::Multiply) {
-            node->left = wrapMultiplyOperandsWithReduction(std::move(node->left));
-            node->right = wrapMultiplyOperandsWithReduction(std::move(node->right));
-            if (node->kind == Node::Kind::Multiply) {
-                node->left = wrapWithReduction(std::move(node->left), reduction_);
-                node->right = wrapWithReduction(std::move(node->right), reduction_);
-            }
-        }
-        return node;
-    }
-
     MergeReduction reduction_;
 };
 

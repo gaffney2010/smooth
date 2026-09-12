@@ -24,8 +24,11 @@ namespace smooth {
 // function-local static rather than an instance member.
 class BinaryFormReduction : public TransformationReduction {
 public:
-    BinaryFormReduction()
-        : TransformationReduction({&splitTransformation()}, "binary_form", [](int, int j) { return j >= 0; }) {}
+    // `slack`, if given, is passed straight through to TransformationReduction
+    // -- see its own class comment.
+    explicit BinaryFormReduction(std::size_t slack = 0)
+        : TransformationReduction({&splitTransformation()}, "binary_form", [](int, int j) { return j >= 0; },
+                                   slack) {}
 
 private:
     static const SplitTransformation& splitTransformation() {

@@ -43,8 +43,14 @@ namespace smooth {
 // local neighborhood, so this rescans all of `rep`'s set bits from
 // scratch after every application, rather than using
 // TransformationReduction's worklist.
+//
+// `slack`, if nonzero, stops short of the fixed point: once at most
+// `slack` columns are still offending (more than one bit), run() returns
+// rather than resolving the rest.
 class TernaryFormReduction : public Reduction {
 public:
+    explicit TernaryFormReduction(std::size_t slack = 0) : slack_(slack) {}
+
     const std::string& name() const override {
         static const std::string kName = "ternary_form";
         return kName;
@@ -55,9 +61,14 @@ public:
             std::map<int, std::vector<int>> rowsByColumn;
             rep.forEachSet([&rowsByColumn](int i, int j) { rowsByColumn[j].push_back(i); });
 
-            auto offending = rowsByColumn.begin();
-            while (offending != rowsByColumn.end() && offending->second.size() <= 1) ++offending;
-            if (offending == rowsByColumn.end()) return;  // fixed point: <= 1 bit per column
+            std::size_t offendingCount = 0;
+            auto offending = rowsByColumn.end();
+            for (auto it = rowsByColumn.begin(); it != rowsByColumn.end(); ++it) {
+                if (it->second.size() <= 1) continue;
+                ++offendingCount;
+                if (offending == rowsByColumn.end()) offending = it;
+            }
+            if (offendingCount <= slack_) return;  // <= slack columns left offending
 
             std::vector<int>& rows = offending->second;
             std::sort(rows.begin(), rows.end());
@@ -67,6 +78,9 @@ public:
             if (metrics) metrics->increment("transformations_applied");
         }
     }
+
+private:
+    std::size_t slack_;
 };
 
 }  // namespace smooth

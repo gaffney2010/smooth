@@ -2453,6 +2453,208 @@ void testMergingSparsePlan() {
 }
 
 // ---------------------------------------------------------------------
+// TernaryFormSparsePlan: same shape as MergingSparsePlan (SparsePlan plus
+// a reduction run on both of a multiply's operands beforehand), but with
+// TernaryFormReduction instead of MergeReduction.
+// ---------------------------------------------------------------------
+void testTernaryFormSparsePlan() {
+    check(TernaryFormSparsePlan().name() == "ternary_form_sparse",
+          "TernaryFormSparsePlan::name() is \"ternary_form_sparse\"");
+
+    checkNear(TernaryFormSparsePlan().scalar(3).times().left().scalar(4).plus().scalar(2).right().calculate(), 18.0,
+              "TernaryFormSparsePlan: 3 * (4 + 2) = 18, same as SparsePlan");
+    checkNear(TernaryFormSparsePlan().scalar(15).times().scalar(15).calculate(), 225.0,
+              "TernaryFormSparsePlan: 15 * 15 = 225");
+
+    // The printed tree shows reduce(ternary_form), not reduce(merge).
+    {
+        TernaryFormSparsePlan p;
+        p.scalar(15).times().scalar(15);
+        std::ostringstream out;
+        p.plan(out);
+        check(out.str().find("reduce(ternary_form)") != std::string::npos,
+              "TernaryFormSparsePlan wraps multiply operands in reduce(ternary_form)");
+    }
+
+    // Both reductions happen to shrink 15 (1111 binary) down to the same
+    // final bit_operations cost here (2 bits per operand either way), but
+    // they get there by a different number of steps -- proving this is a
+    // genuinely different reduction, not MergeReduction under another
+    // name.
+    {
+        auto ternaryMetrics = std::make_shared<Metrics>();
+        TernaryFormSparsePlan(ternaryMetrics).scalar(15).times().scalar(15).calculate();
+        auto mergingMetrics = std::make_shared<Metrics>();
+        MergingSparsePlan(mergingMetrics).scalar(15).times().scalar(15).calculate();
+
+        check(ternaryMetrics->get("bit_operations") == mergingMetrics->get("bit_operations"),
+              "TernaryFormSparsePlan and MergingSparsePlan both reduce 15*15 to the same bit_operations cost");
+        check(ternaryMetrics->get("transformations_applied") != mergingMetrics->get("transformations_applied"),
+              "...but take a different number of steps to get there -- a genuinely different reduction");
+    }
+}
+
+// ---------------------------------------------------------------------
+// SizeAdaptiveSparsePlan: which reduction (if any) wraps a multiply
+// operand depends on that operand's own estimated bit count, not a single
+// fixed choice -- so the two operands of the same multiply can end up
+// wrapped differently.
+// ---------------------------------------------------------------------
+void testSizeAdaptiveSparsePlan() {
+    check(SizeAdaptiveSparsePlan().name() == "size_adaptive_sparse",
+          "SizeAdaptiveSparsePlan::name() is \"size_adaptive_sparse\"");
+
+    // Correctness across all three size bands (below kMergeThreshold,
+    // between the two thresholds, and at/above kStaircaseThreshold).
+    checkNear(SizeAdaptiveSparsePlan().scalar(2).times().scalar(3).calculate(), 6.0,
+              "SizeAdaptiveSparsePlan: 2 * 3 = 6 (both operands too small to reduce)");
+    checkNear(SizeAdaptiveSparsePlan().scalar(15).times().scalar(15).calculate(), 225.0,
+              "SizeAdaptiveSparsePlan: 15 * 15 = 225 (merge-sized operands)");
+    checkNear(SizeAdaptiveSparsePlan().scalar(65535).times().scalar(3).calculate(), 196605.0,
+              "SizeAdaptiveSparsePlan: 65535 * 3 = 196605 (one staircase-sized operand, one too small)");
+
+    // 2 and 3 are each a single bit -- well under kMergeThreshold -- so
+    // neither operand gets wrapped in any reduction at all.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SizeAdaptiveSparsePlan(metrics).scalar(2).times().scalar(3).calculate();
+        check(metrics->get("transformations_applied") == 0,
+              "SizeAdaptiveSparsePlan: operands smaller than kMergeThreshold get no reduction at all");
+    }
+
+    // 15 (1111 binary, 4 bits) falls in the MergeReduction band for both
+    // operands -- same counters as MergingSparsePlan gets for the same
+    // expression.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SizeAdaptiveSparsePlan p(metrics);
+        p.scalar(15).times().scalar(15);
+        checkNear(p.calculate(), 225.0, "SizeAdaptiveSparsePlan: 15 * 15 = 225");
+        check(metrics->get("bit_operations") == 4 && metrics->get("transformations_applied") == 4,
+              "SizeAdaptiveSparsePlan: 15's 4 bits fall in the MergeReduction band on both sides");
+        std::ostringstream out;
+        p.plan(out);
+        check(out.str().find("reduce(merge)") != std::string::npos,
+              "SizeAdaptiveSparsePlan picks MergeReduction for merge-band operands");
+    }
+
+    // 65535 (16 bits) is at kStaircaseThreshold, so it gets
+    // StaircaseReduction; 3 (2 bits) is still under kMergeThreshold, so it
+    // gets none -- the two operands of the *same* multiply, wrapped
+    // differently.
+    {
+        SizeAdaptiveSparsePlan p;
+        p.scalar(65535).times().scalar(3);
+        std::ostringstream out;
+        p.plan(out);
+        std::string tree = out.str();
+        check(tree.find("reduce(staircase)\n│  └─ ensure(sparse)\n│     └─ scalar: 65535\n") != std::string::npos,
+              "SizeAdaptiveSparsePlan wraps the large operand (65535, 16 bits) in reduce(staircase)");
+        check(tree.find("reduce") == tree.find("reduce(staircase)"),
+              "...and the small operand (3, 2 bits) gets no reduce(...) wrapper at all");
+    }
+}
+
+// ---------------------------------------------------------------------
+// RepresentationAwarePlan: each numberVia() leaf keeps whatever
+// representation its own number is already sitting in (canonical(), or
+// anything else isRepresentationCached() reports), instead of every leaf
+// being forced through one fixed target -- and the reduction picked for
+// each multiply operand follows the same choice.
+// ---------------------------------------------------------------------
+void testRepresentationAwarePlan() {
+    check(RepresentationAwarePlan().name() == "representation_aware",
+          "RepresentationAwarePlan::name() is \"representation_aware\"");
+
+    // Nothing but canonical() is ever cached by default, and canonical()
+    // is always Dynamic -- so, absent any prior printX()/valueAs() calls,
+    // this behaves exactly like MatrixPlan: no conversions at all.
+    {
+        auto metrics = std::make_shared<Metrics>();
+        SmoothInteger a, b;
+        a.setMetricsPtr(metrics);
+        b.setMetricsPtr(metrics);
+        a.setValue(4LL);
+        b.setValue(9LL);
+        checkNear(RepresentationAwarePlan(metrics).numberVia(a).plus().numberVia(b).calculate(), 13.0,
+                  "RepresentationAwarePlan via numberVia(): 4 + 9 = 13");
+        check(metrics->get("convert_dynamic_to_sparse") == 0 && metrics->get("convert_dynamic_to_row_values") == 0 &&
+                  metrics->get("convert_dynamic_to_scalar") == 0,
+              "RepresentationAwarePlan: with nothing pre-cached, every leaf still resolves to Dynamic");
+    }
+
+    // Once `a` has Sparse cached (e.g. from an earlier printSparse() call
+    // made for some unrelated reason), RepresentationAwarePlan reuses it
+    // for `a`'s own leaf -- while `b`, untouched, still resolves to
+    // Dynamic.
+    {
+        SmoothInteger a, b;
+        a.setValue(4LL);
+        b.setValue(9LL);
+        std::ostringstream discard;
+        a.printSparse(discard);
+        check(a.isRepresentationCached(SmoothNumberBase::Representation::Sparse),
+              "a has Sparse cached after printSparse()");
+        check(!b.isRepresentationCached(SmoothNumberBase::Representation::Sparse),
+              "b, untouched, does not");
+
+        RepresentationAwarePlan p;
+        p.numberVia(a).plus().numberVia(b);
+        checkNear(p.calculate(), 13.0, "RepresentationAwarePlan: 4 + 9 = 13, a's leaf reusing cached Sparse");
+        std::ostringstream out;
+        p.plan(out);
+        check(out.str() == "add\n├─ ensure(sparse): 4\n└─ ensure(dynamic): 9\n= 13\n",
+              "a's leaf targets its own cached Sparse; b's leaf, with nothing cached beyond canonical(), targets "
+              "Dynamic");
+    }
+
+    // For a multiply, once both operands have RowValues cached,
+    // RepresentationAwarePlan targets RowValues for both -- and picks
+    // TernaryCarryReduction (the one reduction that only works against a
+    // RowValuesRepresentation) to wrap them, rather than MergeReduction.
+    {
+        SmoothInteger a, b;
+        a.setValue(9LL);
+        b.setValue(9LL);
+        std::ostringstream discard;
+        a.printRowValues(discard);
+        b.printRowValues(discard);
+
+        RepresentationAwarePlan p;
+        p.numberVia(a).times().numberVia(b);
+        checkNear(p.calculate(), 81.0, "RepresentationAwarePlan: 9 * 9 = 81, both operands reusing cached RowValues");
+        std::ostringstream out;
+        p.plan(out);
+        std::string tree = out.str();
+        check(tree.find("ensure(row_values)") != std::string::npos,
+              "both operands target RowValues, matching what's already cached on each number");
+        check(tree.find("reduce(ternary_carry)") != std::string::npos,
+              "RepresentationAwarePlan picks TernaryCarryReduction for RowValues-targeted multiply operands");
+    }
+
+    // A Scalar-targeted operand never gets wrapped in any reduction --
+    // every reduction here rewrites bits at columns other than 0, which
+    // ScalarRepresentation can't hold (see ScalarRepresentation::
+    // requireColumnZero()).
+    {
+        SmoothInteger a, b;
+        a.setValue(6LL);
+        b.setValue(7LL);
+        std::ostringstream discard;
+        a.printScalar(discard);
+        b.printScalar(discard);
+
+        RepresentationAwarePlan p;
+        p.numberVia(a).times().numberVia(b);
+        checkNear(p.calculate(), 42.0, "RepresentationAwarePlan: 6 * 7 = 42, both operands reusing cached Scalar");
+        std::ostringstream out;
+        p.plan(out);
+        check(out.str().find("reduce(") == std::string::npos,
+              "RepresentationAwarePlan applies no reduction at all to Scalar-targeted multiply operands");
+    }
+}
+
+// ---------------------------------------------------------------------
 // Reduction polymorphism: Plan's Reduce blueprint node holds a plain
 // Reduction*, not a TransformationReduction*, so a buildBlueprint()
 // override can splice in *any* concrete reduction. This Plan subclass
@@ -2659,6 +2861,9 @@ int main() {
     testPlan();
     testPlanZoo();
     testMergingSparsePlan();
+    testTernaryFormSparsePlan();
+    testSizeAdaptiveSparsePlan();
+    testRepresentationAwarePlan();
     testReductionPolymorphism();
     testBlueprintValidation();
     testNumberViaForcesConversion();

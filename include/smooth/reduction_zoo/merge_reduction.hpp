@@ -22,7 +22,10 @@ namespace smooth {
 // different from each having its own.
 class MergeReduction : public TransformationReduction {
 public:
-    MergeReduction() : TransformationReduction({&mergeTransformation()}, "merge") {}
+    // `slack`, if given, is passed straight through to TransformationReduction
+    // -- see its own class comment.
+    explicit MergeReduction(std::size_t slack = 0)
+        : TransformationReduction({&mergeTransformation()}, "merge", nullptr, slack) {}
 
 private:
     static const MergeTransformation& mergeTransformation() {

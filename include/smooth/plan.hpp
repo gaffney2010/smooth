@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -210,18 +211,30 @@ protected:
     // Shared by every strategy that wants every leaf converted into one
     // target representation: walks `declaration`, wrapping each leaf in
     // Ensure{target}. Typically a buildBlueprint() override's entire body.
+    // Built on the per-leaf overload below, fixed to always answer with
+    // the same `target`.
     std::unique_ptr<Node> wrapLeavesWithEnsure(const Node& declaration,
                                                 SmoothNumberBase::Representation target) const {
+        return wrapLeavesWithEnsure(declaration, [target](const Node&) { return target; });
+    }
+
+    // Same idea, but `chooseTarget` picks the representation for each leaf
+    // individually -- e.g. plan_zoo/representation_aware_plan.hpp reuses
+    // whatever representation a numberVia() leaf's own number already has
+    // cached, instead of forcing every leaf into the same one.
+    std::unique_ptr<Node> wrapLeavesWithEnsure(
+        const Node& declaration,
+        const std::function<SmoothNumberBase::Representation(const Node&)>& chooseTarget) const {
         auto node = std::make_unique<Node>();
-        if (declaration.kind == Node::Kind::ScalarLeaf || declaration.kind == Node::Kind::NumberLeaf) {
+        if (isLeaf(declaration)) {
             node->kind = Node::Kind::Ensure;
-            node->ensureTarget = target;
+            node->ensureTarget = chooseTarget(declaration);
             node->child = cloneNode(declaration);
             return node;
         }
         node->kind = declaration.kind;
-        node->left = wrapLeavesWithEnsure(*declaration.left, target);
-        node->right = wrapLeavesWithEnsure(*declaration.right, target);
+        node->left = wrapLeavesWithEnsure(*declaration.left, chooseTarget);
+        node->right = wrapLeavesWithEnsure(*declaration.right, chooseTarget);
         return node;
     }
 
@@ -230,14 +243,48 @@ protected:
     // representation (so the un-reduced node still prints its original
     // bits). `reduction` is any Reduction (reduction.hpp), so a
     // buildBlueprint() override never has to name which concrete kind it's
-    // using. See plan_zoo/merging_sparse_plan.hpp for the one strategy
-    // that currently uses this.
+    // using.
     std::unique_ptr<Node> wrapWithReduction(std::unique_ptr<Node> node, const Reduction& reduction) const {
         auto wrapped = std::make_unique<Node>();
         wrapped->kind = Node::Kind::Reduce;
         wrapped->reduction = &reduction;
         wrapped->child = std::move(node);
         return wrapped;
+    }
+
+    // Walks an already-built blueprint, wrapping both operands of every
+    // Multiply node (however deeply nested) in a Reduce node running
+    // `reduction`. Add nodes are left alone -- see MergingSparsePlan's own
+    // comment for why only Multiply operands are worth reducing. Built on
+    // the per-operand overload below, fixed to always answer with the
+    // same `reduction`.
+    std::unique_ptr<Node> wrapMultiplyOperandsWithReduction(std::unique_ptr<Node> node,
+                                                             const Reduction& reduction) const {
+        return wrapMultiplyOperandsWithReduction(std::move(node),
+                                                  [&reduction](const Node&) { return &reduction; });
+    }
+
+    // Same idea, but `chooseReduction` picks (or declines, by returning
+    // nullptr) a reduction for each multiply operand individually, based
+    // on that operand's own already-built blueprint subtree -- what
+    // plan_zoo/size_adaptive_sparse_plan.hpp (by estimated bit count) and
+    // plan_zoo/representation_aware_plan.hpp (by representation) use
+    // instead of applying one fixed reduction everywhere.
+    std::unique_ptr<Node> wrapMultiplyOperandsWithReduction(
+        std::unique_ptr<Node> node, const std::function<const Reduction*(const Node&)>& chooseReduction) const {
+        if (node->kind == Node::Kind::Add || node->kind == Node::Kind::Multiply) {
+            node->left = wrapMultiplyOperandsWithReduction(std::move(node->left), chooseReduction);
+            node->right = wrapMultiplyOperandsWithReduction(std::move(node->right), chooseReduction);
+            if (node->kind == Node::Kind::Multiply) {
+                if (const Reduction* r = chooseReduction(*node->left)) {
+                    node->left = wrapWithReduction(std::move(node->left), *r);
+                }
+                if (const Reduction* r = chooseReduction(*node->right)) {
+                    node->right = wrapWithReduction(std::move(node->right), *r);
+                }
+            }
+        }
+        return node;
     }
 
 private:

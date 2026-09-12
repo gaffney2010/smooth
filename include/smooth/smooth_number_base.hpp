@@ -87,8 +87,22 @@ public:
     bool allowsFractional() const { return allowFractional_; }
 
     // Which representation is currently canonical. There is no public way
-    // to force it.
+    // to force it -- and, for now, nothing ever does: every instance
+    // starts out (and stays) Dynamic.
     Representation canonical() const { return canonical_; }
+
+    // Whether `r` already has an up-to-date representation cached --
+    // meaning ensure(r) would be a no-op right now, so requesting it
+    // (printX()/valueAs()/representationAs()) costs nothing further.
+    // Always true for canonical() itself, but can be true for others too:
+    // a previous printSparse()/valueAs(Sparse)/etc. call leaves Sparse
+    // cached alongside canonical() until the next value-changing set()/
+    // applyTransformation()/... invalidates it. Exposed so external code
+    // -- e.g. plan_zoo/representation_aware_plan.hpp -- can prefer
+    // whichever representation a number is *actually* already sitting in
+    // over forcing everything through canonical(), which -- per the note
+    // above -- would otherwise always mean the same one.
+    bool isRepresentationCached(Representation r) const { return r == canonical_ || isValid(r); }
 
     // The optional Metrics this number was constructed with, or nullptr.
     // Exposed so free functions like operator+ can implement "keep a's
