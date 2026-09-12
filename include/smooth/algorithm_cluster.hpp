@@ -11,14 +11,14 @@ namespace smooth {
 // Common interface for every "value-preserving, run-to-completion
 // reduction over a representation" utility this library has. All of them
 // live in algorithm_cluster_zoo/: TransformationAlgorithmCluster, the
-// generic engine (greedily apply a family of Transformations until none
-// can fire anymore); MergeCluster/BinaryFormCluster, named presets that
-// are subclasses of it, each just fixing its own Transformation(s), name,
-// and bound as constructor arguments; and TernaryFormCluster, which
-// doesn't fit that mold at all -- it composes BinaryFormCluster for its
-// first phase, then does its own column-by-column reduction that no
-// Transformation could express, so it implements AlgorithmCluster
-// directly instead.
+// generic engine (greedily apply a family of Transformations -- see
+// transformation.hpp -- until none can fire anymore); MergeCluster/
+// BinaryFormCluster/TernaryCarryCluster, named presets that are subclasses
+// of it, each just fixing its own Transformation(s), name, and bound as
+// constructor arguments; and TernaryFormCluster, which doesn't fit that
+// mold at all -- it composes BinaryFormCluster and TernaryCarryCluster in
+// sequence, two separate fixed-point searches rather than one, so it
+// implements AlgorithmCluster directly instead.
 //
 // This is deliberately the smallest interface that covers all of them:
 // just "run me against a representation, optionally counting steps into a

@@ -349,6 +349,42 @@ normalized back to non-negative the same way a zero sum is.
 ## Transformation
 
 ```cpp
+#include "smooth/transformation.hpp"
+
+// The shared interface every transformation in this library implements:
+class Transformation {
+public:
+    virtual bool canApply(const RepresentationBase& rep, int i, int j) const = 0;
+    virtual std::vector<std::pair<int, int>> applyAndReportLandings(RepresentationBase& rep, int i, int j) const = 0;
+    virtual std::vector<std::pair<int, int>> affectedAnchors(int i, int j) const = 0;
+};
+```
+
+A `Transformation` (`include/smooth/transformation.hpp`) is any distinct
+unit of work that doesn't change a 3-smooth number's value: check whether
+it can fire at a given anchor `(i, j)`, apply it, and report which cells
+changed — its "landings," the only cells worth re-examining afterward for
+newly created opportunities. `AlgorithmCluster` (see "AlgorithmCluster"
+below) is the other half of the same idea: repeated application of one or
+more `Transformation`s until some condition is met.
+
+This is deliberately the smallest interface that covers every
+transformation this library has, because "distinct unit of work" covers
+genuinely different shapes. Until this abstraction was pulled out, every
+transformation fit one very specific shape: a fixed list of input offsets
+that must all be `1` (cleared by applying), and a fixed list of output
+offsets that get carry-set to `1`. `OffsetTransformation` (below) is
+exactly that shape, kept as its own concrete class once it became clear
+it was a special case, not the general one — `TernaryCarryTransformation`
+(`algorithm_cluster_zoo` below) is the case that forced the split:
+"subtract 3 from column `j`, add 1 to column `j+1`" has no fixed set of
+bit offsets at all, since its own precondition ("column `j` has more than
+one bit set") depends on an entire column's aggregate magnitude, not a
+handful of fixed cells.
+
+### OffsetTransformation
+
+```cpp
 #include "smooth/smooth.hpp"
 #include "smooth/transformation_zoo.hpp"  // for MergeTransformation/SplitTransformation
 
@@ -364,10 +400,10 @@ n.printSparse();  // {(2, 1)}  -- still 12, just represented differently
 The same value can be held by more than one bit grid: since
 `2^i*3^j + 2^(i+1)*3^j = 2^i*3^j*(1+2) = 2^i*3^(j+1)`, the two bits at
 `(i, j)` and `(i+1, j)` can be traded for the single bit at `(i, j+1)`
-without changing `value()` at all. A `Transformation`
-(`include/smooth/transformation.hpp`) is one such value-preserving trade,
-anchored at a specific `(i, j)`, built from two fixed lists of offsets
-(relative to that anchor):
+without changing `value()` at all. `OffsetTransformation`
+(`include/smooth/transformation.hpp`) implements `Transformation` with one
+such value-preserving trade, anchored at a specific `(i, j)`, built from
+two fixed lists of offsets (relative to that anchor):
 
 - **input** offsets — each must currently hold a `1`. Applying the
   transformation always clears every one of them back to `0`.
@@ -378,7 +414,13 @@ anchored at a specific `(i, j)`, built from two fixed lists of offsets
   a clear cell, rather than blocking the transformation.
 
 Because an occupied output is never a reason to reject, `canApply()` only
-ever needs to check the inputs:
+ever needs to check the inputs. `OffsetTransformation` also keeps its own
+templated `canApply()`/`apply()`/`applyAndReportLandings()`, over anything
+that looks like a bit grid — `bool get(int, int) const` and
+`set(int, int, bool)` — so the exact same object works directly on a
+`SmoothNumberBase` too (`get()`/`set()` there correctly invalidate every
+representation but the canonical one, same as any other `set()` call), not
+just a `RepresentationBase`:
 
 - `canApply(const SmoothNumberBase& n, int i, int j) const` — whether every
   input offset currently holds a `1`.
@@ -386,24 +428,20 @@ ever needs to check the inputs:
   offset, then carry-sets every output offset, in order. Precondition:
   `canApply(n, i, j)`.
 
-Both operate directly through `SmoothNumberBase`'s own `get()`/`set()`, not
-`RepresentationBase` — so a transformation that actually changes a bit
-correctly invalidates every representation but the canonical one, exactly
-like any other `set()` call.
+`SmoothNumberBase::applyTransformation(const OffsetTransformation& t, int i, int j)`
+is the usual way to use one directly on a number: it calls `canApply()`
+first, throwing `std::invalid_argument` if it doesn't hold, then
+`apply()`.
 
-`SmoothNumberBase::applyTransformation(const Transformation& t, int i, int j)`
-is the usual way to use one: it calls `canApply()` first, throwing
-`std::invalid_argument` if it doesn't hold, then `apply()`.
-
-`Transformation` is deliberately **concrete, not an interface** — every
-transformation this library has fits this one shape (clear a fixed set of
-`1`s, carry-set a fixed set of new `1`s), so there's no virtual dispatch.
+`OffsetTransformation` is deliberately **concrete, not itself an
+interface** — every fixed-offset transformation this library has fits
+this one shape, so there's no further virtual dispatch needed within it.
 Building a custom one is just handing its constructor the two offset
 lists directly:
 
 ```cpp
 // 2^i*3^j + 2^(i+1)*3^j + 2^i*3^(j+1) = 2^i*3^j*6 = 2^(i+1)*3^(j+1)
-smooth::Transformation combineBothAxes({{0, 0}, {1, 0}, {0, 1}}, {{1, 1}});
+smooth::OffsetTransformation combineBothAxes({{0, 0}, {1, 0}, {0, 1}}, {{1, 1}});
 ```
 
 `inputs()`/`outputs()` hand back those two lists directly (as
@@ -413,14 +451,18 @@ inputs matches the same sum over its outputs, evaluated directly at
 `(i, j) = (0, 0)`) without ever constructing a `SmoothNumberBase` or
 calling `apply()` at all; `tests/test_smooth.cpp`'s
 `checkTransformationPreservesValue()` does exactly this, for every
-transformation below.
+`OffsetTransformation` below. (`TernaryCarryTransformation` isn't checked
+this way — it has no fixed offset lists to sum — its value-preservation
+is a one-line algebraic identity instead; see its own section under
+"algorithm_cluster_zoo" below.)
 
 Three presets are provided in `include/smooth/transformation_zoo/`, each
-just a `Transformation` constructed with a fixed pair of offset lists
-(`include/smooth/transformation_zoo.hpp` is a convenience header pulling
-in all three, mirroring `plan_zoo.hpp`/`representation_zoo.hpp`;
-`transformation.hpp` itself, and `smooth.hpp`, only give you the general
-`Transformation` class, not these presets):
+just an `OffsetTransformation` constructed with a fixed pair of offset
+lists (`include/smooth/transformation_zoo.hpp` is a convenience header
+pulling in all of transformation_zoo/, mirroring
+`plan_zoo.hpp`/`representation_zoo.hpp`; `transformation.hpp` itself, and
+`smooth.hpp`, only give you `Transformation`/`OffsetTransformation`
+themselves, not these presets):
 
 - `MergeTransformation` (`transformation_zoo/merge_transformation.hpp`) —
   inputs `{(0, 0), (1, 0)}`, output `{(0, 1)}`: merges the two bits at
@@ -446,14 +488,18 @@ in all three, mirroring `plan_zoo.hpp`/`representation_zoo.hpp`;
   `(i, j)` to independently hold two `1`s at once, which a bit grid can't
   represent, and a negative `n` would put the second input at a column
   *before* `j`, breaking the staircase's ascending order.
+- `TernaryCarryTransformation` (`transformation_zoo/ternary_carry_transformation.hpp`)
+  — the one preset here that implements `Transformation` directly, not
+  through `OffsetTransformation`; see "algorithm_cluster_zoo" below for
+  what it does and why it doesn't fit the offset-list shape.
 
 Applying `MergeTransformation` and then `SplitTransformation` is always a
 round trip back to the original bit layout (even when one of them had to
 carry along the way — carrying is itself value-preserving, so a sequence
-of carries is too). All three work the same way for negative `i`/`j` on a
-fractional type (`SmoothFloat`/`SmoothSignedFloat`) as for non-negative
-ones — the underlying identities don't care about the sign of either
-exponent.
+of carries is too). All three offset-based presets work the same way for
+negative `i`/`j` on a fractional type (`SmoothFloat`/`SmoothSignedFloat`)
+as for non-negative ones — the underlying identities don't care about the
+sign of either exponent.
 
 ## AlgorithmCluster
 
@@ -472,12 +518,13 @@ Every cluster this library has lives in `algorithm_cluster_zoo/` (below)
 and implements this interface one of two ways:
 `TransformationAlgorithmCluster`, the generic engine (greedily apply a
 family of `Transformation`s until none can fire anymore), directly; or,
-for `MergeCluster`/`BinaryFormCluster`, by being a subclass of
-*that* — each just fixes its own `Transformation`(s), name, and bound as
-constructor arguments, adding no behavior of its own. `TernaryFormCluster`
-is the exception: it can't be built from `Transformation`s at all (see its
-own section below), so it implements `AlgorithmCluster` directly instead,
-composing `BinaryFormCluster` for its first phase.
+for `MergeCluster`/`BinaryFormCluster`/`TernaryCarryCluster`, by being a
+subclass of *that* — each just fixes its own `Transformation`(s), name,
+and bound as constructor arguments, adding no behavior of its own.
+`TernaryFormCluster` is the exception: it doesn't run a single search at
+all, but two in sequence (see its own section below), so it implements
+`AlgorithmCluster` directly instead, composing `BinaryFormCluster` and
+`TernaryCarryCluster`.
 
 This is what lets `Plan`'s `Cluster` blueprint node (see "Plan" below)
 hold a single `const AlgorithmCluster*`, rather than being hardwired to
@@ -493,7 +540,7 @@ Every named cluster hardcodes its own `name()` — no constructor parameter
 for it, the same way `MergeTransformation`/`SplitTransformation` hardcode
 their own offsets, or `SparsePlan`/`MatrixPlan` hardcode their own
 `name()`. Only `TransformationAlgorithmCluster` itself takes one
-explicitly, since — like `Transformation`, whose raw offset-list
+explicitly, since — like `OffsetTransformation`, whose raw offset-list
 constructor it's built from — it has no fixed identity of its own; it's
 the generic mechanism, not a preset.
 
@@ -502,13 +549,13 @@ the generic mechanism, not a preset.
 `include/smooth/algorithm_cluster_zoo/` holds every concrete
 `AlgorithmCluster` this library has: `TransformationAlgorithmCluster`, the
 generic engine, alongside the named presets built from it
-(`MergeCluster`, `BinaryFormCluster`) or composing one
-(`TernaryFormCluster`). `TransformationAlgorithmCluster` lives here,
-rather than at the top level alongside `AlgorithmCluster`, precisely
-because nothing outside this folder ever needs to name it directly —
-`Plan` only ever holds the `AlgorithmCluster` a strategy produces (see
-"AlgorithmCluster" above). `include/smooth/algorithm_cluster_zoo.hpp` is a
-convenience header pulling in all four, mirroring `plan_zoo.hpp`/
+(`MergeCluster`, `BinaryFormCluster`, `TernaryCarryCluster`) or composing
+more than one (`TernaryFormCluster`). `TransformationAlgorithmCluster`
+lives here, rather than at the top level alongside `AlgorithmCluster`,
+precisely because nothing outside this folder ever needs to name it
+directly — `Plan` only ever holds the `AlgorithmCluster` a strategy
+produces (see "AlgorithmCluster" above). `include/smooth/algorithm_cluster_zoo.hpp`
+is a convenience header pulling in all five, mirroring `plan_zoo.hpp`/
 `transformation_zoo.hpp`/`representation_zoo.hpp`.
 
 ### TransformationAlgorithmCluster
@@ -533,44 +580,52 @@ implements `AlgorithmCluster` by greedily applying a small family of
 `Transformation`s across an entire `RepresentationBase` —
 `run(RepresentationBase& rep, metrics = nullptr)` — until none of them
 can fire anywhere anymore: a fixed point. It's the base class
-`MergeCluster`/`BinaryFormCluster` (below) each subclass, configuring it
-with their own fixed `Transformation`(s).
+`MergeCluster`/`BinaryFormCluster`/`TernaryCarryCluster` (below) each
+subclass, configuring it with their own fixed `Transformation`(s). Nothing
+about this engine cares what *kind* of `Transformation` it's holding, or
+whether every transformation in the family is even the same kind — its
+list is a `vector<const Transformation*>`, so an `OffsetTransformation`
+and something built an entirely different way (like
+`TernaryCarryTransformation`) could even be mixed into the same cluster.
 
 Whether that fixed point is ever actually reached depends on the family.
 `{MergeTransformation}` always terminates on its own: every successful
 application strictly reduces the representation's total set-bit count (it
 clears at least as many bits — its inputs, plus however many occupied
 cells a carry rippled through — as it ever sets), and that count can't go
-negative. But nothing about being made of `Transformation`s guarantees
-that in general — `{SplitTransformation}` alone is the exact reverse of a
-merge (it *grows* the bit count) and has no floor of its own: nothing
-about `SplitTransformation` knows column 0 is special, so splitting a bit
-that's already reached column 0 just produces column -1, then -2, forever.
-The optional trailing constructor parameter `allowed(int i, int j)` is for
-exactly this: it bounds the region a search is allowed to explore, fixed
-for that cluster's whole lifetime, so a family with no natural floor can
-still be made to terminate at a boundary the caller chooses. It's a
-constructor parameter rather than a `run()` parameter specifically so
-`run()`'s signature matches `AlgorithmCluster`'s exactly, with nothing
-extra to pass at the call site. See `BinaryFormCluster` below for a real
-example.
+negative. `{TernaryCarryTransformation}` also terminates on its own, for a
+different reason — see its own section below — since it doesn't shrink
+the bit count at all. But neither property is guaranteed just by being
+made of `Transformation`s — `{SplitTransformation}` alone is the exact
+reverse of a merge (it *grows* the bit count) and has no floor of its
+own: nothing about `SplitTransformation` knows column 0 is special, so
+splitting a bit that's already reached column 0 just produces column -1,
+then -2, forever. The optional trailing constructor parameter
+`allowed(int i, int j)` is for exactly this: it bounds the region a
+search is allowed to explore, fixed for that cluster's whole lifetime, so
+a family with no natural floor can still be made to terminate at a
+boundary the caller chooses. It's a constructor parameter rather than a
+`run()` parameter specifically so `run()`'s signature matches
+`AlgorithmCluster`'s exactly, with nothing extra to pass at the call
+site. See `BinaryFormCluster` below for a real example.
 
 The interesting part is doing this *without* rescanning the whole
-representation after every single application. Clearing a bit can only
-ever remove an opportunity for some transformation to fire, never create
-one — a new opportunity can only ever appear at a cell that just became
-`1`, i.e. one of the previous application's own output landings (see
-`Transformation::applyAndReportLandings()`, which `canApply()`/`apply()`
-are themselves now templated on — over anything with `get(int, int) const`/
-`set(int, int, bool)` — precisely so the exact same `Transformation` class
-works directly on a `RepresentationBase` here, not just a
-`SmoothNumberBase`). So `run()` seeds a worklist from `rep`'s own set bits
-(via `forEachSet()` — already just the actual `1`s, not a full grid scan),
-and after every application, only re-examines the cells right around where
-that application's outputs landed, rather than looking anywhere else.
-If given a `Metrics`, it increments `transformations_applied` once per
-successful application (`Transformation` itself never touches `Metrics` at
-all, so this is the only place that count is available).
+representation after every single application. A new opportunity for some
+transformation to fire can only ever appear at a cell some earlier
+application actually touched — each transformation's own
+`affectedAnchors(int i, int j)` says exactly which anchors a changed cell
+could newly affect, *for that transformation specifically* (for
+`OffsetTransformation` this is purely arithmetic — the anchor that would
+place the changed cell at one of its input offsets; `TernaryCarryTransformation`
+answers the same question in a completely different way — see its own
+section below). So `run()` seeds a worklist from `rep`'s own set bits (via
+`forEachSet()` — already just the actual `1`s, not a full grid scan), and
+after every application, only re-examines the anchors
+`applyAndReportLandings()`'s own return value says are worth another
+look, rather than looking anywhere else. If given a `Metrics`, it
+increments `transformations_applied` once per successful application
+(`Transformation` itself never touches `Metrics` at all, so this is the
+only place that count is available).
 
 ### MergeCluster
 
@@ -644,6 +699,80 @@ anchor at column -1, which is disallowed. Like `MergeCluster` above, its
 a plain instance member's address wouldn't be safe to pass to the base
 class constructor.
 
+### TernaryCarryTransformation
+
+```cpp
+#include "smooth/representation_zoo/row_values_representation.hpp"
+#include "smooth/transformation_zoo/ternary_carry_transformation.hpp"
+
+smooth::RowValuesRepresentation rep(/*allow_fractional=*/false);
+rep.setColumnValue(0, 9.0);  // 9 = 1001 binary, at column 0
+
+smooth::TernaryCarryTransformation carry;
+carry.canApply(rep, 0, 0);                       // true -- n_0 = 9 has more than one bit set
+auto landings = carry.applyAndReportLandings(rep, 0, 0);  // {(0, 0), (0, 1)}
+rep.columnValue(0);                              // 6.0  (9 - 3)
+rep.columnValue(1);                              // 1.0  (0 + 1)
+```
+
+`TernaryCarryTransformation` (`transformation_zoo/ternary_carry_transformation.hpp`)
+is anchored at column `j` (the row half of the anchor, `i`, is unused —
+always `0` by convention): while column `j`'s total, `n_j`
+(`RowValuesRepresentation`'s own per-column magnitude — see "Four concrete
+types" above), has more than one bit set, subtracts `3` from `n_j` and
+adds `1` to `n_(j+1)` — value-preserving, since `3 * 3^j = 3^(j+1)`.
+
+This is the transformation that forced `Transformation` to become an
+interface in the first place: its precondition ("does column `j` have
+more than one bit set") depends on an entire column's aggregate
+magnitude, not a fixed, small set of grid cells, and applying it isn't
+"clear a fixed set of `1`s" either — it's an ordinary magnitude
+subtraction, which in general needs a borrow across bits that
+`OffsetTransformation` has no way to express. `RowValuesRepresentation`
+sidesteps the problem by already storing `n_j` as a single number rather
+than exploded bits, which is why `canApply()`/`applyAndReportLandings()`
+require one and throw `std::invalid_argument` otherwise.
+
+Unlike an `OffsetTransformation`'s inputs (always fully cleared, so only
+the outputs are worth re-examining afterward), one application here only
+*decrements* column `j` — it may still have more than one bit set
+afterward, needing further applications at the same anchor. So
+`applyAndReportLandings()` reports column `j` itself as a landing, right
+alongside column `j+1`, unlike any `OffsetTransformation`.
+`affectedAnchors(i, j)` always answers `{(0, j)}`, regardless of `i` —
+any change anywhere in column `j` means column `j` is worth rechecking,
+no matter which row within it actually changed.
+
+This always terminates without ever going negative, run repeatedly at a
+fixed column: the descending sequence `n_j, n_j - 3, n_j - 6, ...` is
+confined to one residue class mod 3, and that class's smallest
+nonnegative member — 0, 1, or 2 — always has at most one bit set. So it's
+guaranteed to stop at or before reaching it, never below.
+
+### TernaryCarryCluster
+
+```cpp
+#include "smooth/algorithm_cluster_zoo/ternary_carry_cluster.hpp"
+#include "smooth/representation_zoo/row_values_representation.hpp"
+
+smooth::RowValuesRepresentation rep(/*allow_fractional=*/false);
+rep.setColumnValue(0, 9.0);  // 9 = 1001 binary, at column 0
+
+smooth::TernaryCarryCluster cluster;
+cluster.run(rep);
+rep.print();  // n[2] = 1  -- 9 = 1*3^2
+```
+
+`TernaryCarryCluster` (`include/smooth/algorithm_cluster_zoo/ternary_carry_cluster.hpp`)
+is a `TransformationAlgorithmCluster` subclass, configured with just
+`TernaryCarryTransformation` and the name `"ternary_carry"` — run to a
+fixed point, same as `MergeCluster`/`BinaryFormCluster`, and built the
+same way (a function-local static `TernaryCarryTransformation`, for the
+same reason). Unlike `BinaryFormCluster`, it needs no `allowed` bound at
+all: `TernaryCarryTransformation`'s own `canApply()` is already
+self-limiting (a column with `<= 1` bit set simply stops being a
+candidate), so there's nothing external left to bound.
+
 ### TernaryFormCluster
 
 ```cpp
@@ -661,37 +790,27 @@ rep->print();  // n[0] = 4, n[2] = 1  -- 13 = 4*3^0 + 1*3^2
 
 `TernaryFormCluster` (`include/smooth/algorithm_cluster_zoo/ternary_form_cluster.hpp`)
 reduces a number to a form where every nonzero column holds exactly one
-bit — i.e. every nonzero `n_j` (`RowValuesRepresentation`'s own per-column
-total — see "Four concrete types" above) is a single power of two, never
-an arbitrary magnitude. It first runs `BinaryFormCluster` (collapsing
-whatever column layout the number started with down into column 0's
-`n_0`, so the final result only ever depends on the number's value, never
-on how it got there), then works column by column starting at 0: so long
-as that column's total has more than one bit set, subtracts 3 from it and
-adds 1 to the next column — value-preserving, since `3 * 3^j = 3^(j+1)` —
-until it's down to a single bit (or gone entirely), then moves to the
-next column. A carry only ever flows to a strictly higher column, so
-nothing already finished is ever revisited.
+bit — i.e. every nonzero `n_j` is a single power of two, never an
+arbitrary magnitude. Two phases, run in sequence: first `BinaryFormCluster`
+(collapsing whatever column layout the number started with down into
+column 0's `n_0`, so the final result only ever depends on the number's
+value, never on how it got there), then `TernaryCarryCluster` (working
+column by column from there, exactly as described above). Since it runs
+two separate fixed-point searches rather than one, it doesn't fit the
+"just configure `TransformationAlgorithmCluster`" mold `MergeCluster`/
+`BinaryFormCluster`/`TernaryCarryCluster` do — it implements
+`AlgorithmCluster` directly, holding a `BinaryFormCluster` and a
+`TernaryCarryCluster` as members and running them one after the other.
 
-This always terminates without ever going negative: the descending
-sequence `n_j, n_j - 3, n_j - 6, ...` is confined to one residue class mod
-3, and that class's smallest nonnegative member — 0, 1, or 2 — always has
-at most one bit set. So the loop is guaranteed to stop at or before
-reaching it, never below.
-
-Unlike `BinaryFormCluster`, this can't be built from `Transformation`s at
-all: "subtract 3 from a column's total" is an ordinary magnitude
-subtraction, and in general that needs a borrow across bits — exactly the
-kind of arbitrary-precision subtraction `Transformation` has no way to
-express (it only ever clears/carry-sets a small *fixed* set of bit
-offsets, never however many bits a particular borrow happens to touch).
-`RowValuesRepresentation` sidesteps the problem by already storing each
-column's total as a single number rather than exploded bits, which is why
-`TernaryFormCluster::run()` requires one and throws
-`std::invalid_argument` for anything else. This is also why it holds a
-`BinaryFormCluster` as a member and implements its own extra logic on top,
-rather than being a `TransformationAlgorithmCluster` subclass at all like
-`MergeCluster`/`BinaryFormCluster` are.
+`run()` also checks and throws `std::invalid_argument` immediately,
+unconditionally, if `rep` isn't a `RowValuesRepresentation` — rather than
+relying on `TernaryCarryTransformation`'s own (otherwise equivalent) check
+ever actually being reached. If `rep` happens to be empty,
+`BinaryFormCluster`'s reduction is a silent no-op regardless of
+representation kind, and `TernaryCarryCluster`'s worklist would never
+examine a single candidate — so without this upfront check, calling
+`run()` against the wrong kind of representation could easily fail to
+throw at all, purely by chance of what's currently in it.
 
 ## Metrics
 
@@ -1161,7 +1280,7 @@ showing each one forcing a different real conversion
 exact same numbers, alongside the rest of each run's `Metrics`;
 `MergeTransformation`/`SplitTransformation`, applied and reversed on the
 same number; a merge that has to carry because its output bit is already
-occupied (12 + 12 carrying to 24); a custom `Transformation` built
+occupied (12 + 12 carrying to 24); a custom `OffsetTransformation` built
 directly from its own offset lists, combining bits across both axes at
 once; and `SpreadTransformation(4)` bridging two bits 4 columns apart
 into `(i+2, j)` plus a 3-bit staircase; a `TransformationAlgorithmCluster`
@@ -1177,7 +1296,12 @@ multiplication; `BinaryFormCluster` reducing 18 (a single bit at
 `16 + 2`), with a `Metrics` attached to show how many splits it took; and
 `TernaryFormCluster` reducing 13 (not itself a single term) down to two
 single-bit columns, `n[0] = 4` and `n[2] = 1`, with a `Metrics` attached
-to show how many subtract-3/add-1 steps it took.
+to show how many subtract-3/add-1 steps it took; and, directly,
+`TernaryCarryTransformation`/`TernaryCarryCluster` reducing 9 (built
+straight into column 0 via `RowValuesRepresentation::setColumnValue()`,
+skipping `BinaryFormCluster` entirely) down to a single bit at column 2 --
+the same result `TernaryFormCluster` gets for 9 via its full two-phase
+pipeline.
 
 `tests/test_smooth.cpp` is a small, dependency-free assertion-based test
 suite (no test framework linked in — see `CMakeLists.txt`) covering all of
@@ -1208,34 +1332,48 @@ output bit doesn't block `canApply()` at all — it carries instead,
 including a case where *both* of `SplitTransformation`'s outputs are
 occupied and carry in sequence, still preserving the total value — a
 merge-then-split round trip, that a different representation correctly
-reflects the new layout after a merge, a custom `Transformation` built
-directly from its own input/output offset lists,
+reflects the new layout after a merge, a custom `OffsetTransformation`
+built directly from its own input/output offset lists,
 `SpreadTransformation(1)`'s empty-staircase special case and
 `SpreadTransformation(4)`'s full 3-bit staircase, `SpreadTransformation`'s
 constructor throwing for `n < 1`, that both `Merge`/`SplitTransformation`
 work the same way for negative indices on a fractional type, and
 `checkTransformationPreservesValue()` — confirming, directly from each
-transformation's own `inputs()`/`outputs()` and independent of ever
-calling `apply()`, that every transformation this library has is actually
-value-preserving), `TransformationAlgorithmCluster` (a single merge, two
-independent merges applied in one `run()`, a collision-triggered cascade,
-a fully-packed number where every bit eventually merges, the
-`transformations_applied` counter, and a no-op case confirming an
-already-fixed-point number is left untouched), `BinaryFormCluster` (a
-single split with no carry, an already-binary number left untouched, a
-carry-cascade case confirming 18 converges to exactly its true binary
-form — bits at rows 1 and 4, nowhere else — the `transformations_applied`
-counter, and value preservation, plus the column-0-only guarantee, checked
-across a range of representative numbers including 0), `TernaryFormCluster`
-(a number already a single bit left untouched past `BinaryFormCluster`'s
-own no-op, 9 draining fully out of columns 0 and 1 to land as a single
-bit at column 2 — matching its own single-term sparse form exactly — with
-the exact `transformations_applied` count checked, 13 landing on two
-single-bit columns instead of collapsing to one, that the result only
-depends on the total value and not the starting column layout — built
-directly via `setColumnValue()` rather than `SmoothInteger::setValue()` —
-value preservation and the single-bit-per-column guarantee checked across
-a range of representative numbers, and that running it against anything
+`OffsetTransformation`'s own `inputs()`/`outputs()` and independent of
+ever calling `apply()`, that every offset-based transformation this
+library has is actually value-preserving), `TernaryCarryTransformation`
+(that `canApply()`/`applyAndReportLandings()` both throw
+`std::invalid_argument` against anything but a `RowValuesRepresentation`,
+`canApply()` correctly distinguishing a single-bit column from a
+multi-bit one, that one application both subtracts 3 from column `j` and
+adds 1 to column `j+1` while preserving `value()`, that its landings
+report *both* columns — unlike any `OffsetTransformation` — and that
+`affectedAnchors()` always answers `(0, j)` regardless of which row
+within the column actually changed), `TransformationAlgorithmCluster` (a
+single merge, two independent merges applied in one `run()`, a
+collision-triggered cascade, a fully-packed number where every bit
+eventually merges, the `transformations_applied` counter, and a no-op
+case confirming an already-fixed-point number is left untouched),
+`BinaryFormCluster` (a single split with no carry, an already-binary
+number left untouched, a carry-cascade case confirming 18 converges to
+exactly its true binary form — bits at rows 1 and 4, nowhere else — the
+`transformations_applied` counter, and value preservation, plus the
+column-0-only guarantee, checked across a range of representative numbers
+including 0), `TernaryCarryCluster` (`name()`, a no-op on an
+already-single-bit column, 9 reducing to a single bit at column 2 with the
+exact `transformations_applied` count checked — the same result
+`TernaryFormCluster` gets for 9 — and that it throws
+`std::invalid_argument` for a non-`RowValuesRepresentation`, same as the
+transformation it's built from), `TernaryFormCluster` (a number already a
+single bit left untouched past `BinaryFormCluster`'s own no-op, 9 draining
+fully out of columns 0 and 1 to land as a single bit at column 2 —
+matching its own single-term sparse form exactly — with the exact
+`transformations_applied` count checked, 13 landing on two single-bit
+columns instead of collapsing to one, that the result only depends on the
+total value and not the starting column layout — built directly via
+`setColumnValue()` rather than `SmoothInteger::setValue()` — value
+preservation and the single-bit-per-column guarantee checked across a
+range of representative numbers, and that running it against anything
 other than a `RowValuesRepresentation` throws `std::invalid_argument`),
 and `DefaultPlan`
 (the confirmed example, unbracketed left-associative chaining, that

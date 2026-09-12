@@ -499,7 +499,7 @@ int main() {
     std::cout << "\nThrough a Plan*: name() = " << polymorphic->name()
               << ", calculate() = " << polymorphic->calculate() << "\n";
 
-    // --- Transformation ------------------------------------------------------
+    // --- OffsetTransformation --------------------------------------------------
     // A value-preserving rewrite of a number's bit grid, built from a
     // fixed list of input offsets (each must hold a 1; applying always
     // clears them) and output offsets (each gets carry-set to 1 -- just
@@ -509,7 +509,7 @@ int main() {
     // SplitTransformation is the exact reverse. applyTransformation()
     // checks canApply() first (only ever the inputs -- an occupied output
     // is never a reason to reject) and throws if it doesn't hold.
-    std::cout << "\n--- Transformation ---\n";
+    std::cout << "\n--- OffsetTransformation ---\n";
     smooth::SmoothInteger transformed;
     transformed.set(2, 0);  // 2^2 = 4
     transformed.set(3, 0);  // 2^3 = 8
@@ -544,15 +544,15 @@ int main() {
     std::cout << "after merge(2, 0) (12 + 12 carries to 24 at (3, 1)): value = " << collision.value() << ", ";
     collision.printSparse();
 
-    // Transformation is concrete, not an interface: a custom one, built
-    // directly from its own offset lists, works the same way --
+    // OffsetTransformation is concrete, not an interface: a custom one,
+    // built directly from its own offset lists, works the same way --
     // 2^i*3^j + 2^(i+1)*3^j + 2^i*3^(j+1) = 2^i*3^j*6 = 2^(i+1)*3^(j+1).
-    smooth::Transformation combineBothAxes({{0, 0}, {1, 0}, {0, 1}}, {{1, 1}});
+    smooth::OffsetTransformation combineBothAxes({{0, 0}, {1, 0}, {0, 1}}, {{1, 1}});
     smooth::SmoothInteger custom;
     custom.set(0, 0);  // 1
     custom.set(1, 0);  // 2
     custom.set(0, 1);  // 3
-    std::cout << "\nbefore a custom Transformation: value = " << custom.value() << ", ";
+    std::cout << "\nbefore a custom OffsetTransformation: value = " << custom.value() << ", ";
     custom.printSparse();
     custom.applyTransformation(combineBothAxes, 0, 0);
     std::cout << "after: value = " << custom.value() << ", ";
@@ -640,6 +640,30 @@ int main() {
     ternaryRep->print(std::cout);
     std::cout << "13 = 4*3^0 + 1*3^2, reached after " << ternaryMetrics->get("transformations_applied")
               << " subtract-3/add-1 steps\n";
+
+    // --- TernaryCarryTransformation / TernaryCarryCluster --------------------
+    // The Transformation (not OffsetTransformation) TernaryFormCluster's
+    // second phase is actually built from: anchored at column j, while n_j
+    // has more than one bit set, subtracts 3 from n_j and adds 1 to
+    // n_(j+1). Its precondition depends on a whole column's magnitude, not
+    // a handful of fixed bit offsets, so it implements Transformation
+    // directly rather than going through OffsetTransformation.
+    // TernaryCarryCluster runs it to a fixed point, needing no `allowed`
+    // bound the way BinaryFormCluster does -- its own canApply() is
+    // already self-limiting.
+    std::cout << "\n--- TernaryCarryTransformation / TernaryCarryCluster ---\n";
+    smooth::RowValuesRepresentation carryRep(/*allow_fractional=*/false);
+    carryRep.setColumnValue(0, 9.0);  // 9 = 1001 binary, at column 0
+    std::cout << "before: value = " << carryRep.value() << ", ";
+    carryRep.print(std::cout);
+    smooth::TernaryCarryCluster carryCluster;
+    auto carryMetrics = std::make_shared<smooth::Metrics>();
+    carryCluster.run(carryRep, carryMetrics);
+    std::cout << "after: value = " << carryRep.value() << ", ";
+    carryRep.print(std::cout);
+    std::cout << "9 = 1*3^2, reached after " << carryMetrics->get("transformations_applied")
+              << " subtract-3/add-1 steps -- same result as BinaryFormCluster + TernaryCarryCluster together (see "
+                 "TernaryFormCluster above), starting directly from column 0 instead\n";
 
     return 0;
 }

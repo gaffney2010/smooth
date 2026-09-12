@@ -50,8 +50,8 @@ void checkThrows(Fn&& fn, const std::string& description) {
 }
 
 // Sums 2^i*3^j over a list of (i, j) offsets, i.e. exactly what
-// Transformation::inputs()/outputs() would total up if anchored at
-// (0, 0) -- the most direct way to check that a Transformation is
+// OffsetTransformation::inputs()/outputs() would total up if anchored at
+// (0, 0) -- the most direct way to check that an OffsetTransformation is
 // well-formed (its outputs really do add up to the same value as its
 // inputs) without constructing a SmoothNumberBase or calling apply() at
 // all.
@@ -63,7 +63,7 @@ double offsetsValue(const std::vector<std::pair<int, int>>& offsets) {
     return total;
 }
 
-void checkTransformationPreservesValue(const Transformation& t, const std::string& name) {
+void checkTransformationPreservesValue(const OffsetTransformation& t, const std::string& name) {
     checkNear(offsetsValue(t.inputs()), offsetsValue(t.outputs()),
               name + ": summing 2^i*3^j over its inputs and outputs gives the same value at (i, j) = (0, 0)");
 }
@@ -680,10 +680,10 @@ void testCopyAndMoveSemantics() {
 }
 
 // ---------------------------------------------------------------------
-// Transformation: value-preserving bit-grid rewrites, built from a fixed
-// list of input offsets (each must hold a 1; applying always clears them)
-// and output offsets (each gets carry-set to 1 -- ripple-carrying up the
-// row axis, exactly like ordinary addition, if already occupied).
+// OffsetTransformation: value-preserving bit-grid rewrites, built from a
+// fixed list of input offsets (each must hold a 1; applying always clears
+// them) and output offsets (each gets carry-set to 1 -- ripple-carrying up
+// the row axis, exactly like ordinary addition, if already occupied).
 // canApply() only ever checks the inputs, since an occupied output is
 // never a reason to reject -- apply() carries through it instead.
 // 2^i*3^j + 2^(i+1)*3^j = 2^i*3^(j+1), so MergeTransformation/
@@ -802,23 +802,24 @@ void testTransformation() {
         checkNear(n.value(), 12.0, "value is unchanged by re-deriving a different representation");
     }
 
-    // Transformation itself is concrete and general: a custom one, built
-    // directly from its own input/output offset lists (not one of the two
-    // named presets), works exactly the same way. This one combines three
-    // bits across both axes at once: 2^i*3^j + 2^(i+1)*3^j + 2^i*3^(j+1) =
-    // 2^i*3^j*(1+2+3) = 2^i*3^j*6 = 2^(i+1)*3^(j+1).
+    // OffsetTransformation itself is concrete and general: a custom one,
+    // built directly from its own input/output offset lists (not one of
+    // the named presets), works exactly the same way. This one combines
+    // three bits across both axes at once: 2^i*3^j + 2^(i+1)*3^j +
+    // 2^i*3^(j+1) = 2^i*3^j*(1+2+3) = 2^i*3^j*6 = 2^(i+1)*3^(j+1).
     {
-        Transformation combineBothAxes({{0, 0}, {1, 0}, {0, 1}}, {{1, 1}});
+        OffsetTransformation combineBothAxes({{0, 0}, {1, 0}, {0, 1}}, {{1, 1}});
         SmoothInteger n;
         n.set(0, 0);  // 1
         n.set(1, 0);  // 2
         n.set(0, 1);  // 3
         checkNear(n.value(), 6.0, "before custom transformation: 1 + 2 + 3 = 6");
-        check(combineBothAxes.canApply(n, 0, 0), "a custom Transformation's canApply() checks its own input list");
+        check(combineBothAxes.canApply(n, 0, 0),
+              "a custom OffsetTransformation's canApply() checks its own input list");
         n.applyTransformation(combineBothAxes, 0, 0);
-        checkNear(n.value(), 6.0, "a custom Transformation still preserves value()");
+        checkNear(n.value(), 6.0, "a custom OffsetTransformation still preserves value()");
         check(!n.get(0, 0) && !n.get(1, 0) && !n.get(0, 1) && n.get(1, 1),
-              "a custom Transformation clears all of its inputs and carry-sets all of its outputs");
+              "a custom OffsetTransformation clears all of its inputs and carry-sets all of its outputs");
     }
 
     // SpreadTransformation(n): bridges (i, j) and (i, j+n) into (i+2, j)
@@ -1071,9 +1072,109 @@ void testBinaryFormCluster() {
 }
 
 // ---------------------------------------------------------------------
-// TernaryFormCluster: BinaryFormCluster followed by a column-by-column
-// subtract-3/add-1-to-next-column reduction, so every nonzero column of a
-// RowValuesRepresentation ends up holding a single power of two.
+// TernaryCarryTransformation: a Transformation (not an
+// OffsetTransformation) that subtracts 3 from column j's total and adds 1
+// to column j+1's, so long as column j has more than one bit set.
+// ---------------------------------------------------------------------
+void testTernaryCarryTransformation() {
+    TernaryCarryTransformation carry;
+
+    // Requires a RowValuesRepresentation -- both canApply() and
+    // applyAndReportLandings() throw against anything else.
+    {
+        SparseRepresentation rep(/*allow_fractional=*/true);
+        rep.set(0, 0, true);
+        checkThrows([&] { carry.canApply(rep, 0, 0); },
+                    "TernaryCarryTransformation::canApply() throws for a non-RowValuesRepresentation");
+        checkThrows([&] { carry.applyAndReportLandings(rep, 0, 0); },
+                    "TernaryCarryTransformation::applyAndReportLandings() throws for a non-RowValuesRepresentation");
+    }
+
+    // canApply(): only when the column has more than one bit set.
+    {
+        RowValuesRepresentation rep(/*allow_fractional=*/false);
+        rep.setColumnValue(0, 4.0);  // 100 -- already a single bit
+        check(!carry.canApply(rep, 0, 0), "canApply() is false once column 0 is down to a single bit");
+        rep.setColumnValue(0, 5.0);  // 101 -- two bits
+        check(carry.canApply(rep, 0, 0), "canApply() is true when column 0 has more than one bit set");
+    }
+
+    // applyAndReportLandings(): subtracts 3 from column j, adds 1 to
+    // column j+1, and reports *both* as landings -- unlike an
+    // OffsetTransformation's inputs (always fully cleared), column j is
+    // only decremented, so it may still need more reduction afterward.
+    {
+        RowValuesRepresentation rep(/*allow_fractional=*/false);
+        rep.setColumnValue(1, 5.0);  // 5*3^1 = 15
+        checkNear(rep.value(), 15.0, "before: 5*3^1 = 15");
+        auto landings = carry.applyAndReportLandings(rep, 0, 1);
+        checkNear(rep.value(), 15.0, "applyAndReportLandings() preserves value(): still 15");
+        check(rep.columnValue(1) == 2.0 && rep.columnValue(2) == 1.0,
+              "column 1 drops by 3 (5 -> 2), column 2 gains 1 (0 -> 1)");
+        check(landings.size() == 2 && landings[0] == std::make_pair(0, 1) && landings[1] == std::make_pair(0, 2),
+              "landings report column 1 (may still need more reduction) and column 2 (just changed)");
+    }
+
+    // affectedAnchors(): always column j's own anchor (0, j), regardless
+    // of which row within that column actually changed.
+    {
+        auto anchorsFromRow0 = carry.affectedAnchors(0, 3);
+        auto anchorsFromRow5 = carry.affectedAnchors(5, 3);
+        check(anchorsFromRow0.size() == 1 && anchorsFromRow0[0] == std::make_pair(0, 3),
+              "affectedAnchors() at row 0 gives (0, j)");
+        check(anchorsFromRow5.size() == 1 && anchorsFromRow5[0] == std::make_pair(0, 3),
+              "affectedAnchors() ignores which row within the column changed -- still (0, j)");
+    }
+}
+
+// ---------------------------------------------------------------------
+// TernaryCarryCluster: TernaryCarryTransformation run to a fixed point --
+// needs no `allowed` bound, unlike BinaryFormCluster, since
+// TernaryCarryTransformation's own canApply() is already self-limiting.
+// ---------------------------------------------------------------------
+void testTernaryCarryCluster() {
+    TernaryCarryCluster cluster;
+
+    check(cluster.name() == "ternary_carry", "TernaryCarryCluster::name() is \"ternary_carry\"");
+
+    // A column already down to a single bit: a safe no-op.
+    {
+        RowValuesRepresentation rep(/*allow_fractional=*/false);
+        rep.setColumnValue(0, 4.0);
+        cluster.run(rep);
+        check(rep.columnValue(0) == 4.0, "run() on an already-reduced column changes nothing");
+    }
+
+    // 9 = 1001 (2 bits) at column 0: drains fully out of columns 0 and 1,
+    // landing as a single bit at column 2 -- the same result
+    // testTernaryFormCluster() gets for 9, confirming TernaryCarryCluster
+    // alone (given a RowValuesRepresentation already holding 9 at column 0,
+    // BinaryFormCluster's job elsewhere) reduces it exactly the same way.
+    {
+        RowValuesRepresentation rep(/*allow_fractional=*/false);
+        rep.setColumnValue(0, 9.0);
+        auto metrics = std::make_shared<Metrics>();
+        cluster.run(rep, metrics);
+        checkNear(rep.value(), 9.0, "TernaryCarryCluster::run() preserves value(): still 9");
+        check(rep.columnValue(0) == 0.0 && rep.columnValue(1) == 0.0 && rep.columnValue(2) == 1.0,
+              "9 = 1*3^2 after ternary-carry reduction alone");
+        check(metrics->get("transformations_applied") == 4, "9 needs 4 subtract-3/add-1 steps");
+    }
+
+    // Throws for a non-RowValuesRepresentation, same as the transformation
+    // itself does.
+    {
+        SparseRepresentation rep(/*allow_fractional=*/true);
+        rep.set(0, 0, true);
+        rep.set(1, 0, true);
+        checkThrows([&] { cluster.run(rep); }, "TernaryCarryCluster::run() throws for a non-RowValuesRepresentation");
+    }
+}
+
+// ---------------------------------------------------------------------
+// TernaryFormCluster: BinaryFormCluster followed by TernaryCarryCluster,
+// so every nonzero column of a RowValuesRepresentation ends up holding a
+// single power of two.
 // ---------------------------------------------------------------------
 void testTernaryFormCluster() {
     auto isSingleBit = [](double n) {
@@ -2004,6 +2105,8 @@ int main() {
     testTransformation();
     testTransformationAlgorithmCluster();
     testBinaryFormCluster();
+    testTernaryCarryTransformation();
+    testTernaryCarryCluster();
     testTernaryFormCluster();
     testMetrics();
     testInstrumentationCounters();

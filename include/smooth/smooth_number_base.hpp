@@ -15,12 +15,17 @@
 
 namespace smooth {
 
-// Forward-declared, not included: Transformation (transformation.hpp)
+// Forward-declared, not included: OffsetTransformation (transformation.hpp)
 // needs SmoothNumberBase's full definition (its canApply()/apply()
 // implementations call n.get()/n.set()), so the dependency can't run the
 // other way too -- applyTransformation() below is declared here but
-// defined in transformation.hpp, once Transformation is fully known.
-class Transformation;
+// defined in transformation.hpp, once OffsetTransformation is fully known.
+// (Transformation, the abstract interface OffsetTransformation implements,
+// doesn't have this problem -- it only ever talks to a RepresentationBase,
+// never a SmoothNumberBase directly -- but applyTransformation() only ever
+// makes sense for a fixed-offset rewrite applied directly to a number, so
+// it's typed to the concrete OffsetTransformation, not the interface.)
+class OffsetTransformation;
 
 // Shared engine behind all four concrete 3-smooth number types
 // (SmoothInteger, SmoothFloat, and their Signed<> counterparts -- see
@@ -134,12 +139,12 @@ public:
 
     void clear(int i, int j) { set(i, j, false); }
 
-    // Checks that `t` can be applied at (i, j) (see Transformation, in
+    // Checks that `t` can be applied at (i, j) (see OffsetTransformation, in
     // transformation.hpp) and, if so, applies it; throws
     // std::invalid_argument otherwise. Defined out-of-line in
-    // transformation.hpp, once Transformation itself is fully defined --
-    // see the forward-declaration comment above.
-    void applyTransformation(const Transformation& t, int i, int j);
+    // transformation.hpp, once OffsetTransformation itself is fully defined
+    // -- see the forward-declaration comment above.
+    void applyTransformation(const OffsetTransformation& t, int i, int j);
 
     // Converts to Sparse if needed, then prints it.
     void printSparse(std::ostream& os = std::cout) {

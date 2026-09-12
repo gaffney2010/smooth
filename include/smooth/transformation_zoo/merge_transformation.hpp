@@ -9,9 +9,9 @@ namespace smooth {
 // set, the merge still succeeds -- it carries into (i+1, j+1),
 // (i+2, j+1), ... until it lands on a clear cell, exactly like ordinary
 // addition would.
-class MergeTransformation : public Transformation {
+class MergeTransformation : public OffsetTransformation {
 public:
-    MergeTransformation() : Transformation({{0, 0}, {1, 0}}, {{0, 1}}) {}
+    MergeTransformation() : OffsetTransformation({{0, 0}, {1, 0}}, {{0, 1}}) {}
 };
 
 }  // namespace smooth

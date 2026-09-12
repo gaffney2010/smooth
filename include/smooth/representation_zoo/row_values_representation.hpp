@@ -118,9 +118,9 @@ public:
     // Not part of RepresentationBase -- no other representation stores a
     // whole column's magnitude as a single number to read back -- so this
     // is RowValuesRepresentation-specific, same as columnValue()'s write
-    // counterpart below. TernaryFormCluster
-    // (algorithm_cluster_zoo/ternary_form_cluster.hpp) is the one caller:
-    // it works directly with each column's magnitude rather than
+    // counterpart below. TernaryCarryTransformation
+    // (transformation_zoo/ternary_carry_transformation.hpp) is the one
+    // caller: it works directly with each column's magnitude rather than
     // decomposing it into individual bits.
     double columnValue(int j) const {
         auto it = values_.find(j);
@@ -130,9 +130,9 @@ public:
     // Adds delta onto column j's total -- unlike setColumnValue() above,
     // this has no "column must start at zero" precondition, since it's
     // just accumulate() (already used internally by set()/addInPlace())
-    // exposed publicly for TernaryFormCluster, which needs to adjust two
-    // columns' totals directly (subtract 3 from one, add 1 to the next)
-    // without decomposing either into individual bits.
+    // exposed publicly for TernaryCarryTransformation, which needs to
+    // adjust two columns' totals directly (subtract 3 from one, add 1 to
+    // the next) without decomposing either into individual bits.
     void addToColumnValue(int j, double delta) { accumulate(j, delta); }
 
     std::unique_ptr<RepresentationBase> clone() const override {

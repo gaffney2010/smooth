@@ -26,9 +26,9 @@ namespace smooth {
 // to independently hold two 1s at once, which a bit grid can't represent)
 // and a negative n would put the second input at a column *before* j,
 // breaking the staircase's ascending order.
-class SpreadTransformation : public Transformation {
+class SpreadTransformation : public OffsetTransformation {
 public:
-    explicit SpreadTransformation(int n) : Transformation(inputOffsets(n), outputOffsets(n)) {}
+    explicit SpreadTransformation(int n) : OffsetTransformation(inputOffsets(n), outputOffsets(n)) {}
 
 private:
     static std::vector<std::pair<int, int>> inputOffsets(int n) {
